@@ -15,7 +15,6 @@ const {
   logTestStart,
   logTestEnd,
   validateFacebookSync,
-  processPendingSyncJobs,
   createTestProduct,
   filterProducts,
   clickFirstProduct,
@@ -138,12 +137,6 @@ test.describe('Meta for WooCommerce - Product Deletion E2E Tests', () => {
       await page.waitForLoadState('networkidle', { timeout: TIMEOUTS.MAX });
       console.log('✅ Products moved to trash');
 
-      // Process the pending DELETE sync jobs directly.
-      // The background job handler dispatches via a loopback HTTP request which
-      // doesn't work on single-threaded PHP servers (like the built-in dev
-      // server used in CI), so we invoke the job handler directly via CLI.
-      await processPendingSyncJobs();
-
       const [simpleProductValidationResult, variableProductValidationResult] = await Promise.all([
         validateFacebookSync(simpleProductId, simpleProduct.productName, 30, 0),
         validateFacebookSync(variableProductId, variableProduct.productName, 30, 0)
@@ -194,10 +187,6 @@ test.describe('Meta for WooCommerce - Product Deletion E2E Tests', () => {
       const newDescription = 'This product is out of sync with Facebook';
       await setProductDescription(page, newDescription);
       await publishProduct(page);
-
-      // Process the pending DELETE sync job directly (loopback doesn't work
-      // on single-threaded PHP servers in CI).
-      await processPendingSyncJobs();
 
       // Exclusion propagates to the Meta catalog asynchronously, so a single
       // probe races the delete. The sync validator already polls until an item
@@ -360,10 +349,6 @@ test.describe('Meta for WooCommerce - Product Deletion E2E Tests', () => {
       // Wait for the page to reload after bulk action
       await page.waitForLoadState('domcontentloaded', { timeout: TIMEOUTS.MAX });
       console.log('✅ Bulk edit completed');
-
-      // Process the pending DELETE sync jobs directly (loopback doesn't work
-      // on single-threaded PHP servers in CI).
-      await processPendingSyncJobs();
 
       // Validate that products are removed from the Facebook catalog
       console.log('🔍 Validating Facebook sync status after bulk exclusion...');

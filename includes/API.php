@@ -34,7 +34,7 @@ class API extends Base {
 
 	public const GRAPH_API_URL = 'https://graph.facebook.com/';
 
-	public const API_VERSION = 'v21.0';
+	public const API_VERSION = 'v23.0';
 
 	/** @var string URI used for the request */
 	protected $request_uri = self::GRAPH_API_URL . self::API_VERSION;

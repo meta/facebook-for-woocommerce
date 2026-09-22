@@ -381,12 +381,39 @@ if ( ! class_exists( 'WC_Facebookcommerce_EventsTracker' ) ) :
 		 *
 		 * This is necessary to avoid W3 validation errors.
 		 *
+		 * The image it prints requests ev=PageView, so it is held back on the responses that do
+		 * not report one. See should_report_page_view().
+		 *
 		 * phpcs:disable WordPress.Security.EscapeOutput.OutputNotEscaped
 		 */
 		public function inject_base_pixel_noscript() {
-			if ( $this->is_pixel_enabled() && ! $this->is_pos_page_request() ) {
+			if ( $this->is_pixel_enabled() && ! $this->is_pos_page_request() && $this->should_report_page_view() ) {
 				echo $this->pixel->pixel_base_code_noscript();
 			}
+		}
+
+
+		/**
+		 * Determines whether the current response should report a PageView.
+		 *
+		 * WordPress renders its 404 template for any URL it cannot resolve, and the default
+		 * rewrite rules hand it requests for missing files as well as mistyped URLs. None of
+		 * those responses are a visit to the store: counting them inflates PageView and
+		 * attributes traffic to URLs that do not exist.
+		 *
+		 * @since 3.7.7
+		 *
+		 * @return bool
+		 */
+		private function should_report_page_view() {
+			/**
+			 * Filters whether the current response reports a PageView.
+			 *
+			 * @since 3.7.7
+			 *
+			 * @param bool $should_report whether to report a PageView; false on 404 responses
+			 */
+			return (bool) apply_filters( 'wc_facebook_should_report_page_view', ! is_404() );
 		}
 
 		/**
@@ -449,7 +476,7 @@ if ( ! class_exists( 'WC_Facebookcommerce_EventsTracker' ) ) :
 		 * Triggers the PageView event
 		 */
 		public function inject_page_view_event() {
-			if ( ! $this->is_pixel_enabled() || $this->is_pos_page_request() ) {
+			if ( ! $this->is_pixel_enabled() || $this->is_pos_page_request() || ! $this->should_report_page_view() ) {
 				return;
 			}
 

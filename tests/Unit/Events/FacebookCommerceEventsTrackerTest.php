@@ -337,6 +337,111 @@ class FacebookCommerceEventsTrackerTest extends AbstractWPUnitTestWithSafeFilter
 	}
 
 	/**
+	 * Regression: WordPress renders its 404 template for any URL it cannot resolve, including
+	 * requests for missing files that the rewrite rules hand to index.php. Reporting those as
+	 * PageViews inflates the metric and attributes traffic to URLs that do not exist.
+	 *
+	 * @covers WC_Facebookcommerce_EventsTracker::inject_page_view_event
+	 */
+	public function test_inject_page_view_event_reports_nothing_on_a_404(): void {
+		$this->instance = $this->create_tracker_with_pixel_enabled();
+
+		$this->go_to_a_404();
+
+		$this->instance->inject_page_view_event();
+
+		$this->assertEmpty( $this->instance->get_tracked_events(), 'A 404 response should not report a PageView.' );
+	}
+
+	/**
+	 * The control for the case above: ordinary pages still report.
+	 *
+	 * @covers WC_Facebookcommerce_EventsTracker::inject_page_view_event
+	 */
+	public function test_inject_page_view_event_still_reports_on_an_ordinary_page(): void {
+		$this->instance = $this->create_tracker_with_pixel_enabled();
+
+		$this->go_to( home_url( '/' ) );
+		$this->assertFalse( is_404(), 'The home page should not be a 404 in this environment.' );
+
+		$this->instance->inject_page_view_event();
+
+		$events = $this->instance->get_tracked_events();
+		$this->assertCount( 1, $events );
+		$this->assertSame( 'PageView', $events[0]->get_name() );
+	}
+
+	/**
+	 * Stores that deliberately track 404s can have them back.
+	 *
+	 * @covers WC_Facebookcommerce_EventsTracker::inject_page_view_event
+	 */
+	public function test_pageview_on_a_404_can_be_restored_with_a_filter(): void {
+		$this->instance = $this->create_tracker_with_pixel_enabled();
+
+		$this->add_filter_with_safe_teardown(
+			'wc_facebook_should_report_page_view',
+			function () {
+				return true;
+			}
+		);
+
+		$this->go_to_a_404();
+
+		$this->instance->inject_page_view_event();
+
+		$this->assertCount( 1, $this->instance->get_tracked_events() );
+	}
+
+	/**
+	 * The noscript image requests ev=PageView, so it has to be held back on a 404 too — otherwise
+	 * visitors without JavaScript keep reporting the page views the CAPI event no longer does.
+	 *
+	 * @covers WC_Facebookcommerce_EventsTracker::inject_base_pixel_noscript
+	 */
+	public function test_inject_base_pixel_noscript_outputs_nothing_on_a_404(): void {
+		$this->instance = $this->create_tracker_with_pixel_enabled();
+
+		\WC_Facebookcommerce_Pixel::set_pixel_id( 'test_pixel_123' );
+
+		// The noscript block renders at most once per request, so start from a clean slate;
+		// otherwise an earlier render would make this pass without proving anything.
+		$original_render_cache                    = \WC_Facebookcommerce_Pixel::$render_cache;
+		\WC_Facebookcommerce_Pixel::$render_cache = array();
+
+		try {
+			$this->go_to( home_url( '/' ) );
+
+			ob_start();
+			$this->instance->inject_base_pixel_noscript();
+			$ordinary_page = ob_get_clean();
+
+			$this->assertStringContainsString( 'ev=PageView', $ordinary_page, 'Ordinary pages should still print the noscript pixel.' );
+
+			\WC_Facebookcommerce_Pixel::$render_cache = array();
+
+			$this->go_to_a_404();
+
+			ob_start();
+			$this->instance->inject_base_pixel_noscript();
+			$not_found = ob_get_clean();
+
+			$this->assertEmpty( $not_found, 'A 404 response should not print the noscript PageView pixel.' );
+		} finally {
+			\WC_Facebookcommerce_Pixel::$render_cache = $original_render_cache;
+		}
+	}
+
+	/**
+	 * Puts the main query into a 404 state.
+	 */
+	private function go_to_a_404(): void {
+		$this->go_to( home_url( '/no-such-url-' . uniqid() . '/' ) );
+
+		$this->assertTrue( is_404(), 'Expected the request to resolve to a 404.' );
+	}
+
+	/**
 	 * Test that inject_view_category_event does nothing when pixel is disabled.
 	 *
 	 * @covers WC_Facebookcommerce_EventsTracker::inject_view_category_event

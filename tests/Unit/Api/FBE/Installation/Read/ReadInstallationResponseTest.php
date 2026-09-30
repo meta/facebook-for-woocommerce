@@ -185,6 +185,37 @@ class ReadInstallationResponseTest extends AbstractWPUnitTestWithOptionIsolation
 	}
 
 	/**
+	 * Test get_catalog_id only returns string or integer IDs, as a string.
+	 *
+	 * @dataProvider catalog_id_type_provider
+	 *
+	 * @param mixed  $catalog_id Decoded catalog_id value.
+	 * @param string $expected   Expected return value.
+	 */
+	public function test_get_catalog_id_type_safety( $catalog_id, string $expected ) {
+		$data     = json_encode( [ 'data' => [ [ 'catalog_id' => $catalog_id ] ] ] );
+		$response = new Response( $data );
+
+		$this->assertSame( $expected, $response->get_catalog_id() );
+	}
+
+	/**
+	 * Data provider for test_get_catalog_id_type_safety.
+	 *
+	 * @return array
+	 */
+	public function catalog_id_type_provider(): array {
+		return [
+			'string' => [ '1234567890123', '1234567890123' ],
+			'int'    => [ 1234567890123, '1234567890123' ],
+			'array'  => [ [ '1234567890123' ], '' ],
+			'null'   => [ null, '' ],
+			'float'  => [ 1.5, '' ],
+			'bool'   => [ true, '' ],
+		];
+	}
+
+	/**
 	 * Test get_page_id method with array.
 	 */
 	public function test_get_page_id_with_array() {

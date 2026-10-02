@@ -32,6 +32,7 @@ class ConfigurationTest extends AbstractWPUnitTestWithSafeFiltering {
 		delete_option( self::SWITCHES_OPTION );
 		delete_option( \WC_Facebookcommerce_Integration::SETTING_ENABLE_OFFLINE_PURCHASE_EVENTS );
 		delete_option( \WC_Facebookcommerce_Integration::OPTION_OFFLINE_PURCHASE_EVENTS_OPTED_IN_AT );
+		delete_option( \WC_Facebookcommerce_Integration::SETTING_ENABLE_CAPIG );
 		$_POST = array();
 
 		parent::tearDown();
@@ -369,5 +370,51 @@ class ConfigurationTest extends AbstractWPUnitTestWithSafeFiltering {
 
 		$this->assertSame( 'no', get_option( \WC_Facebookcommerce_Integration::SETTING_ENABLE_OFFLINE_PURCHASE_EVENTS ) );
 		$this->assertSame( 0, (int) get_option( \WC_Facebookcommerce_Integration::OPTION_OFFLINE_PURCHASE_EVENTS_OPTED_IN_AT, 0 ) );
+	}
+
+	private function capig_setting(): ?array {
+		return $this->find_setting(
+			Configuration::get_plugin_settings(),
+			'wc_facebook_enable_capig'
+		);
+	}
+
+	public function test_capig_setting_is_present_and_defaults_to_opted_in() {
+		$setting = $this->capig_setting();
+
+		$this->assertNotNull( $setting );
+		$this->assertSame( 'checkbox', $setting['type'] );
+		$this->assertSame( 'yes', $setting['default'] );
+		$this->assertSame( 'Opt in to a Meta-enabled Conversions API integration', $setting['title'] );
+		$this->assertArrayNotHasKey( 'disabled', $setting );
+	}
+
+	public function test_capig_description_links_the_terms_the_merchant_agrees_to() {
+		$desc = $this->capig_setting()['desc'];
+
+		$this->assertStringContainsString( 'https://www.facebook.com/legal/terms', $desc );
+		$this->assertStringContainsString( 'https://www.facebook.com/legal/technology_terms', $desc );
+	}
+
+	public function test_capig_description_survives_woocommerce_sanitization() {
+		$desc = $this->capig_setting()['desc'];
+
+		$this->assertSame( $desc, wp_kses_post( $desc ) );
+	}
+
+	public function test_unticking_capig_opts_out() {
+		update_option( \WC_Facebookcommerce_Integration::SETTING_ENABLE_CAPIG, 'yes' );
+
+		$this->save_screen( array() );
+
+		$this->assertSame( 'no', get_option( \WC_Facebookcommerce_Integration::SETTING_ENABLE_CAPIG ) );
+	}
+
+	public function test_ticking_capig_opts_back_in() {
+		update_option( \WC_Facebookcommerce_Integration::SETTING_ENABLE_CAPIG, 'no' );
+
+		$this->save_screen( array( \WC_Facebookcommerce_Integration::SETTING_ENABLE_CAPIG => '1' ) );
+
+		$this->assertSame( 'yes', get_option( \WC_Facebookcommerce_Integration::SETTING_ENABLE_CAPIG ) );
 	}
 }

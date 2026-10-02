@@ -262,6 +262,21 @@ class Configuration extends Abstract_Settings_Screen {
 			);
 		}
 
+		$settings[] = array(
+			'id'      => \WC_Facebookcommerce_Integration::SETTING_ENABLE_CAPIG,
+			'title'   => __( 'Opt in to a Meta-enabled Conversions API integration', 'facebook-for-woocommerce' ),
+			'type'    => 'checkbox',
+			'desc'    => sprintf(
+				/* translators: %1$s and %2$s open and close the Platform Terms link; %3$s and %4$s open and close the Business Tools Terms link. */
+				__( 'You hereby authorize and instruct Meta to set up a Meta-enabled Conversions API integration on your behalf, and you agree that your use of the integration will be subject to Meta\'s %1$sPlatform Terms%2$s and %3$sBusiness Tools Terms%4$s.', 'facebook-for-woocommerce' ),
+				'<a href="https://www.facebook.com/legal/terms" target="_blank" rel="noopener noreferrer">',
+				'</a>',
+				'<a href="https://www.facebook.com/legal/technology_terms" target="_blank" rel="noopener noreferrer">',
+				'</a>'
+			),
+			'default' => \WC_Facebookcommerce_Integration::SETTING_ENABLE_CAPIG_DEFAULT,
+		);
+
 		// This setting, its option and filter, and how it behaves while no POS plugin is
 		// active are documented in docs/offline-events.md ("Turning it on"). Keep that
 		// section in step when changing them.

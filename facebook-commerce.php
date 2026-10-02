@@ -111,6 +111,20 @@ class WC_Facebookcommerce_Integration extends WC_Integration {
 	/** @var string the "enable offline purchase events" setting ID */
 	const SETTING_ENABLE_OFFLINE_PURCHASE_EVENTS = 'wc_facebook_enable_offline_purchase_events';
 
+	/**
+	 * The "Meta-enabled Conversions API integration" setting ID.
+	 *
+	 * CAPIG (Conversions API Gateway) is the Meta-enabled integration; internal
+	 * names use it to keep a clear distinction from CAPI, the plugin's own direct
+	 * server-to-server integration.
+	 *
+	 * @var string
+	 */
+	const SETTING_ENABLE_CAPIG = 'wc_facebook_enable_capig';
+
+	/** @var string the default for the Meta-enabled Conversions API integration: opted in */
+	const SETTING_ENABLE_CAPIG_DEFAULT = 'yes';
+
 	/** @var string when the merchant last opted in to offline purchase events, as a Unix timestamp */
 	const OPTION_OFFLINE_PURCHASE_EVENTS_OPTED_IN_AT = 'wc_facebook_offline_purchase_events_opted_in_at';
 
@@ -3037,6 +3051,30 @@ class WC_Facebookcommerce_Integration extends WC_Integration {
 		return (bool) apply_filters(
 			'wc_facebook_is_offline_purchase_events_enabled',
 			'yes' === get_option( self::SETTING_ENABLE_OFFLINE_PURCHASE_EVENTS, 'no' ),
+			$this
+		);
+	}
+
+	/**
+	 * Determines whether the merchant has opted in to the Meta-enabled Conversions API integration.
+	 *
+	 * When opted in, the pixel emits fbq('optinMetaEnabledCapi', <pixel id>) before
+	 * initialising, authorising Meta to set up the integration (Conversions API
+	 * Gateway). It is opted in by default, so a missing option — a fresh install, or
+	 * an upgrade from a version without the setting — counts as opted in.
+	 *
+	 * @return bool
+	 */
+	public function is_capig_enabled(): bool {
+		/**
+		 * Filters whether the Meta-enabled Conversions API integration is opted in to.
+		 *
+		 * @param bool                             $is_enabled  whether the integration is opted in to
+		 * @param \WC_Facebookcommerce_Integration $integration the integration instance
+		 */
+		return (bool) apply_filters(
+			'wc_facebook_is_capig_enabled',
+			'yes' === get_option( self::SETTING_ENABLE_CAPIG, self::SETTING_ENABLE_CAPIG_DEFAULT ),
 			$this
 		);
 	}

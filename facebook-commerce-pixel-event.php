@@ -361,7 +361,8 @@ class WC_Facebookcommerce_Pixel {
 					ajaxUrl: <?php echo wp_json_encode( admin_url( 'admin-ajax.php' ) ); ?>,
 					action: 'facebook_release_signals',
 					pixelId: <?php echo wp_json_encode( self::get_pixel_id() ); ?>,
-					attribution: {}
+					attribution: {},
+					capig: <?php echo wp_json_encode( self::is_capig_enabled() ); ?>
 				});
 				FacebookSignals.initPixel(
 					<?php echo wp_json_encode( self::get_pixel_id() ); ?>,
@@ -478,6 +479,11 @@ window.FacebookSignals = window.FacebookSignals || {
 
 	_runPixelInit: function() {
 		if (this._pixelInitialized || !this._pixelId || typeof fbq !== 'function') return;
+		// The merchant's opt-in to the Meta-enabled Conversions API integration (CAPIG)
+		// has to reach Meta before the pixel initialises.
+		if (this._config.capig === true) {
+			fbq('optinMetaEnabledCapi', this._pixelId);
+		}
 		fbq('init', this._pixelId, this._pixelUserInfo, this._pixelOptions);
 		this._pixelInitialized = true;
 		this._flushPendingPixelEvents();
@@ -1156,6 +1162,24 @@ JS;
 		 * @param string $event The event name.
 		 */
 		return (array) apply_filters( 'wc_facebook_pixel_params', $params, $event );
+	}
+
+
+		/**
+		 * Determines whether the merchant opted in to the Meta-enabled Conversions API integration.
+		 *
+		 * Reads WC_Facebookcommerce_Integration::is_capig_enabled(), which applies the
+		 * setting's opted-in default and its filter. Falls back to that default if the
+		 * integration is not available yet.
+		 *
+		 * @return bool
+		 */
+	private static function is_capig_enabled() {
+		if ( function_exists( 'facebook_for_woocommerce' ) && facebook_for_woocommerce()->get_integration() ) {
+			return facebook_for_woocommerce()->get_integration()->is_capig_enabled();
+		}
+
+		return 'yes' === WC_Facebookcommerce_Integration::SETTING_ENABLE_CAPIG_DEFAULT;
 	}
 
 

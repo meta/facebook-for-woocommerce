@@ -364,6 +364,56 @@ class FacebookCommerceTest extends \WooCommerce\Facebook\Tests\AbstractWPUnitTes
 	}
 
 	/**
+	 * Tests is_capig_enabled defaults to opted in.
+	 *
+	 * The Meta-enabled Conversions API integration is on unless the merchant opts out.
+	 *
+	 * @return void
+	 */
+	public function test_is_capig_enabled_default_value() {
+		$this->teardown_callback_category_safely( 'wc_facebook_is_capig_enabled' );
+		delete_option( WC_Facebookcommerce_Integration::SETTING_ENABLE_CAPIG );
+
+		$result = $this->integration->is_capig_enabled();
+
+		$this->assertTrue( $result );
+	}
+
+	/**
+	 * Tests is_capig_enabled returns false once the merchant opts out.
+	 *
+	 * @return void
+	 */
+	public function test_is_capig_enabled_option_value() {
+		$this->teardown_callback_category_safely( 'wc_facebook_is_capig_enabled' );
+		add_option( WC_Facebookcommerce_Integration::SETTING_ENABLE_CAPIG, 'no' );
+
+		$result = $this->integration->is_capig_enabled();
+
+		$this->assertFalse( $result );
+	}
+
+	/**
+	 * Tests is_capig_enabled with filter override.
+	 *
+	 * @return void
+	 */
+	public function test_is_capig_enabled_with_filter() {
+		$this->add_filter_with_safe_teardown(
+			'wc_facebook_is_capig_enabled',
+			function ( $is_enabled ) {
+				return false;
+			}
+		);
+
+		delete_option( WC_Facebookcommerce_Integration::SETTING_ENABLE_CAPIG );
+
+		$result = $this->integration->is_capig_enabled();
+
+		$this->assertFalse( $result );
+	}
+
+	/**
 	 * Tests is_meta_diagnosis_enabled returns option value.
 	 *
 	 * @return void

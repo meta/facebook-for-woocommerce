@@ -101,6 +101,7 @@ class FacebookCommerceEventsTrackerTest extends AbstractWPUnitTestWithSafeFilter
 		remove_action( 'woocommerce_process_shop_order_meta', array( $this->instance, 'inject_purchase_event' ), 20 );
 		remove_action( 'woocommerce_checkout_update_order_meta', array( $this->instance, 'inject_purchase_event' ), 30 );
 		remove_action( 'woocommerce_thankyou', array( $this->instance, 'inject_purchase_event' ), 40 );
+		remove_action( 'shutdown', array( $this->instance, 'inject_deferred_purchase_events' ), 5 );
 	}
 
 	/**
@@ -610,8 +611,12 @@ class FacebookCommerceEventsTrackerTest extends AbstractWPUnitTestWithSafeFilter
 		$this->instance = $this->create_tracker_with_pixel_enabled();
 		$this->remove_purchase_hooks();
 
-		// Create a valid order with processing status
+		// Create a valid order with processing status and a line item.
+		$product = new \WC_Product_Simple();
+		$product->set_regular_price( 100 );
+		$product->save();
 		$order = wc_create_order();
+		$order->add_product( $product, 1 );
 		$order->set_status( 'processing' );
 		$order->set_total( 100 );
 		$order->save();
@@ -691,8 +696,12 @@ class FacebookCommerceEventsTrackerTest extends AbstractWPUnitTestWithSafeFilter
 
 		// Server hook first, fired by WooCommerce while it creates the order (as in a
 		// real checkout). Tracking metadata is saved once that save has finished.
+		$product = new \WC_Product_Simple();
+		$product->set_regular_price( 100 );
+		$product->save();
 		add_action( 'woocommerce_new_order', array( $this->instance, 'inject_purchase_event' ), 10, 2 );
 		$order = new \WC_Order();
+		$order->add_product( $product, 1 );
 		$order->set_status( 'processing' );
 		$order->set_total( 100 );
 		$order->save();
@@ -716,11 +725,13 @@ class FacebookCommerceEventsTrackerTest extends AbstractWPUnitTestWithSafeFilter
 	}
 
 	/**
-	 * Test that renewal-order meta copy excludes Purchase tracking keys.
+	 * Test that subscription-generated orders do not inherit Purchase tracking keys.
 	 *
+	 * @dataProvider subscription_order_copy_hooks
+	 * @param string $hook Subscription order data-copy filter.
 	 * @covers WC_Facebookcommerce_EventsTracker::exclude_purchase_tracking_meta_from_renewal_orders
 	 */
-	public function test_exclude_purchase_tracking_meta_from_renewal_orders_removes_tracking_keys(): void {
+	public function test_exclude_purchase_tracking_meta_from_renewal_orders_removes_tracking_keys( string $hook ): void {
 		$this->instance = $this->create_tracker_with_pixel_enabled();
 
 		$data = array(
@@ -742,12 +753,21 @@ class FacebookCommerceEventsTrackerTest extends AbstractWPUnitTestWithSafeFilter
 			->getMock();
 		$from_subscription->method( 'get_type' )->willReturn( 'shop_subscription' );
 
-		$result = $this->instance->exclude_purchase_tracking_meta_from_renewal_orders( $data, $to_order, $from_subscription );
+		$result = apply_filters( $hook, $data, $to_order, $from_subscription );
 
 		$this->assertArrayNotHasKey( '_meta_purchase_tracked_server', $result );
 		$this->assertArrayNotHasKey( '_meta_purchase_tracked_browser', $result );
 		$this->assertArrayNotHasKey( '_meta_event_id', $result );
 		$this->assertArrayHasKey( '_subscription_renewal', $result );
+	}
+
+	/** @return array */
+	public function subscription_order_copy_hooks(): array {
+		return array(
+			'renewal'     => array( 'wc_subscriptions_renewal_order_data' ),
+			'resubscribe' => array( 'wc_subscriptions_resubscribe_order_data' ),
+			'parent'      => array( 'wc_subscriptions_parent_data' ),
+		);
 	}
 
 	/**

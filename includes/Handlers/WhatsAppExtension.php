@@ -172,7 +172,7 @@ class WhatsAppExtension {
 			wc_get_logger()->info(
 				sprintf(
 				/* translators: %s $order_id */
-					__( 'Customer Events Post API call for Order id %1$s Failed due to failed connection ', 'facebook-for-woocommerce' ),
+					__( 'WhatsApp utility message for order %1$s not sent: WhatsApp is not connected.', 'facebook-for-woocommerce' ),
 					$order_id,
 				)
 			);
@@ -195,7 +195,7 @@ class WhatsAppExtension {
 			wc_get_logger()->info(
 				sprintf(
 				/* translators: %s $order_id */
-					__( 'Customer Events Post API call for Order id %1$s skipped: WhatsApp onboarding not complete.', 'facebook-for-woocommerce' ),
+					__( 'WhatsApp utility message for order %1$s not sent: WhatsApp onboarding is not complete.', 'facebook-for-woocommerce' ),
 					$order_id,
 				)
 			);
@@ -256,8 +256,8 @@ class WhatsAppExtension {
 			$error_message = $response_object->detail ?? $response_object->title ?? 'Something went wrong. Please try again later!';
 			wc_get_logger()->info(
 				sprintf(
-				/* translators: %s $order_id %s $error_message */
-					__( 'Customer Events Post API call for Order id %1$s Failed %2$s ', 'facebook-for-woocommerce' ),
+				/* translators: %1$s order ID, %2$s error message */
+					__( 'WhatsApp utility message for order %1$s failed: %2$s', 'facebook-for-woocommerce' ),
 					$order_id,
 					$error_message,
 				)
@@ -266,7 +266,7 @@ class WhatsAppExtension {
 			wc_get_logger()->info(
 				sprintf(
 				/* translators: %s $order_id */
-					__( 'Customer Events Post API call for Order id %1$s Succeeded.', 'facebook-for-woocommerce' ),
+					__( 'WhatsApp utility message for order %1$s sent.', 'facebook-for-woocommerce' ),
 					$order_id
 				)
 			);

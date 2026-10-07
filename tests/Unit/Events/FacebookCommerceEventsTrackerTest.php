@@ -1441,6 +1441,32 @@ class FacebookCommerceEventsTrackerTest extends AbstractWPUnitTestWithSafeFilter
 		$product->delete( true );
 	}
 	/**
+	 * Test that the add to cart fragment script is guarded against WooCommerce replaying it.
+	 *
+	 * @covers WC_Facebookcommerce_EventsTracker::add_add_to_cart_event_fragment
+	 */
+	public function test_add_add_to_cart_event_fragment_fires_once_per_browser_session(): void {
+		$this->instance = $this->create_tracker_with_pixel_enabled();
+
+		$product = \WC_Helper_Product::create_simple_product();
+		WC()->session->set( 'facebook_for_woocommerce_add_to_cart_event_id', 'atc-event-123' );
+		$_POST['product_id'] = $product->get_id();
+		$_POST['quantity']   = 2;
+
+		$fragments = $this->instance->add_add_to_cart_event_fragment( array() );
+		$script    = $fragments['div.wc-facebook-pixel-event-placeholder'];
+
+		$this->assertStringContainsString( "'wc_facebook_pixel_fired_fragment_events'", $script );
+		$this->assertStringContainsString( 'id = "atc-event-123"', $script );
+		$this->assertStringContainsString( "fbq('track', 'AddToCart'", $script );
+
+		// Clean up
+		unset( $_POST['product_id'], $_POST['quantity'] );
+		WC()->session->set( 'facebook_for_woocommerce_add_to_cart_event_id', null );
+		$product->delete( true );
+	}
+
+	/**
 	 * Test that is_crawler_request detects known crawler user agents.
 	 *
 	 * @covers WC_Facebookcommerce_EventsTracker::is_crawler_request

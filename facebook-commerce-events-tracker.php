@@ -1160,7 +1160,9 @@ if ( ! class_exists( 'WC_Facebookcommerce_EventsTracker' ) ) :
 				$params['event_id'] = $event_id;
 			}
 
-			$script = $this->pixel->get_event_script( 'AddToCart', $params );
+			// WooCommerce stores this fragment in sessionStorage and replays it on later
+			// page loads, so the script must fire only once per event ID.
+			$script = $this->pixel->get_cart_fragment_event_script( 'AddToCart', $params );
 
 			$fragments['div.wc-facebook-pixel-event-placeholder'] = '<div class="wc-facebook-pixel-event-placeholder">' . $script . '</div>';
 

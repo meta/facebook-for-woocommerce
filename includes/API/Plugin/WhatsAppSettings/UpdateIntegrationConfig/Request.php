@@ -83,7 +83,7 @@ class Request extends RESTRequest {
 	public function validate() {
 
 		if ( empty( $this->get_param( 'integration_config_id' ) ) ) {
-			wc_get_logger()->info(
+			wc_get_logger()->warning(
 				sprintf(
 					__( 'Failed to updateWhatsAppSettingsIntegrationConfig since integration_config_id param is missing.', 'facebook-for-woocommerce' ),
 				)

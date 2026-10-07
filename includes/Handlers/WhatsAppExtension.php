@@ -53,7 +53,7 @@ class WhatsAppExtension {
 	 */
 	public static function generate_wa_iframe_splash_url( $plugin, $external_wa_id ): string {
 		$whatsapp_connection = $plugin->get_whatsapp_connection_handler();
-		wc_get_logger()->info(
+		wc_get_logger()->debug(
 			sprintf(
 				__( 'WhatsApp Utility Messages Iframe Splash Url Fetched.', 'facebook-for-woocommerce' ),
 			)
@@ -88,7 +88,7 @@ class WhatsAppExtension {
 		$whatsapp_connection = $plugin->get_whatsapp_connection_handler();
 		$is_connected        = $whatsapp_connection->is_connected();
 		if ( ! $is_connected ) {
-			wc_get_logger()->info(
+			wc_get_logger()->debug(
 				sprintf(
 					__( 'WhatsApp Utility Messages Iframe Management Url failed to fetch due to failed WhatsApp connection', 'facebook-for-woocommerce' ),
 				)
@@ -118,7 +118,7 @@ class WhatsAppExtension {
 		$response_object = json_decode( $data[0] );
 		if ( is_wp_error( $response ) || 200 !== $status_code ) {
 			$error_message = $response_object->detail ?? $response_object->title ?? 'Something went wrong. Please try again later!';
-			wc_get_logger()->info(
+			wc_get_logger()->error(
 				sprintf(
 				/* translators: %s $wa_installation_id %s $error_message */
 					__( 'Failed to fetch iframe Management URI. wa_installation_id: %1$s, error message: %2$s', 'facebook-for-woocommerce' ),
@@ -128,7 +128,7 @@ class WhatsAppExtension {
 			);
 			return '';
 		} else {
-			wc_get_logger()->info(
+			wc_get_logger()->debug(
 				sprintf(
 					__( 'WhatsApp Utility Messages Iframe Management Url successfully fetched', 'facebook-for-woocommerce' ),
 				)
@@ -228,7 +228,7 @@ class WhatsAppExtension {
 					$event_base_object['rich_order_status'] = $rich_status;
 				}
 			} catch ( \Throwable $e ) {
-				wc_get_logger()->info( 'Error building rich_order_status: ' . $e->getMessage() );
+				wc_get_logger()->warning( 'Error building rich_order_status: ' . $e->getMessage() );
 			}
 		}
 		$options = array(
@@ -254,7 +254,7 @@ class WhatsAppExtension {
 		$response_object = json_decode( $data[0] );
 		if ( is_wp_error( $response ) || 200 !== $status_code ) {
 			$error_message = $response_object->detail ?? $response_object->title ?? 'Something went wrong. Please try again later!';
-			wc_get_logger()->info(
+			wc_get_logger()->error(
 				sprintf(
 				/* translators: %1$s order ID, %2$s error message */
 					__( 'WhatsApp utility message for order %1$s failed: %2$s', 'facebook-for-woocommerce' ),
@@ -325,7 +325,7 @@ class WhatsAppExtension {
 
 		if ( is_wp_error( $response ) ) {
 			// Fail open: leave state UNKNOWN so the gate keeps sending.
-			wc_get_logger()->info(
+			wc_get_logger()->warning(
 				sprintf(
 					/* translators: %s error message */
 					__( 'WhatsApp onboarding backfill HEAD request failed: %s', 'facebook-for-woocommerce' ),
@@ -386,7 +386,7 @@ class WhatsAppExtension {
 							}
 						}
 					} catch ( \Throwable $e ) {
-						wc_get_logger()->info( 'Error fetching product image: ' . $e->getMessage() );
+						wc_get_logger()->debug( 'Error fetching product image: ' . $e->getMessage() );
 					}
 				}
 				$item_arr['image_url']         = $image_url;

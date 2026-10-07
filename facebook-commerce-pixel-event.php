@@ -1108,8 +1108,16 @@ JS;
 	 * Wraps event code so it runs at most once per event ID in a browser session.
 	 *
 	 * The IDs already fired are kept in sessionStorage, which is per tab and survives page
-	 * loads, exactly like the cart fragments WooCommerce replays. Without an event ID, or
-	 * when sessionStorage is unavailable, the code runs as it did before.
+	 * loads, exactly like the cart fragments WooCommerce replays. The ID is recorded after
+	 * the code has run: if the code throws (for example a consent tool blocked the base pixel
+	 * and fbq is undefined) nothing is recorded and the next replay retries. The wrapper is
+	 * synchronous, so there is no window for a double fire. Without an event ID, or when
+	 * sessionStorage is unavailable, the code runs as it did before.
+	 *
+	 * This store is separate from the wc_facebook_signals_seen_event_ids store that
+	 * FacebookSignals keeps for queued events: that one is consulted only while signals
+	 * are held, and FacebookSignals may not be loaded at all. This guard has to work in
+	 * both states and without it, so the two are not meant to be unified.
 	 *
 	 * @since 3.7.9
 	 *
@@ -1128,15 +1136,15 @@ JS;
 			"var key = 'wc_facebook_pixel_fired_fragment_events', id = %s, seen = {};\n" .
 			"try { seen = JSON.parse(window.sessionStorage.getItem(key) || '{}') || {}; } catch (e) {}\n" .
 			"if (seen[id]) { return; }\n" .
+			"%s\n" .
 			"seen[id] = 1;\n" .
 			"var ids = Object.keys(seen);\n" .
 			"for (var i = 0; i < ids.length - %d; i++) { delete seen[ids[i]]; }\n" .
 			"try { window.sessionStorage.setItem(key, JSON.stringify(seen)); } catch (e) {}\n" .
-			"%s\n" .
 			'})();',
 			wp_json_encode( $event_id ),
-			self::FRAGMENT_EVENT_IDS_LIMIT,
-			$code
+			$code,
+			self::FRAGMENT_EVENT_IDS_LIMIT
 		);
 	}
 

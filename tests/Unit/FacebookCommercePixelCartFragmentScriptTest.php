@@ -6,6 +6,7 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+use WooCommerce\Facebook\Events\FacebookSignalsState;
 use WooCommerce\Facebook\Tests\AbstractWPUnitTestWithOptionIsolationAndSafeFiltering;
 
 /**
@@ -18,6 +19,16 @@ use WooCommerce\Facebook\Tests\AbstractWPUnitTestWithOptionIsolationAndSafeFilte
  */
 class FacebookCommercePixelCartFragmentScriptTest extends AbstractWPUnitTestWithOptionIsolationAndSafeFiltering {
 
+	public function setUp(): void {
+		parent::setUp();
+		FacebookSignalsState::release();
+	}
+
+	public function tearDown(): void {
+		FacebookSignalsState::release();
+		parent::tearDown();
+	}
+
 	private function params_with_event_id( string $event_id = 'atc-event-123' ): array {
 		return array(
 			'content_ids'  => array( 'PROD123' ),
@@ -26,11 +37,13 @@ class FacebookCommercePixelCartFragmentScriptTest extends AbstractWPUnitTestWith
 		);
 	}
 
+	private const GUARD_OPEN = "var key = 'wc_facebook_pixel_fired_fragment_events', id = \"atc-event-123\"";
+
 	public function test_fragment_script_fires_once_per_browser_session(): void {
 		$script = ( new WC_Facebookcommerce_Pixel() )->get_cart_fragment_event_script( 'AddToCart', $this->params_with_event_id() );
 
 		$this->assertStringContainsString( '<script', $script );
-		$this->assertStringContainsString( "var key = 'wc_facebook_pixel_fired_fragment_events', id = \"atc-event-123\"", $script );
+		$this->assertStringContainsString( self::GUARD_OPEN, $script );
 		$this->assertStringContainsString( 'if (seen[id]) { return; }', $script );
 		$this->assertStringContainsString( 'window.sessionStorage.setItem(key, JSON.stringify(seen))', $script );
 		$this->assertStringContainsString( "fbq('track', 'AddToCart'", $script );
@@ -49,6 +62,25 @@ class FacebookCommercePixelCartFragmentScriptTest extends AbstractWPUnitTestWith
 		$this->assertStringContainsString( "fbq('track', 'AddToCart'", $script );
 	}
 
+	/** While signals are held the fragment queues the event instead of firing it, still once per session. */
+	public function test_fragment_script_while_held_queues_once_per_browser_session(): void {
+		FacebookSignalsState::hold();
+
+		$script = ( new WC_Facebookcommerce_Pixel() )->get_cart_fragment_event_script( 'AddToCart', $this->params_with_event_id() );
+
+		$guard_at = strpos( $script, self::GUARD_OPEN );
+		$queue_at = strpos( $script, 'FacebookSignals.queueEvent(' );
+		$mark_at  = strpos( $script, 'seen[id] = 1;' );
+
+		$this->assertNotFalse( $guard_at );
+		$this->assertNotFalse( $queue_at );
+		$this->assertNotFalse( $mark_at );
+		$this->assertStringNotContainsString( "fbq('track'", $script, 'Held signals must queue, not fire.' );
+		$this->assertStringContainsString( '"event_id":"atc-event-123"', $script, 'The queued event keeps its ID.' );
+		$this->assertLessThan( $queue_at, $guard_at );
+		$this->assertLessThan( $mark_at, $queue_at, 'The ID is recorded after the queue call, so a throw lets the next replay retry.' );
+	}
+
 	public function test_guard_wraps_the_code_and_caps_the_stored_ids(): void {
 		$code = WC_Facebookcommerce_Pixel::guard_once_per_browser_session( 'atc-event-123', 'fireTheEvent();' );
 
@@ -56,6 +88,8 @@ class FacebookCommercePixelCartFragmentScriptTest extends AbstractWPUnitTestWith
 		$this->assertStringEndsWith( '})();', $code );
 		$this->assertStringContainsString( 'fireTheEvent();', $code );
 		$this->assertStringContainsString( 'ids.length - ' . WC_Facebookcommerce_Pixel::FRAGMENT_EVENT_IDS_LIMIT, $code );
+		// The ID is recorded after the code has run, so a throw (fbq undefined, for example) lets the next replay retry.
+		$this->assertLessThan( strpos( $code, 'seen[id] = 1;' ), strpos( $code, 'fireTheEvent();' ) );
 	}
 
 	public function test_guard_leaves_code_without_event_id_unchanged(): void {
@@ -66,7 +100,7 @@ class FacebookCommercePixelCartFragmentScriptTest extends AbstractWPUnitTestWith
 		$script = ( new WC_Facebookcommerce_Pixel() )->get_conditional_one_time_event_script( 'AddToCart', $this->params_with_event_id(), 'added_to_cart' );
 
 		$handler_at = strpos( $script, 'function handleAddToCartEvent() {' );
-		$guard_at   = strpos( $script, "var key = 'wc_facebook_pixel_fired_fragment_events', id = \"atc-event-123\"" );
+		$guard_at   = strpos( $script, self::GUARD_OPEN );
 		$fire_at    = strpos( $script, "fbq('track', 'AddToCart'" );
 
 		$this->assertNotFalse( $handler_at );
@@ -74,5 +108,23 @@ class FacebookCommercePixelCartFragmentScriptTest extends AbstractWPUnitTestWith
 		$this->assertNotFalse( $fire_at );
 		$this->assertLessThan( $guard_at, $handler_at, 'The guard must sit inside the handler, so a replayed listener is a no-op.' );
 		$this->assertLessThan( $fire_at, $guard_at );
+	}
+
+	/** While signals are held the conditional handler tracks through FacebookSignals, inside the same guard. */
+	public function test_conditional_script_while_held_guards_its_handler(): void {
+		FacebookSignalsState::hold();
+
+		$script = ( new WC_Facebookcommerce_Pixel() )->get_conditional_one_time_event_script( 'AddToCart', $this->params_with_event_id(), 'added_to_cart' );
+
+		$handler_at = strpos( $script, 'function handleAddToCartEvent() {' );
+		$guard_at   = strpos( $script, self::GUARD_OPEN );
+		$track_at   = strpos( $script, 'FacebookSignals.trackEvent("AddToCart"' );
+
+		$this->assertNotFalse( $handler_at );
+		$this->assertNotFalse( $guard_at );
+		$this->assertNotFalse( $track_at );
+		$this->assertStringNotContainsString( "fbq('track'", $script, 'Held signals must queue, not fire.' );
+		$this->assertLessThan( $guard_at, $handler_at );
+		$this->assertLessThan( $track_at, $guard_at );
 	}
 }

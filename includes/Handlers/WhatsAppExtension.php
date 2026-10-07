@@ -169,7 +169,7 @@ class WhatsAppExtension {
 		$whatsapp_connection = $plugin->get_whatsapp_connection_handler();
 		$is_connected        = $whatsapp_connection->is_connected();
 		if ( ! $is_connected ) {
-			wc_get_logger()->info(
+			wc_get_logger()->debug(
 				sprintf(
 				/* translators: %s $order_id */
 					__( 'WhatsApp utility message for order %1$s not sent: WhatsApp is not connected.', 'facebook-for-woocommerce' ),

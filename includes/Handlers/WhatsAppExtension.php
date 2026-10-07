@@ -263,7 +263,7 @@ class WhatsAppExtension {
 				)
 			);
 		} else {
-			wc_get_logger()->info(
+			wc_get_logger()->debug(
 				sprintf(
 				/* translators: %s $order_id */
 					__( 'WhatsApp utility message for order %1$s sent.', 'facebook-for-woocommerce' ),

@@ -19,6 +19,7 @@ use WooCommerce\Facebook\Products;
 use WooCommerce\Facebook\Products\Sync;
 use WooCommerce\Facebook\Framework\Api\Exception as ApiException;
 use WooCommerce\Facebook\Framework\Logger;
+use WooCommerce\Facebook\Integrations\WPML;
 
 // Include the localization trait
 require_once __DIR__ . '/Localization_Settings_Trait.php';
@@ -250,6 +251,77 @@ class Product_Sync extends Abstract_Settings_Screen {
 
 
 	/**
+	 * Gets the id => name options for the exclusion multiselect of a taxonomy.
+	 *
+	 * The list has to contain every term in every language, plus every term that is already
+	 * saved as excluded. Polylang and WPML narrow term queries to the admin's current
+	 * language, so a saved exclusion for a term in another language, or in none, was not
+	 * rendered and the multiselect silently dropped it on the next save. An empty 'lang'
+	 * is Polylang's documented way to lift its filter and core ignores the argument; the
+	 * caller runs this with WPML on 'all' languages. Saved IDs the query still misses are
+	 * added through get_term(), which looks a term up by ID. That lookup has to run under
+	 * 'all' too: with its "adjust IDs" option WPML swaps a term for its translation in the
+	 * current language in AJAX and front-end requests.
+	 *
+	 * @since 3.7.9
+	 *
+	 * @param string $taxonomy  product_cat or product_tag
+	 * @param array  $saved_ids term IDs saved as excluded, read from the raw option: the
+	 *                          integration getters return the IDs in effect, which is empty
+	 *                          under the all-products rollout switch, while WooCommerce marks
+	 *                          the multiselect's selection from the raw option
+	 * @return array term ID => term name
+	 */
+	private function get_term_options( string $taxonomy, array $saved_ids ): array {
+		$terms   = get_terms(
+			array(
+				'taxonomy'     => $taxonomy,
+				'hide_empty'   => false,
+				'hierarchical' => false,
+				'fields'       => 'id=>name',
+				'lang'         => '',
+			)
+		);
+		$options = is_array( $terms ) ? $terms : array();
+
+		foreach ( $saved_ids as $saved_id ) {
+			$saved_id = (int) $saved_id;
+			if ( $saved_id > 0 && ! isset( $options[ $saved_id ] ) ) {
+				$term = get_term( $saved_id, $taxonomy );
+				if ( $term instanceof \WP_Term ) {
+					$options[ $term->term_id ] = $term->name;
+				}
+			}
+		}
+
+		return $options;
+	}
+
+
+	/**
+	 * Gets the id => name options for both exclusion multiselects, keyed by taxonomy.
+	 *
+	 * Both lists, including the by-ID lookups of saved exclusions, are built inside one
+	 * WPML switch to 'all' languages; see get_term_options() for why that is needed.
+	 *
+	 * @since 3.7.9
+	 *
+	 * @return array taxonomy => ( term ID => term name )
+	 */
+	private function get_exclusion_options(): array {
+		return WPML::run_in_language(
+			'all',
+			function () {
+				return array(
+					'product_cat' => $this->get_term_options( 'product_cat', (array) get_option( \WC_Facebookcommerce_Integration::SETTING_EXCLUDED_PRODUCT_CATEGORY_IDS, array() ) ),
+					'product_tag' => $this->get_term_options( 'product_tag', (array) get_option( \WC_Facebookcommerce_Integration::SETTING_EXCLUDED_PRODUCT_TAG_IDS, array() ) ),
+				);
+			}
+		);
+	}
+
+
+	/**
 	 * Gets the screen settings.
 	 *
 	 * @since 2.0.0
@@ -257,24 +329,8 @@ class Product_Sync extends Abstract_Settings_Screen {
 	 * @return array
 	 */
 	public function get_settings(): array {
-		$term_query         = new \WP_Term_Query(
-			array(
-				'taxonomy'   => 'product_cat',
-				'hide_empty' => false,
-				'fields'     => 'id=>name',
-			)
-		);
-		$product_categories = $term_query->get_terms();
-		$term_query         = new \WP_Term_Query(
-			array(
-				'taxonomy'     => 'product_tag',
-				'hide_empty'   => false,
-				'hierarchical' => false,
-				'fields'       => 'id=>name',
-			)
-		);
-		$product_tags       = $term_query->get_terms();
-		$settings           = array(
+		$exclusion_options = $this->get_exclusion_options();
+		$settings          = array(
 			array(
 				'type'  => 'product_sync_title',
 				'title' => __( 'Product sync', 'facebook-for-woocommerce' ),
@@ -296,7 +352,7 @@ class Product_Sync extends Abstract_Settings_Screen {
 				'css'               => 'min-width: 300px;',
 				'desc_tip'          => __( 'Products in any of these categories will not sync to Facebook.', 'facebook-for-woocommerce' ),
 				'default'           => array(),
-				'options'           => is_array( $product_categories ) ? $product_categories : array(),
+				'options'           => $exclusion_options['product_cat'],
 				'custom_attributes' => array(
 					'data-placeholder' => __( 'Search for a product category&hellip;', 'facebook-for-woocommerce' ),
 				),
@@ -310,7 +366,7 @@ class Product_Sync extends Abstract_Settings_Screen {
 				'css'               => 'min-width: 300px;',
 				'desc_tip'          => __( 'Products with any of these tags will not sync to Facebook.', 'facebook-for-woocommerce' ),
 				'default'           => array(),
-				'options'           => is_array( $product_tags ) ? $product_tags : array(),
+				'options'           => $exclusion_options['product_tag'],
 				'custom_attributes' => array(
 					'data-placeholder' => __( 'Search for a product tag&hellip;', 'facebook-for-woocommerce' ),
 				),

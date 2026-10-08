@@ -21,6 +21,35 @@ use WooCommerce\Facebook\Tests\AbstractWPUnitTestWithOptionIsolationAndSafeFilte
 class EventTest extends AbstractWPUnitTestWithOptionIsolationAndSafeFiltering {
 
 	/**
+	 * The request URI in place before the test, restored afterwards.
+	 *
+	 * @var string|null
+	 */
+	private $original_request_uri;
+
+	/**
+	 * Remembers the request URI so that tests can replace or unset it freely.
+	 */
+	public function setUp(): void {
+		parent::setUp();
+
+		$this->original_request_uri = isset( $_SERVER['REQUEST_URI'] ) ? $_SERVER['REQUEST_URI'] : null;
+	}
+
+	/**
+	 * Puts back the request URI that was in place before the test.
+	 */
+	public function tearDown(): void {
+		if ( null === $this->original_request_uri ) {
+			unset( $_SERVER['REQUEST_URI'] );
+		} else {
+			$_SERVER['REQUEST_URI'] = $this->original_request_uri;
+		}
+
+		parent::tearDown();
+	}
+
+	/**
 	 * Test that the class exists.
 	 */
 	public function test_class_exists() {
@@ -519,4 +548,85 @@ class EventTest extends AbstractWPUnitTestWithOptionIsolationAndSafeFiltering {
 		$this->assertArrayHasKey( 'em', $data['user_data'] );
 		$this->assertEquals( hash( 'sha256', 'test@example.com', false ), $data['user_data']['em'] );
 	}
-} 
+
+	/**
+	 * Makes the event see the given home URL and request URI, as on a real page load.
+	 *
+	 * @param string      $home_url    Value returned by home_url(), e.g. WPML's language-prefixed home.
+	 * @param string|null $request_uri Value of $_SERVER['REQUEST_URI'], or null to leave it unset.
+	 */
+	private function simulate_page_request( string $home_url, ?string $request_uri ): void {
+		if ( null === $request_uri ) {
+			unset( $_SERVER['REQUEST_URI'] );
+		} else {
+			$_SERVER['REQUEST_URI'] = $request_uri;
+		}
+
+		$this->add_filter_with_safe_teardown(
+			'home_url',
+			function () use ( $home_url ) {
+				return $home_url;
+			}
+		);
+	}
+
+	/**
+	 * Test that event_source_url is the page URL even when home_url() carries a path or query.
+	 *
+	 * WPML serving languages from directories or from a ?lang= parameter, and WordPress
+	 * installed in a subdirectory, all put a prefix in home_url() that REQUEST_URI already
+	 * contains. Appending home_url() as a whole used to repeat it (/fr//fr/page/).
+	 *
+	 * @dataProvider provider_event_source_url_page_loads
+	 *
+	 * @param string $home_url    Value of home_url() during the request.
+	 * @param string $request_uri Value of $_SERVER['REQUEST_URI'].
+	 * @param string $expected    Expected event_source_url.
+	 */
+	public function test_event_source_url_uses_home_origin_and_request_uri( string $home_url, string $request_uri, string $expected ) {
+		$this->simulate_page_request( $home_url, $request_uri );
+
+		$event = new Event( array( 'event_name' => 'PageView' ) );
+
+		$this->assertSame( $expected, $event->get_data()['event_source_url'] );
+	}
+
+	/**
+	 * Data provider for test_event_source_url_uses_home_origin_and_request_uri.
+	 *
+	 * @return array[]
+	 */
+	public static function provider_event_source_url_page_loads(): array {
+		return array(
+			'home at the domain root'                 => array( 'https://example.com', '/shop/', 'https://example.com/shop/' ),
+			'WPML language directory'                 => array( 'https://example.com/sr', '/sr/shop/?x=1', 'https://example.com/sr/shop/?x=1' ),
+			'WPML language directory, trailing slash' => array( 'https://example.com/fr/', '/fr/gallery/landscape/', 'https://example.com/fr/gallery/landscape/' ),
+			'WPML language parameter'                 => array( 'https://example.com/?lang=sr', '/shop/?lang=sr', 'https://example.com/shop/?lang=sr' ),
+			'WordPress in a subdirectory with a port' => array( 'http://example.com:8080/store', '/store/product/hat/', 'http://example.com:8080/store/product/hat/' ),
+		);
+	}
+
+	/**
+	 * Test that without a request URI the event falls back to the home origin alone.
+	 */
+	public function test_event_source_url_without_request_uri_is_home_origin() {
+		$this->simulate_page_request( 'https://example.com/sr', null );
+
+		$event = new Event( array( 'event_name' => 'PageView' ) );
+
+		$this->assertSame( 'https://example.com', $event->get_data()['event_source_url'] );
+	}
+
+	/**
+	 * Test that a home URL without a host is used as it is rather than reduced to an origin.
+	 *
+	 * Only a filter can produce such a home URL. Reducing it would give "https:///shop/".
+	 */
+	public function test_event_source_url_keeps_home_url_without_a_host() {
+		$this->simulate_page_request( '', '/shop/' );
+
+		$event = new Event( array( 'event_name' => 'PageView' ) );
+
+		$this->assertSame( '/shop/', $event->get_data()['event_source_url'] );
+	}
+}

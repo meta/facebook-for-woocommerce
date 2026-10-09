@@ -42,7 +42,6 @@ class AsyncRequestTest extends WP_UnitTestCase {
         remove_filter('pre_http_request', [$this, 'interceptHttpRequest'], 10);
 
         unset( $_COOKIE[ LOGGED_IN_COOKIE ] );
-        wp_set_current_user( 0 );
         
         parent::tearDown();
     }
@@ -228,17 +227,49 @@ class AsyncRequestTest extends WP_UnitTestCase {
      * another plugin left a different user set as the current user, as can happen during WP-Cron.
      */
     public function test_nonce_is_created_for_logged_out_user_when_no_cookie_is_forwarded() {
+        $this->assert_nonce_is_created_for_logged_out_user( null );
+    }
+
+    /**
+     * Tests that the nonce is created for a logged-out user when the forwarded logged-in cookie is malformed.
+     */
+    public function test_nonce_is_created_for_logged_out_user_when_cookie_is_malformed() {
+        $this->assert_nonce_is_created_for_logged_out_user( 'not-a-valid-cookie' );
+    }
+
+    /**
+     * Tests that the nonce is created for a logged-out user when the forwarded logged-in cookie has expired.
+     */
+    public function test_nonce_is_created_for_logged_out_user_when_cookie_is_expired() {
+        $user_id = self::factory()->user->create();
+
+        // expired beyond the one-hour grace period that Ajax and POST requests get
+        $this->assert_nonce_is_created_for_logged_out_user( wp_generate_auth_cookie( $user_id, time() - 2 * HOUR_IN_SECONDS, 'logged_in' ) );
+    }
+
+    /**
+     * Asserts that, with the given logged-in cookie (or none) and a different user set as the current user, the nonce
+     * verifies for a logged-out user and the current user is restored afterwards.
+     *
+     * @param string|null $cookie logged-in cookie to set, or null for none
+     */
+    private function assert_nonce_is_created_for_logged_out_user( ?string $cookie ) {
         $request = $this->get_request();
         $user_id = self::factory()->user->create();
 
-        unset( $_COOKIE[ LOGGED_IN_COOKIE ] );
+        if ( null === $cookie ) {
+            unset( $_COOKIE[ LOGGED_IN_COOKIE ] );
+        } else {
+            $_COOKIE[ LOGGED_IN_COOKIE ] = $cookie;
+        }
+
         wp_set_current_user( $user_id );
 
         $nonce = $this->invokeMethod( $request, 'get_query_args' )['nonce'];
 
         $this->assertSame( $user_id, get_current_user_id(), 'The current user should be restored after creating the nonce' );
 
-        // the async request is handled as a logged-out user when no cookie is forwarded
+        // the async request is handled as a logged-out user when the forwarded cookies authenticate nobody
         wp_set_current_user( 0 );
 
         $this->assertNotFalse( wp_verify_nonce( $nonce, 'test_test_action' ), 'The nonce should verify for a logged-out user' );

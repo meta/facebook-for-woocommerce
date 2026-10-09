@@ -40,6 +40,9 @@ class AsyncRequestTest extends WP_UnitTestCase {
     protected function tearDown(): void {
         // Remove our filter
         remove_filter('pre_http_request', [$this, 'interceptHttpRequest'], 10);
+
+        unset( $_COOKIE[ LOGGED_IN_COOKIE ] );
+        wp_set_current_user( 0 );
         
         parent::tearDown();
     }
@@ -220,6 +223,92 @@ class AsyncRequestTest extends WP_UnitTestCase {
         }
     }
     
+    /**
+     * Tests that the nonce is created for a logged-out user when there is no logged-in cookie to forward, even if
+     * another plugin left a different user set as the current user, as can happen during WP-Cron.
+     */
+    public function test_nonce_is_created_for_logged_out_user_when_no_cookie_is_forwarded() {
+        $request = $this->get_request();
+        $user_id = self::factory()->user->create();
+
+        unset( $_COOKIE[ LOGGED_IN_COOKIE ] );
+        wp_set_current_user( $user_id );
+
+        $nonce = $this->invokeMethod( $request, 'get_query_args' )['nonce'];
+
+        $this->assertSame( $user_id, get_current_user_id(), 'The current user should be restored after creating the nonce' );
+
+        // the async request is handled as a logged-out user when no cookie is forwarded
+        wp_set_current_user( 0 );
+
+        $this->assertNotFalse( wp_verify_nonce( $nonce, 'test_test_action' ), 'The nonce should verify for a logged-out user' );
+    }
+
+    /**
+     * Tests that the nonce is created for the user authenticated by the forwarded logged-in cookie.
+     */
+    public function test_nonce_is_created_for_cookie_user_when_cookie_is_forwarded() {
+        $request = $this->get_request();
+        $user_id = self::factory()->user->create();
+
+        $_COOKIE[ LOGGED_IN_COOKIE ] = wp_generate_auth_cookie( $user_id, time() + DAY_IN_SECONDS, 'logged_in' );
+        wp_set_current_user( $user_id );
+
+        $nonce = $this->invokeMethod( $request, 'get_query_args' )['nonce'];
+
+        $this->assertNotFalse( wp_verify_nonce( $nonce, 'test_test_action' ), 'The nonce should verify for the cookie user' );
+
+        wp_set_current_user( 0 );
+
+        $this->assertFalse( wp_verify_nonce( $nonce, 'test_test_action' ), 'The nonce should not verify for a logged-out user' );
+    }
+
+    /**
+     * Tests that the nonce is created for the cookie user even when the current user was switched to someone else.
+     */
+    public function test_nonce_is_created_for_cookie_user_when_current_user_was_switched() {
+        $request       = $this->get_request();
+        $cookie_user   = self::factory()->user->create();
+        $switched_user = self::factory()->user->create();
+
+        $_COOKIE[ LOGGED_IN_COOKIE ] = wp_generate_auth_cookie( $cookie_user, time() + DAY_IN_SECONDS, 'logged_in' );
+        wp_set_current_user( $switched_user );
+
+        $nonce = $this->invokeMethod( $request, 'get_query_args' )['nonce'];
+
+        $this->assertSame( $switched_user, get_current_user_id(), 'The current user should be restored after creating the nonce' );
+
+        wp_set_current_user( $cookie_user );
+
+        $this->assertNotFalse( wp_verify_nonce( $nonce, 'test_test_action' ), 'The nonce should verify for the cookie user' );
+    }
+
+    /**
+     * Tests that the nonce is the one WordPress would create when the current user already is the request user.
+     */
+    public function test_nonce_is_unchanged_when_current_user_is_the_request_user() {
+        $request = $this->get_request();
+
+        unset( $_COOKIE[ LOGGED_IN_COOKIE ] );
+        wp_set_current_user( 0 );
+
+        $this->assertSame( wp_create_nonce( 'test_test_action' ), $this->invokeMethod( $request, 'get_query_args' )['nonce'] );
+    }
+
+    /**
+     * Gets a minimal async request for the tests above.
+     */
+    private function get_request(): AsyncRequest {
+        return new class extends AsyncRequest {
+            protected $prefix = 'test';
+            protected $action = 'test_action';
+
+            protected function handle() {
+                // No-op for testing
+            }
+        };
+    }
+
     /**
      * Helper method to invoke protected/private methods
      */

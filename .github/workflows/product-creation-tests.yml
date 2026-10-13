@@ -36,6 +36,8 @@ env:
   WP_DEBUG_LOG: '/tmp/wordpress/wp-content/debug.log'
   WC_LOG_PATH: '/tmp/wordpress/wp-content/uploads/wc-logs/'
   PLUGIN_PATH: '/tmp/wordpress/wp-content/plugins/facebook-for-woocommerce'
+  # WordPress, WooCommerce, themes, plugins and WP-CLI downloaded once by prepare-dependencies
+  WP_DEPS_DIR: '/tmp/wp-deps'
   FB_E2E_TEST_COOKIE_NAME: 'facebook_test_id'
   FB_E2E_LOGGER_PATH: '/tests/e2e/helpers/php/event-logger.php'
   FB_E2E_CAPTURED_EVENTS_DIR: '/tests/e2e/helpers/captured-events'
@@ -119,9 +121,118 @@ jobs:
           echo "wc-supported=$WC_VERSION" >> $GITHUB_OUTPUT
           echo "Resolved versions — WP: $WP_VERSION, WC: $WC_VERSION"
 
+  # Downloads every WordPress.org and WP-CLI dependency once and shares it with all E2E shards
+  # as an artifact. When the runner cannot reach WordPress.org, this one job fails and the shards
+  # are skipped, instead of random shards failing mid-setup with misleading errors.
+  prepare-dependencies:
+    name: Download WordPress dependencies
+    needs: [check-secrets, resolve-versions]
+    if: ${{ needs.check-secrets.outputs.secrets-configured == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Resolve and download WordPress, WooCommerce, themes, plugins and WP-CLI
+        env:
+          WP_SUPPORTED: ${{ needs.resolve-versions.outputs.wp-supported }}
+          WC_SUPPORTED: ${{ needs.resolve-versions.outputs.wc-supported }}
+          USE_MARKETPLACE_VERSION: ${{ inputs.use-marketplace-version }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$WP_DEPS_DIR"
+          cd "$WP_DEPS_DIR"
+
+          # Downloads a URL to a file, trying 3 times, 5 seconds apart.
+          fetch() {
+            local url="$1" dest="$2" attempt
+            for attempt in 1 2 3; do
+              if curl -fsSL --connect-timeout 15 --max-time 300 -o "$dest" "$url"; then
+                return 0
+              fi
+              echo "::warning::Attempt $attempt/3 to download $url failed"
+              if [ "$attempt" -lt 3 ]; then
+                sleep 5
+              fi
+            done
+            echo "::error title=Dependency download failed::Could not download $url after 3 attempts. The runner could not reach the host, re-run the workflow."
+            return 1
+          }
+
+          # Downloads <name>.zip from the download_link of a WordPress.org plugin or theme API response.
+          fetch_package() {
+            local api_url="$1" name="$2" link
+            fetch "$api_url" "$name.json"
+            link=$(jq -r '.download_link // empty' "$name.json")
+            if [ -z "$link" ]; then
+              echo "::error title=Dependency lookup failed::WordPress.org returned no download link for $name"
+              return 1
+            fi
+            fetch "$link" "$name.zip"
+            echo "$name: $(jq -r '.version' "$name.json")" >> versions.txt
+          }
+
+          # WordPress core
+          fetch "https://wordpress.org/wordpress-${WP_SUPPORTED}.tar.gz" wordpress-supported.tar.gz
+          fetch "https://wordpress.org/latest.tar.gz" wordpress-latest.tar.gz
+
+          # WooCommerce: the latest release, and the newest patch release of the supported
+          # major.minor (e.g. 10.5 → 10.5.2)
+          fetch "https://api.wordpress.org/plugins/info/1.0/woocommerce.json" woocommerce.json
+          WC_SUPPORTED_RESOLVED=$(jq -r --arg prefix "${WC_SUPPORTED}." '[.versions | keys[] | select(startswith($prefix)) | select(test("-") | not)] | sort_by(split(".") | map(tonumber)) | last' woocommerce.json)
+          if [ -z "$WC_SUPPORTED_RESOLVED" ] || [ "$WC_SUPPORTED_RESOLVED" = "null" ]; then
+            WC_SUPPORTED_RESOLVED="$WC_SUPPORTED"
+          fi
+          WC_SUPPORTED_LINK=$(jq -r --arg version "$WC_SUPPORTED_RESOLVED" '.versions[$version] // empty' woocommerce.json)
+          if [ -z "$WC_SUPPORTED_LINK" ]; then
+            echo "::error title=WooCommerce version not found::WooCommerce $WC_SUPPORTED_RESOLVED is not available on WordPress.org"
+            exit 1
+          fi
+          fetch "$(jq -r '.download_link' woocommerce.json)" woocommerce-latest.zip
+          fetch "$WC_SUPPORTED_LINK" woocommerce-supported.zip
+          echo "woocommerce: latest $(jq -r '.version' woocommerce.json), supported $WC_SUPPORTED → $WC_SUPPORTED_RESOLVED" >> versions.txt
+
+          # Themes and plugins
+          fetch_package "https://api.wordpress.org/themes/info/1.2/?action=theme_information&request%5Bslug%5D=storefront" storefront
+          fetch_package "https://api.wordpress.org/themes/info/1.2/?action=theme_information&request%5Bslug%5D=twentytwentyfive" twentytwentyfive
+          fetch_package "https://api.wordpress.org/plugins/info/1.0/wpc-composite-products.json" wpc-composite-products
+
+          if [ "$USE_MARKETPLACE_VERSION" = "true" ]; then
+            # The trunk build, as installed by `wp plugin install facebook-for-woocommerce --version=dev`
+            fetch "https://downloads.wordpress.org/plugin/facebook-for-woocommerce.zip" facebook-for-woocommerce.zip
+          fi
+
+          # WP-CLI
+          fetch "https://github.com/wp-cli/wp-cli/releases/download/v2.10.0/wp-cli-2.10.0.phar" wp-cli.phar
+          if ! head -1 wp-cli.phar | grep -q "#!/usr/bin/env php"; then
+            echo "::error title=Dependency download failed::The downloaded wp-cli.phar is not a PHP archive"
+            exit 1
+          fi
+
+          # Catch truncated downloads or error pages served with a 200 status
+          for archive in *.tar.gz; do
+            tar -tzf "$archive" > /dev/null || { echo "::error title=Dependency download failed::$archive is not a valid archive"; exit 1; }
+          done
+          for archive in *.zip; do
+            unzip -tq "$archive" > /dev/null || { echo "::error title=Dependency download failed::$archive is not a valid archive"; exit 1; }
+          done
+
+          rm -f ./*.json
+          cat versions.txt
+          ls -lh
+
+      - name: Share dependencies with the E2E shards
+        uses: actions/upload-artifact@v5
+        with:
+          name: wp-dependencies
+          path: ${{ env.WP_DEPS_DIR }}
+          if-no-files-found: error
+          # Archives are already compressed
+          compression-level: 0
+          # Re-running only the failed shards needs this artifact; after it expires, re-run all jobs
+          retention-days: 3
+
   e2e-tests:
     name: E2E Tests - ${{ matrix.version-label }} - ${{ matrix.test-group }}
-    needs: [check-secrets, resolve-versions]
+    needs: [check-secrets, resolve-versions, prepare-dependencies]
     if: ${{ needs.check-secrets.outputs.secrets-configured == 'true' }}
     # Run every shard on the standard GitHub-hosted runner. We previously
     # pinned plugin-events/product-crud to a `4-core-ubuntu-22.04` larger-runner
@@ -169,6 +280,12 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v5
 
+      - name: Download WordPress dependencies
+        uses: actions/download-artifact@v5
+        with:
+          name: wp-dependencies
+          path: ${{ env.WP_DEPS_DIR }}
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
@@ -201,14 +318,8 @@ jobs:
           mkdir -p ${{ env.WORDPRESS_PATH }}
           cd ${{ env.WORDPRESS_PATH }}
 
-          # Download WordPress
-          if [ "${{ matrix.wp-version }}" = "latest" ]; then
-            curl -O https://wordpress.org/latest.tar.gz
-            tar -xzf latest.tar.gz --strip-components=1
-          else
-            curl -O https://wordpress.org/wordpress-${{ matrix.wp-version }}.tar.gz
-            tar -xzf wordpress-${{ matrix.wp-version }}.tar.gz --strip-components=1
-          fi
+          # Extract WordPress, downloaded by the prepare-dependencies job
+          tar -xzf ${{ env.WP_DEPS_DIR }}/wordpress-${{ matrix.version-set }}.tar.gz --strip-components=1
 
           # Create wp-config.php
           cp wp-config-sample.php wp-config.php
@@ -266,16 +377,9 @@ jobs:
       - name: Install WP-CLI
         run: |
           echo "=== Installing WP-CLI ==="
-          curl -L -o wp-cli.phar https://github.com/wp-cli/wp-cli/releases/download/v2.10.0/wp-cli-2.10.0.phar
-
-          if head -1 wp-cli.phar | grep -q "#!/usr/bin/env php"; then
-            chmod +x wp-cli.phar
-            sudo mv wp-cli.phar /usr/local/bin/wp
-            echo "✅ WP-CLI installed successfully"
-          else
-            echo "❌ Downloaded file is not valid PHP"
-            exit 1
-          fi
+          # Downloaded and verified by the prepare-dependencies job
+          sudo install -m 0755 ${{ env.WP_DEPS_DIR }}/wp-cli.phar /usr/local/bin/wp
+          echo "✅ WP-CLI installed successfully"
 
           wp --version
 
@@ -294,23 +398,16 @@ jobs:
         run: |
           cd ${{ env.WORDPRESS_PATH }}
 
+          # Themes and WooCommerce were downloaded by the prepare-dependencies job, which also
+          # resolved the supported WooCommerce major.minor to its latest patch version
           # Install Storefront theme (official WooCommerce theme with all hooks)
-          wp theme install storefront --activate --allow-root
+          wp theme install ${{ env.WP_DEPS_DIR }}/storefront.zip --activate --allow-root
           echo "✅ Storefront theme installed and activated"
-          # Install Twenty Twenty-Five theme (default WP theme to ensure compatibility with non-WooCommerce themes)
-          wp theme install twentytwentyfive --allow-root
+          # Install Twenty Twenty-Five theme (default WP theme to ensure compatibility with non-WooCommerce themes).
+          # Recent WordPress releases bundle it, and installing a zip over an existing theme fails.
+          wp theme is-installed twentytwentyfive --allow-root || wp theme install ${{ env.WP_DEPS_DIR }}/twentytwentyfive.zip --allow-root
           echo "✅ Twenty Twenty-Five theme installed"
-          if [ "${{ matrix.wc-version }}" = "latest" ]; then
-            wp plugin install woocommerce --activate --allow-root
-          else
-            # Resolve major.minor to the latest patch version (e.g., 10.5 → 10.5.2)
-            WC_INSTALL_VERSION=$(curl -s 'https://api.wordpress.org/plugins/info/1.0/woocommerce.json' | jq -r --arg prefix "${{ matrix.wc-version }}." '[.versions | keys[] | select(startswith($prefix)) | select(test("-") | not)] | sort_by(split(".") | map(tonumber)) | last')
-            if [ -z "$WC_INSTALL_VERSION" ] || [ "$WC_INSTALL_VERSION" = "null" ]; then
-              WC_INSTALL_VERSION="${{ matrix.wc-version }}"
-            fi
-            echo "Resolved WC version: ${{ matrix.wc-version }} → $WC_INSTALL_VERSION"
-            wp plugin install woocommerce --version=$WC_INSTALL_VERSION --activate --allow-root
-          fi
+          wp plugin install ${{ env.WP_DEPS_DIR }}/woocommerce-${{ matrix.version-set }}.zip --activate --allow-root
 
           # Basic WooCommerce setup
           wp option update woocommerce_store_address "${{ env.STORE_ADDRESS }}" --allow-root
@@ -401,7 +498,7 @@ jobs:
       - name: Install WPC Composite Products plugin
         run: |
           cd ${{ env.WORDPRESS_PATH }}
-          wp plugin install wpc-composite-products --activate --allow-root
+          wp plugin install ${{ env.WP_DEPS_DIR }}/wpc-composite-products.zip --activate --allow-root
 
       - name: Check logs baseline (before plugin activation)
         run: |
@@ -486,7 +583,7 @@ jobs:
           # Use marketplace version if flag is true
           if [ "${{ inputs.use-marketplace-version }}" = "true" ]; then
             echo "Installing Meta for WooCommerce from wordpress.org marketplace"
-            wp plugin install facebook-for-woocommerce --version=dev --allow-root
+            wp plugin install ${{ env.WP_DEPS_DIR }}/facebook-for-woocommerce.zip --allow-root
           else
             echo "Installing Meta for WooCommerce from local workspace"
             # Copy plugin files from the checked out repository root

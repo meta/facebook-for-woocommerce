@@ -24,6 +24,37 @@ use WooCommerce\Facebook\Tests\AbstractWPUnitTestWithOptionIsolationAndSafeFilte
  */
 class HandlerFinalizeInstallTest extends AbstractWPUnitTestWithOptionIsolationAndSafeFiltering {
 
+	/** @var array Checkout setup requests sent to Graph: [ url, method, decoded body ]. */
+	private $checkout_requests = array();
+
+	/** @var array|\WP_Error Response returned for checkout setup requests. */
+	private $checkout_response;
+
+	/**
+	 * Intercepts checkout setup requests so no test reaches Graph.
+	 */
+	public function setUp(): void {
+		parent::setUp();
+		$this->checkout_response = array(
+			'response' => array( 'code' => 200, 'message' => 'OK' ),
+			'body'     => '{"success":true}',
+		);
+		$this->add_filter_with_safe_teardown(
+			'pre_http_request',
+			function( $preempt, $args, $url ) {
+				if ( false === strpos( (string) $url, '/cms-' ) ) {
+					return $preempt;
+				}
+
+				$this->checkout_requests[] = array( $url, $args['method'], json_decode( $args['body'], true ) );
+
+				return $this->checkout_response;
+			},
+			10,
+			3
+		);
+	}
+
 	/**
 	 * Cleans up shared transient state.
 	 */
@@ -192,6 +223,90 @@ class HandlerFinalizeInstallTest extends AbstractWPUnitTestWithOptionIsolationAn
 		$this->assertSame( 'server_error', $log['extra_data']['failure_reason'] );
 		$this->assertSame( 503, $log['extra_data']['http_status'] );
 		$this->assertStringNotContainsString( 'fresh-suat', wp_json_encode( $log ) );
+		$this->assertSame( array(), $this->checkout_requests, 'Checkout is only set up after finalize-install succeeds.' );
+	}
+
+	/**
+	 * Tests that a successful finalize-install sets up checkout for the integration country.
+	 */
+	public function test_successful_finalize_sets_up_checkout_for_the_integration_country(): void {
+		$this->finalize_with_response( array( 'country_code' => 'GB' ) );
+
+		$this->assertSame(
+			array(
+				array(
+					'checkout_config' => array(
+						'checkout_url' => site_url( '/checkout-link/' ),
+						'country_code' => 'GB',
+						'publish_shop' => true,
+					),
+				),
+			),
+			array_column( $this->checkout_requests, 2 )
+		);
+		$this->assertSame( 'POST', $this->checkout_requests[0][1] );
+		$this->assertStringEndsWith( '/cms-final', wp_parse_url( $this->checkout_requests[0][0], PHP_URL_PATH ) );
+		$this->assertSame( 'success', $this->find_checkout_setup_log()['event_type'] );
+	}
+
+	/**
+	 * Tests that checkout falls back to the store's base country when the integration has none.
+	 */
+	public function test_checkout_setup_falls_back_to_the_store_base_country(): void {
+		$this->mock_set_option( 'woocommerce_default_country', 'CA' );
+
+		$this->finalize_with_response( array() );
+
+		$this->assertCount( 1, $this->checkout_requests );
+		$this->assertSame( 'CA', $this->checkout_requests[0][2]['checkout_config']['country_code'] );
+	}
+
+	/**
+	 * Tests that checkout is skipped without a Commerce Merchant Settings ID.
+	 */
+	public function test_checkout_setup_is_skipped_without_a_commerce_merchant_settings_id(): void {
+		$this->finalize_with_response( array( 'commerce_merchant_settings_id' => '' ) );
+
+		$this->assertSame( array(), $this->checkout_requests );
+		$this->assertSame( 'skipped', $this->find_checkout_setup_log()['event_type'] );
+	}
+
+	/**
+	 * Tests that a failed checkout setup is logged and never fails the installation.
+	 *
+	 * @dataProvider checkout_setup_failure_provider
+	 *
+	 * @param array|\WP_Error $checkout_response Response returned for the checkout setup request.
+	 * @param string          $expected_error Error recorded in the log.
+	 */
+	public function test_checkout_setup_failure_does_not_fail_the_install( $checkout_response, string $expected_error ): void {
+		$this->checkout_response = $checkout_response;
+
+		$response = $this->finalize_with_response( array( 'country_code' => 'US' ) );
+
+		$this->assertSame( 200, $response->get_status() );
+		$this->assertOptionUpdated( \WC_Facebookcommerce_Integration::OPTION_COMMERCE_MERCHANT_SETTINGS_ID, 'cms-final' );
+		$log = $this->find_checkout_setup_log();
+		$this->assertSame( 'failed', $log['event_type'] );
+		$this->assertStringContainsString( $expected_error, $log['extra_data']['error'] );
+	}
+
+	/**
+	 * Checkout setup failure modes: a Graph error response and a transport error.
+	 *
+	 * @return array
+	 */
+	public function checkout_setup_failure_provider(): array {
+		return array(
+			'graph error'     => array(
+				array(
+					'response' => array( 'code' => 400, 'message' => 'Bad Request' ),
+					'body'     => '{"error":{"message":"Invalid parameter","type":"OAuthException","code":100}}',
+				),
+				'Invalid parameter',
+			),
+			'transport error' => array( new \WP_Error( 'http_request_failed', 'Connection timed out.' ), 'Connection timed out.' ),
+		);
 	}
 
 	/**
@@ -366,6 +481,56 @@ class HandlerFinalizeInstallTest extends AbstractWPUnitTestWithOptionIsolationAn
 		}
 
 		$this->fail( 'Finalize-install log was not queued.' );
+	}
+
+	/**
+	 * Runs a finalize-install that succeeds with the given response fields.
+	 *
+	 * @param array $fields Finalize-install response fields overriding the defaults.
+	 * @return \WP_REST_Response
+	 */
+	private function finalize_with_response( array $fields ): \WP_REST_Response {
+		$this->set_external_business_id( 'store-ebid-123' );
+		$this->mock_set_option( Logger::SETTING_ENABLE_META_DIAGNOSIS, 'yes' );
+
+		$client = $this->createMock( Client::class );
+		$client->method( 'finalize_install' )->willReturn(
+			new FinalizeResponse(
+				wp_json_encode(
+					array_merge(
+						array(
+							'id'                            => 'cpi-final',
+							'external_business_id'          => 'store-ebid-123',
+							'installation_status'           => 'ACCESS_TOKEN_DEPOSITED',
+							'commerce_merchant_settings_id' => 'cms-final',
+						),
+						$fields
+					)
+				)
+			)
+		);
+
+		return ( new Handler( $client ) )->handle_finalize_install(
+			$this->create_update_request( array( 'access_token' => 'fresh-suat' ) )
+		);
+	}
+
+	/**
+	 * Finds the checkout setup event in the Meta logging queue.
+	 *
+	 * @return array
+	 */
+	private function find_checkout_setup_log(): array {
+		$logs = get_transient( Logger::LOGGING_MESSAGE_QUEUE );
+		$this->assertIsArray( $logs );
+
+		foreach ( $logs as $log ) {
+			if ( 'commerce_merchant_settings_checkout_setup' === ( $log['event'] ?? '' ) ) {
+				return $log;
+			}
+		}
+
+		$this->fail( 'Checkout setup log was not queued.' );
 	}
 
 	/**

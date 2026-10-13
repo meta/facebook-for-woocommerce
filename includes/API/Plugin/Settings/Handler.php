@@ -17,6 +17,7 @@ use WooCommerce\Facebook\API\Plugin\Settings\FinalizeInstall\Request as Finalize
 use WooCommerce\Facebook\API\Plugin\Settings\Update\Request as UpdateRequest;
 use WooCommerce\Facebook\API\Plugin\Settings\Uninstall\Request as UninstallRequest;
 use WooCommerce\Facebook\Framework\Logger;
+use WooCommerce\Facebook\Framework\Plugin\Compatibility;
 
 defined( 'ABSPATH' ) || exit;
 
@@ -174,6 +175,11 @@ class Handler extends AbstractRESTEndpoint {
 			unset( $settings_data['access_token'] );
 
 			$this->apply_installation_settings( $settings_data, ! empty( $resolved_assets['pixel_id'] ) );
+
+			// No resolved assets means finalize-install failed and the legacy install message was used.
+			if ( ! empty( $resolved_assets ) ) {
+				$this->set_up_checkout( (string) ( $settings_data['commerce_merchant_settings_id'] ?? '' ), $resolved_assets['country_code'] ?? '' );
+			}
 
 			return $this->success_response(
 				[
@@ -358,6 +364,65 @@ class Handler extends AbstractRESTEndpoint {
 				'should_send_log_to_meta'        => true,
 				'should_save_log_in_woocommerce' => true,
 				'woocommerce_log_level'          => \WC_Log_Levels::DEBUG,
+			)
+		);
+	}
+
+	/**
+	 * Sets the store's checkout URL on its Commerce Merchant Settings and publishes the shop.
+	 *
+	 * Meta's checkout sends buyers to WooCommerce's native /checkout-link/ endpoint with the
+	 * cart in its query string. A failure is logged and never fails the installation.
+	 *
+	 * @since 3.7.8
+	 *
+	 * @param string $commerce_merchant_settings_id Commerce Merchant Settings ID.
+	 * @param string $country_code Integration country; the store's base country when empty.
+	 * @return void
+	 */
+	private function set_up_checkout( string $commerce_merchant_settings_id, string $country_code ) {
+		$country_code = '' !== $country_code ? $country_code : (string) WC()->countries->get_base_country();
+		$outcome      = 'success';
+		$error        = '';
+
+		// WooCommerce serves /checkout-link/ from 10.0, so older stores have no checkout URL to give Meta.
+		if ( '' === $commerce_merchant_settings_id || '' === $country_code || ! Compatibility::is_wc_version_gte( '10.0' ) ) {
+			$outcome = 'skipped';
+		} else {
+			try {
+				$response = facebook_for_woocommerce()->get_api()->set_up_checkout(
+					$commerce_merchant_settings_id,
+					site_url( '/checkout-link/' ),
+					$country_code
+				);
+
+				// Graph errors come back as a response rather than an exception.
+				if ( $response->has_api_error() ) {
+					$outcome = 'failed';
+					$error   = (string) $response->get_api_error_message();
+				}
+			} catch ( \Exception $exception ) {
+				$outcome = 'failed';
+				$error   = $exception->getMessage();
+			}
+		}
+
+		Logger::log(
+			'Commerce Merchant Settings checkout setup outcome.',
+			array(
+				'event'      => 'commerce_merchant_settings_checkout_setup',
+				'event_type' => $outcome,
+				'extra_data' => array(
+					'commerce_merchant_settings_id' => $commerce_merchant_settings_id,
+					'country_code'                  => $country_code,
+					'wc_version'                    => (string) Compatibility::get_wc_version(),
+					'error'                         => $error,
+				),
+			),
+			array(
+				'should_send_log_to_meta'        => true,
+				'should_save_log_in_woocommerce' => true,
+				'woocommerce_log_level'          => 'failed' === $outcome ? \WC_Log_Levels::ERROR : \WC_Log_Levels::DEBUG,
 			)
 		);
 	}

@@ -603,18 +603,27 @@ class EventTest extends AbstractWPUnitTestWithOptionIsolationAndSafeFiltering {
 			'WPML language directory, trailing slash' => array( 'https://example.com/fr/', '/fr/gallery/landscape/', 'https://example.com/fr/gallery/landscape/' ),
 			'WPML language parameter'                 => array( 'https://example.com/?lang=sr', '/shop/?lang=sr', 'https://example.com/shop/?lang=sr' ),
 			'WordPress in a subdirectory with a port' => array( 'http://example.com:8080/store', '/store/product/hat/', 'http://example.com:8080/store/product/hat/' ),
+			'multi-level subdomain with a port'       => array( 'https://www.shop.example.com:8080', '/product/hat/', 'https://www.shop.example.com:8080/product/hat/' ),
+			'multi-level subdomain, port and WPML language directory' => array( 'https://www.shop.example.co.uk:8443/fr', '/fr/product/hat/', 'https://www.shop.example.co.uk:8443/fr/product/hat/' ),
+			'localhost with a port, WordPress in a subdirectory' => array( 'http://localhost:8888/wp', '/wp/shop/', 'http://localhost:8888/wp/shop/' ),
+			'home path removed from the request URI by a proxy' => array( 'https://example.com/blog', '/my-post/', 'https://example.com/blog/my-post/' ),
+			'multi-level subdomain and port, home path removed by a proxy' => array( 'https://www.shop.example.com:8080/blog', '/my-post/', 'https://www.shop.example.com:8080/blog/my-post/' ),
+			'home path is only a prefix of the first request segment' => array( 'https://example.com/store', '/storefront/', 'https://example.com/store/storefront/' ),
+			'home path in a different case in the request URI' => array( 'https://example.com/fr', '/FR/page/', 'https://example.com/FR/page/' ),
+			'absolute-form request URI'               => array( 'https://example.com/sr', 'https://example.com/sr/shop/?x=1', 'https://example.com/sr/shop/?x=1' ),
+			'absolute-form request URI with an internal host' => array( 'https://example.com/sr', 'http://backend:8080/sr/shop/', 'https://example.com/sr/shop/' ),
 		);
 	}
 
 	/**
-	 * Test that without a request URI the event falls back to the home origin alone.
+	 * Test that without a request URI the event falls back to the home URL, path included.
 	 */
-	public function test_event_source_url_without_request_uri_is_home_origin() {
+	public function test_event_source_url_without_request_uri_is_home_url() {
 		$this->simulate_page_request( 'https://example.com/sr', null );
 
 		$event = new Event( array( 'event_name' => 'PageView' ) );
 
-		$this->assertSame( 'https://example.com', $event->get_data()['event_source_url'] );
+		$this->assertSame( 'https://example.com/sr', $event->get_data()['event_source_url'] );
 	}
 
 	/**

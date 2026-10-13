@@ -382,6 +382,7 @@ class Handler extends AbstractRESTEndpoint {
 	 */
 	private function set_up_checkout( string $commerce_merchant_settings_id, string $country_code ) {
 		$country_code = '' !== $country_code ? $country_code : (string) WC()->countries->get_base_country();
+		$checkout_url = site_url( '/checkout-link/' );
 		$outcome      = 'success';
 		$error        = '';
 
@@ -392,7 +393,7 @@ class Handler extends AbstractRESTEndpoint {
 			try {
 				$response = facebook_for_woocommerce()->get_api()->set_up_checkout(
 					$commerce_merchant_settings_id,
-					site_url( '/checkout-link/' ),
+					$checkout_url,
 					$country_code
 				);
 
@@ -414,6 +415,7 @@ class Handler extends AbstractRESTEndpoint {
 				'event_type' => $outcome,
 				'extra_data' => array(
 					'commerce_merchant_settings_id' => $commerce_merchant_settings_id,
+					'checkout_url'                  => $checkout_url,
 					'country_code'                  => $country_code,
 					'wc_version'                    => (string) Compatibility::get_wc_version(),
 					'error'                         => $error,

@@ -246,7 +246,9 @@ class HandlerFinalizeInstallTest extends AbstractWPUnitTestWithOptionIsolationAn
 		);
 		$this->assertSame( 'POST', $this->checkout_requests[0][1] );
 		$this->assertStringEndsWith( '/cms-final', wp_parse_url( $this->checkout_requests[0][0], PHP_URL_PATH ) );
-		$this->assertSame( 'success', $this->find_checkout_setup_log()['event_type'] );
+		$log = $this->find_checkout_setup_log();
+		$this->assertSame( 'success', $log['event_type'] );
+		$this->assertSame( site_url( '/checkout-link/' ), $log['extra_data']['checkout_url'] );
 	}
 
 	/**

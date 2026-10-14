@@ -381,13 +381,18 @@ class Handler extends AbstractRESTEndpoint {
 	 * @return void
 	 */
 	private function set_up_checkout( string $commerce_merchant_settings_id, string $country_code ) {
+		// Without a Commerce Merchant Settings there is no checkout to set up, so skip without logging.
+		if ( '' === $commerce_merchant_settings_id ) {
+			return;
+		}
+
 		$country_code = '' !== $country_code ? $country_code : (string) WC()->countries->get_base_country();
 		$checkout_url = site_url( '/checkout-link/' );
 		$outcome      = 'success';
 		$error        = '';
 
 		// WooCommerce serves /checkout-link/ from 10.0, so older stores have no checkout URL to give Meta.
-		if ( '' === $commerce_merchant_settings_id || '' === $country_code || ! Compatibility::is_wc_version_gte( '10.0' ) ) {
+		if ( '' === $country_code || ! Compatibility::is_wc_version_gte( '10.0' ) ) {
 			$outcome = 'skipped';
 		} else {
 			try {

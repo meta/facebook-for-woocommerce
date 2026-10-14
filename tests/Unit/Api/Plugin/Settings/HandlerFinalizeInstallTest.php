@@ -264,13 +264,14 @@ class HandlerFinalizeInstallTest extends AbstractWPUnitTestWithOptionIsolationAn
 	}
 
 	/**
-	 * Tests that checkout is skipped without a Commerce Merchant Settings ID.
+	 * Tests that checkout is skipped quietly without a Commerce Merchant Settings ID.
 	 */
-	public function test_checkout_setup_is_skipped_without_a_commerce_merchant_settings_id(): void {
+	public function test_checkout_setup_is_skipped_quietly_without_a_commerce_merchant_settings_id(): void {
 		$this->finalize_with_response( array( 'commerce_merchant_settings_id' => '' ) );
 
 		$this->assertSame( array(), $this->checkout_requests );
-		$this->assertSame( 'skipped', $this->find_checkout_setup_log()['event_type'] );
+		$events = array_column( (array) get_transient( Logger::LOGGING_MESSAGE_QUEUE ), 'event' );
+		$this->assertNotContains( 'commerce_merchant_settings_checkout_setup', $events );
 	}
 
 	/**

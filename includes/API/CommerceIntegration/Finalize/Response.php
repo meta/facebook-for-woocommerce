@@ -85,19 +85,7 @@ class Response extends APIResponse {
 	}
 
 	/**
-	 * Gets the integration's country, chosen by the seller during onboarding.
-	 *
-	 * @since 3.7.8
-	 *
-	 * @return string
-	 */
-	public function get_country_code(): string {
-		return $this->get_string_value( 'country_code' );
-	}
-
-	/**
-	 * Maps the finalize-install response to settings update fields, plus the
-	 * country used to set up checkout.
+	 * Maps the finalize-install response to settings update fields.
 	 *
 	 * @return array
 	 */
@@ -107,7 +95,6 @@ class Response extends APIResponse {
 			'commerce_merchant_settings_id'   => $this->get_commerce_merchant_settings_id(),
 			'product_catalog_id'              => $this->get_catalog_id(),
 			'pixel_id'                        => $this->get_pixel_id(),
-			'country_code'                    => $this->get_country_code(),
 		);
 
 		return array_filter(

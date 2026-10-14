@@ -229,10 +229,13 @@ class HandlerFinalizeInstallTest extends AbstractWPUnitTestWithOptionIsolationAn
 	}
 
 	/**
-	 * Tests that a successful finalize-install sets up checkout for the integration country.
+	 * Tests that a successful finalize-install sets up checkout for the store's base country,
+	 * ignoring any country Meta returns.
 	 */
-	public function test_successful_finalize_sets_up_checkout_for_the_integration_country(): void {
-		$this->finalize_with_response( array( 'country_code' => 'GB' ) );
+	public function test_successful_finalize_sets_up_checkout_for_the_store_base_country(): void {
+		$this->mock_set_option( 'woocommerce_default_country', 'GB' );
+
+		$this->finalize_with_response( array( 'country_code' => 'US' ) );
 
 		$this->assertSame(
 			array(
@@ -254,15 +257,15 @@ class HandlerFinalizeInstallTest extends AbstractWPUnitTestWithOptionIsolationAn
 	}
 
 	/**
-	 * Tests that checkout falls back to the store's base country when the integration has none.
+	 * Tests that checkout is skipped and logged when the store has no base country.
 	 */
-	public function test_checkout_setup_falls_back_to_the_store_base_country(): void {
-		$this->mock_set_option( 'woocommerce_default_country', 'CA' );
+	public function test_checkout_setup_is_skipped_without_a_store_base_country(): void {
+		$this->mock_set_option( 'woocommerce_default_country', '' );
 
 		$this->finalize_with_response( array() );
 
-		$this->assertCount( 1, $this->checkout_requests );
-		$this->assertSame( 'CA', $this->checkout_requests[0][2]['checkout_config']['country_code'] );
+		$this->assertSame( array(), $this->checkout_requests );
+		$this->assertSame( 'skipped', $this->find_checkout_setup_log()['event_type'] );
 	}
 
 	/**
@@ -272,7 +275,7 @@ class HandlerFinalizeInstallTest extends AbstractWPUnitTestWithOptionIsolationAn
 		$this->mock_set_option( 'siteurl', 'http://example.org/wp' );
 		$this->mock_set_option( 'home', 'http://example.org' );
 
-		$this->finalize_with_response( array( 'country_code' => 'US' ) );
+		$this->finalize_with_response( array() );
 
 		$this->assertCount( 1, $this->checkout_requests );
 		$this->assertSame( 'http://example.org/checkout-link/', $this->checkout_requests[0][2]['checkout_config']['checkout_url'] );
@@ -284,7 +287,7 @@ class HandlerFinalizeInstallTest extends AbstractWPUnitTestWithOptionIsolationAn
 	public function test_checkout_setup_is_skipped_on_plain_permalinks(): void {
 		$this->mock_set_option( 'permalink_structure', '' );
 
-		$this->finalize_with_response( array( 'country_code' => 'US' ) );
+		$this->finalize_with_response( array() );
 
 		$this->assertSame( array(), $this->checkout_requests );
 		$log = $this->find_checkout_setup_log();
@@ -314,7 +317,7 @@ class HandlerFinalizeInstallTest extends AbstractWPUnitTestWithOptionIsolationAn
 	public function test_checkout_setup_failure_does_not_fail_the_install( $checkout_response, string $expected_error ): void {
 		$this->checkout_response = $checkout_response;
 
-		$response = $this->finalize_with_response( array( 'country_code' => 'US' ) );
+		$response = $this->finalize_with_response( array() );
 
 		$this->assertSame( 200, $response->get_status() );
 		$this->assertOptionUpdated( \WC_Facebookcommerce_Integration::OPTION_COMMERCE_MERCHANT_SETTINGS_ID, 'cms-final' );

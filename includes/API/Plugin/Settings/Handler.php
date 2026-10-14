@@ -178,7 +178,7 @@ class Handler extends AbstractRESTEndpoint {
 
 			// No resolved assets means finalize-install failed and the legacy install message was used.
 			if ( ! empty( $resolved_assets ) ) {
-				$this->set_up_checkout( (string) ( $settings_data['commerce_merchant_settings_id'] ?? '' ), $resolved_assets['country_code'] ?? '' );
+				$this->set_up_checkout( (string) ( $settings_data['commerce_merchant_settings_id'] ?? '' ) );
 			}
 
 			return $this->success_response(
@@ -377,16 +377,16 @@ class Handler extends AbstractRESTEndpoint {
 	 * @since 3.7.8
 	 *
 	 * @param string $commerce_merchant_settings_id Commerce Merchant Settings ID.
-	 * @param string $country_code Integration country; the store's base country when empty.
 	 * @return void
 	 */
-	private function set_up_checkout( string $commerce_merchant_settings_id, string $country_code ) {
+	private function set_up_checkout( string $commerce_merchant_settings_id ) {
 		// Without a Commerce Merchant Settings there is no checkout to set up, so skip without logging.
 		if ( '' === $commerce_merchant_settings_id ) {
 			return;
 		}
 
-		$country_code = '' !== $country_code ? $country_code : (string) WC()->countries->get_base_country();
+		// The store owns its country: this is the same value pushed to the integration as country_code.
+		$country_code = (string) WC()->countries->get_base_country();
 		// /checkout-link/ is a front-end rewrite rule, so it lives under the site address (home_url),
 		// which differs from site_url() when WordPress is installed in a subdirectory.
 		$checkout_url      = home_url( '/checkout-link/' );

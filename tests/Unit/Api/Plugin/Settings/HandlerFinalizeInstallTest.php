@@ -35,6 +35,8 @@ class HandlerFinalizeInstallTest extends AbstractWPUnitTestWithOptionIsolationAn
 	 */
 	public function setUp(): void {
 		parent::setUp();
+		// /checkout-link/ only routes with pretty permalinks; the test install defaults to plain.
+		$this->mock_set_option( 'permalink_structure', '/%postname%/' );
 		$this->checkout_response = array(
 			'response' => array( 'code' => 200, 'message' => 'OK' ),
 			'body'     => '{"success":true}',
@@ -236,7 +238,7 @@ class HandlerFinalizeInstallTest extends AbstractWPUnitTestWithOptionIsolationAn
 			array(
 				array(
 					'checkout_config' => array(
-						'checkout_url' => site_url( '/checkout-link/' ),
+						'checkout_url' => home_url( '/checkout-link/' ),
 						'country_code' => 'GB',
 						'publish_shop' => true,
 					),
@@ -248,7 +250,7 @@ class HandlerFinalizeInstallTest extends AbstractWPUnitTestWithOptionIsolationAn
 		$this->assertStringEndsWith( '/cms-final', wp_parse_url( $this->checkout_requests[0][0], PHP_URL_PATH ) );
 		$log = $this->find_checkout_setup_log();
 		$this->assertSame( 'success', $log['event_type'] );
-		$this->assertSame( site_url( '/checkout-link/' ), $log['extra_data']['checkout_url'] );
+		$this->assertSame( home_url( '/checkout-link/' ), $log['extra_data']['checkout_url'] );
 	}
 
 	/**
@@ -261,6 +263,33 @@ class HandlerFinalizeInstallTest extends AbstractWPUnitTestWithOptionIsolationAn
 
 		$this->assertCount( 1, $this->checkout_requests );
 		$this->assertSame( 'CA', $this->checkout_requests[0][2]['checkout_config']['country_code'] );
+	}
+
+	/**
+	 * Tests that the checkout URL uses the site address when WordPress lives in a subdirectory.
+	 */
+	public function test_checkout_url_uses_the_site_address_not_the_wordpress_address(): void {
+		$this->mock_set_option( 'siteurl', 'http://example.org/wp' );
+		$this->mock_set_option( 'home', 'http://example.org' );
+
+		$this->finalize_with_response( array( 'country_code' => 'US' ) );
+
+		$this->assertCount( 1, $this->checkout_requests );
+		$this->assertSame( 'http://example.org/checkout-link/', $this->checkout_requests[0][2]['checkout_config']['checkout_url'] );
+	}
+
+	/**
+	 * Tests that checkout is skipped and logged on plain permalinks, where /checkout-link/ does not route.
+	 */
+	public function test_checkout_setup_is_skipped_on_plain_permalinks(): void {
+		$this->mock_set_option( 'permalink_structure', '' );
+
+		$this->finalize_with_response( array( 'country_code' => 'US' ) );
+
+		$this->assertSame( array(), $this->checkout_requests );
+		$log = $this->find_checkout_setup_log();
+		$this->assertSame( 'skipped', $log['event_type'] );
+		$this->assertFalse( $log['extra_data']['pretty_permalinks'] );
 	}
 
 	/**

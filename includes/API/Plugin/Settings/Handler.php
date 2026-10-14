@@ -387,12 +387,16 @@ class Handler extends AbstractRESTEndpoint {
 		}
 
 		$country_code = '' !== $country_code ? $country_code : (string) WC()->countries->get_base_country();
-		$checkout_url = site_url( '/checkout-link/' );
-		$outcome      = 'success';
-		$error        = '';
+		// /checkout-link/ is a front-end rewrite rule, so it lives under the site address (home_url),
+		// which differs from site_url() when WordPress is installed in a subdirectory.
+		$checkout_url      = home_url( '/checkout-link/' );
+		$pretty_permalinks = '' !== (string) get_option( 'permalink_structure' );
+		$outcome           = 'success';
+		$error             = '';
 
-		// WooCommerce serves /checkout-link/ from 10.0, so older stores have no checkout URL to give Meta.
-		if ( '' === $country_code || ! Compatibility::is_wc_version_gte( '10.0' ) ) {
+		// WooCommerce serves /checkout-link/ from 10.0, and only through pretty permalinks, so older
+		// stores and stores on plain permalinks have no checkout URL to give Meta.
+		if ( '' === $country_code || ! $pretty_permalinks || ! Compatibility::is_wc_version_gte( '10.0' ) ) {
 			$outcome = 'skipped';
 		} else {
 			try {
@@ -422,6 +426,7 @@ class Handler extends AbstractRESTEndpoint {
 					'commerce_merchant_settings_id' => $commerce_merchant_settings_id,
 					'checkout_url'                  => $checkout_url,
 					'country_code'                  => $country_code,
+					'pretty_permalinks'             => $pretty_permalinks,
 					'wc_version'                    => (string) Compatibility::get_wc_version(),
 					'error'                         => $error,
 				),

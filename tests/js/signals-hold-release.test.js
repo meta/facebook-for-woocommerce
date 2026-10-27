@@ -343,5 +343,75 @@ describe('Signals hold/release browser runtime', function () {
             expect(releaseRequests()).toHaveLength(0);
             expect(signals._queue).toHaveLength(1);
         });
+
+        it('honours a release requested after a withdrawal while the first release is in flight', async function () {
+            const signals = bootPage('held');
+            signals.trackEvent('AddToCart', { content_ids: ['2'] });
+
+            // 1. Release: state update, then the release POST goes out.
+            const first = window.fbwcsignal.release();
+            stateRequests()[0].respond(200, { success: true, data: { state: 'active' } });
+            await flushPromises();
+            expect(releaseRequests()).toHaveLength(1);
+
+            // 2. Withdraw while that POST is pending.
+            const holding = window.fbwcsignal.hold();
+            stateRequests()[1].respond(200, { success: true, data: { state: 'held' } });
+            await holding;
+            expect(signals._held).toBe(true);
+
+            // 3. Consent again, still before the first POST has answered.
+            const second = window.fbwcsignal.release();
+            stateRequests()[2].respond(200, { success: true, data: { state: 'active' } });
+            await flushPromises();
+            expect(releaseRequests()).toHaveLength(1);
+
+            // 4. The first POST answers: its response is stale and discarded...
+            releaseRequests()[0].respond(200, { success: true, data: { sent_count: 1 } });
+            await first;
+            await flushPromises();
+
+            // ...and the newer release now runs instead of being dropped.
+            expect(releaseRequests()).toHaveLength(2);
+            releaseRequests()[1].respond(200, { success: true, data: { sent_count: 0 } });
+            await second;
+
+            expect(signals._held).toBe(false);
+            expect(signals._releasing).toBe(false);
+            expect(signals._pixelInitialized).toBe(true);
+            expect(consentCalls().slice(-1)).toEqual(['grant']);
+            expect(window.fbwcsignal.getState()).toBe('active');
+            expect(signals._queue).toHaveLength(0);
+        });
+
+        it('drops a queued release when another hold arrives before it runs', async function () {
+            const signals = bootPage('held');
+            signals.trackEvent('AddToCart', { content_ids: ['2'] });
+
+            const first = window.fbwcsignal.release();
+            stateRequests()[0].respond(200, { success: true, data: { state: 'active' } });
+            await flushPromises();
+            expect(releaseRequests()).toHaveLength(1);
+
+            window.fbwcsignal.hold();
+            stateRequests()[1].respond(200, { success: true, data: { state: 'held' } });
+            const second = window.fbwcsignal.release();
+            stateRequests()[2].respond(200, { success: true, data: { state: 'active' } });
+            await flushPromises();
+
+            // A further withdrawal before the first POST answers.
+            window.fbwcsignal.hold();
+            stateRequests()[3].respond(200, { success: true, data: { state: 'held' } });
+
+            releaseRequests()[0].respond(200, { success: true, data: { sent_count: 1 } });
+            await first;
+            await second;
+            await flushPromises();
+
+            expect(releaseRequests()).toHaveLength(1);
+            expect(signals._held).toBe(true);
+            expect(signals._pixelInitialized).toBe(false);
+            expect(window.fbwcsignal.getState()).toBe('held');
+        });
     });
 });

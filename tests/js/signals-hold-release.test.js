@@ -204,7 +204,8 @@ describe('Signals hold/release browser runtime', function () {
             // Visitor withdraws before the server answers.
             signals.hold();
 
-            releaseRequests()[0].respond(200, { success: true, data: { sent_count: 1 } });
+            const queuedId = JSON.parse(releaseRequests()[0].body).events[0].event_id;
+            releaseRequests()[0].respond(200, { success: true, data: { sent_count: 1, sent_event_ids: [queuedId] } });
             const response = await pending;
 
             expect(response.data.sent_count).toBe(1);
@@ -226,12 +227,52 @@ describe('Signals hold/release browser runtime', function () {
             const pending = signals.release();
             signals.hold();
 
-            releaseRequests()[0].respond(200, { success: true, data: { sent_count: 0 } });
+            releaseRequests()[0].respond(200, { success: true, data: { sent_count: 0, sent_event_ids: [] } });
             await pending;
 
             expect(signals._held).toBe(true);
             expect(signals._queue).toHaveLength(1);
             expect(fbqCalls('track')).toHaveLength(0);
+        });
+
+        it('drops only the events the server reports as sent', async function () {
+            const signals = bootPage('held');
+            signals.trackEvent('ViewContent', { content_ids: ['1'] });
+            signals.trackEvent('AddToCart', { content_ids: ['1'] });
+            signals.trackEvent('Purchase', { value: 10, currency: 'USD' });
+
+            setStateCookie('active');
+            const pending = signals.release();
+            signals.hold();
+
+            // The server capped or filtered the batch: it sent the first two only.
+            const posted = JSON.parse(releaseRequests()[0].body).events;
+            expect(posted).toHaveLength(3);
+            releaseRequests()[0].respond(200, {
+                success: true,
+                data: { sent_count: 2, sent_event_ids: [posted[0].event_id, posted[1].event_id] },
+            });
+            await pending;
+
+            expect(signals._held).toBe(true);
+            expect(signals._queue.map((ev) => ev.event_name)).toEqual(['Purchase']);
+            expect(signals._queue[0].event_id).toBe(posted[2].event_id);
+        });
+
+        it('keeps every event when the response does not list sent ids', async function () {
+            const signals = bootPage('held');
+            signals.trackEvent('ViewContent', { content_ids: ['1'] });
+
+            setStateCookie('active');
+            const pending = signals.release();
+            signals.hold();
+
+            // An older server build answers with a count only.
+            releaseRequests()[0].respond(200, { success: true, data: { sent_count: 1 } });
+            await pending;
+
+            expect(signals._held).toBe(true);
+            expect(signals._queue).toHaveLength(1);
         });
 
         it('does not post the queue when the state cookie already says held', async function () {
@@ -367,7 +408,8 @@ describe('Signals hold/release browser runtime', function () {
             expect(releaseRequests()).toHaveLength(1);
 
             // 4. The first POST answers: its response is stale and discarded...
-            releaseRequests()[0].respond(200, { success: true, data: { sent_count: 1 } });
+            const firstPosted = JSON.parse(releaseRequests()[0].body).events;
+            releaseRequests()[0].respond(200, { success: true, data: { sent_count: 1, sent_event_ids: [firstPosted[0].event_id] } });
             await first;
             await flushPromises();
 
@@ -403,7 +445,8 @@ describe('Signals hold/release browser runtime', function () {
             window.fbwcsignal.hold();
             stateRequests()[3].respond(200, { success: true, data: { state: 'held' } });
 
-            releaseRequests()[0].respond(200, { success: true, data: { sent_count: 1 } });
+            const postedOnce = JSON.parse(releaseRequests()[0].body).events;
+            releaseRequests()[0].respond(200, { success: true, data: { sent_count: 1, sent_event_ids: [postedOnce[0].event_id] } });
             await first;
             await second;
             await flushPromises();

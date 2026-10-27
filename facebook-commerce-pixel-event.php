@@ -623,7 +623,7 @@ window.FacebookSignals = window.FacebookSignals || {
 						var resp = JSON.parse(xhr.responseText);
 						if (self._holdGeneration !== generation) {
 							// Signals were held while this release was in flight. The server
-							// has already sent what it accepted, so forget those events, but
+							// has already sent the events it lists, so forget those, but
 							// leave the browser held: no consent grant, no replay.
 							self._discardPostedEvents(postedEvents, resp.data || {});
 							self._releasing = false;
@@ -646,9 +646,14 @@ window.FacebookSignals = window.FacebookSignals || {
 	},
 
 	_discardPostedEvents: function(postedEvents, data) {
-		if (!data || !(data.sent_count > 0)) return;
+		// Drop only what the server says it sent. It caps and filters the
+		// batch, so a count would also drop events that never went out. With
+		// no id list, keep everything: a resend is deduplicated by event_id,
+		// a lost event is not recoverable.
+		var sentIds = data && Array.isArray(data.sent_event_ids) ? data.sent_event_ids : [];
+		if (!sentIds.length) return;
 		this._queue = this._queue.filter(function(ev) {
-			return postedEvents.indexOf(ev) === -1;
+			return postedEvents.indexOf(ev) === -1 || !ev.event_id || sentIds.indexOf(ev.event_id) === -1;
 		});
 	},
 

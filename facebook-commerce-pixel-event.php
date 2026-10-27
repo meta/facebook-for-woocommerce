@@ -429,6 +429,7 @@ class WC_Facebookcommerce_Pixel {
 window.FacebookSignals = window.FacebookSignals || {
 	_held: false,
 	_releasing: false,
+	_releasePromise: null,
 	_holdGeneration: 0,
 	_pixelInitialized: false,
 	_pixelId: null,
@@ -569,8 +570,23 @@ window.FacebookSignals = window.FacebookSignals || {
 
 	release: function() {
 		var self = this;
-		if (!self._held || self._releasing || !self._config.ajaxUrl) {
+		if (!self._held || !self._config.ajaxUrl) {
 			return Promise.resolve({ success: true, data: { sent_count: 0 } });
+		}
+
+		if (self._releasing) {
+			// A release is already in flight. Run this one once it settles, unless
+			// a hold arrives in between. Without this, a release requested after a
+			// withdrawal would be dropped while the older response is discarded,
+			// leaving the page held for good.
+			var requestedAt = self._holdGeneration;
+			var rerun = function() {
+				if (self._holdGeneration !== requestedAt) {
+					return { success: true, data: { sent_count: 0 } };
+				}
+				return self.release();
+			};
+			return self._releasePromise.then(rerun, rerun);
 		}
 
 		// A hold written after the release was requested wins: keep the queue
@@ -597,7 +613,7 @@ window.FacebookSignals = window.FacebookSignals || {
 			(self._config.ajaxUrl.indexOf('?') === -1 ? '?' : '&') +
 			'action=' + encodeURIComponent(self._config.action);
 
-		return new Promise(function(resolve, reject) {
+		self._releasePromise = new Promise(function(resolve, reject) {
 			var xhr = new XMLHttpRequest();
 			xhr.open('POST', url, true);
 			xhr.setRequestHeader('Content-Type', 'application/json');
@@ -625,6 +641,8 @@ window.FacebookSignals = window.FacebookSignals || {
 			xhr.onerror = function() { self._releasing = false; reject(new Error('Network error')); };
 			xhr.send(payload);
 		});
+
+		return self._releasePromise;
 	},
 
 	_discardPostedEvents: function(postedEvents, data) {

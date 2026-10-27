@@ -104,6 +104,16 @@
 	 * @return {Promise}
 	 */
 	function hold() {
+		// Revoke browser consent right away, before the state update
+		// round-trip, so nothing fires in the meantime and a release that
+		// is still in flight is discarded when it returns.
+		if (
+			window.FacebookSignals &&
+			typeof window.FacebookSignals.hold === 'function'
+		) {
+			window.FacebookSignals.hold();
+		}
+
 		return updateState( STATE_HELD );
 	}
 
@@ -113,11 +123,25 @@
 	 * @return {Promise}
 	 */
 	function release() {
+		// Remember which hold generation this release belongs to. A hold that
+		// lands while the state update is in flight bumps it, and the queue
+		// must then stay where it is.
+		var generation = window.FacebookSignals
+			? window.FacebookSignals._holdGeneration
+			: null;
+
 		return updateState( STATE_ACTIVE ).then( function ( data ) {
 			if (
 				window.FacebookSignals &&
 				window.FacebookSignals._held
 			) {
+				if (
+					null !== generation &&
+					window.FacebookSignals._holdGeneration !== generation
+				) {
+					return data;
+				}
+
 				return window.FacebookSignals.release().then(
 					function () {
 						return data;

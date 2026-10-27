@@ -11,6 +11,7 @@
 namespace WooCommerce\Facebook\Events;
 
 use WooCommerce\Facebook\Framework\Api\Exception as ApiException;
+use WooCommerce\Facebook\Signals;
 
 defined( 'ABSPATH' ) || exit;
 
@@ -76,6 +77,13 @@ class ReleaseSignalsAjax {
 
 		if ( empty( $signal_state ) ) {
 			wp_send_json_error( array( 'message' => 'Missing signal state.' ), 403 );
+		}
+
+		// The browser writes `active` before it posts the queue. A `held` cookie
+		// here means the visitor withdrew after asking for the release, so the
+		// queued events must not be sent.
+		if ( ! self::is_releasable_state( $signal_state ) ) {
+			wp_send_json_error( array( 'message' => 'Signals are held.' ), 403 );
 		}
 
 		$events      = isset( $body['events'] ) && is_array( $body['events'] ) ? $body['events'] : array();
@@ -169,6 +177,16 @@ class ReleaseSignalsAjax {
 				'user_info'  => $user_info,
 			)
 		);
+	}
+
+	/**
+	 * Whether a signal-state cookie value allows queued events to be released.
+	 *
+	 * @param string $signal_state Cookie value.
+	 * @return bool
+	 */
+	public static function is_releasable_state( $signal_state ) {
+		return '' !== $signal_state && Signals::STATE_HELD !== $signal_state;
 	}
 
 	/**

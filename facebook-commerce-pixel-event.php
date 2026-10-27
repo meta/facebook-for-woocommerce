@@ -429,6 +429,7 @@ class WC_Facebookcommerce_Pixel {
 window.FacebookSignals = window.FacebookSignals || {
 	_held: false,
 	_releasing: false,
+	_holdGeneration: 0,
 	_pixelInitialized: false,
 	_pixelId: null,
 	_pixelUserInfo: {},
@@ -556,17 +557,35 @@ window.FacebookSignals = window.FacebookSignals || {
 		}
 	},
 
+	hold: function() {
+		// Hold a page that is active or mid-release. Bumping the generation
+		// makes a release that is still in flight discard its response.
+		this._held = true;
+		this._holdGeneration++;
+		if (typeof fbq === 'function') {
+			fbq('consent', 'revoke');
+		}
+	},
+
 	release: function() {
 		var self = this;
 		if (!self._held || self._releasing || !self._config.ajaxUrl) {
 			return Promise.resolve({ success: true, data: { sent_count: 0 } });
 		}
 
+		// A hold written after the release was requested wins: keep the queue
+		// and send nothing.
+		if (self._getCookie('wc_facebook_signals_state') === 'held') {
+			return Promise.resolve({ success: true, data: { sent_count: 0 } });
+		}
+
 		self._releasing = true;
+		var generation = self._holdGeneration;
+		var postedEvents = self._queue.slice();
 		var attribution = self._collectAttribution();
 
 		var payload = JSON.stringify({
-			events: self._queue,
+			events: postedEvents,
 			attribution: {
 				fbp: attribution.fbp || null,
 				fbc: attribution.fbc || null
@@ -586,6 +605,15 @@ window.FacebookSignals = window.FacebookSignals || {
 				if (xhr.status >= 200 && xhr.status < 300) {
 					try {
 						var resp = JSON.parse(xhr.responseText);
+						if (self._holdGeneration !== generation) {
+							// Signals were held while this release was in flight. The server
+							// has already sent what it accepted, so forget those events, but
+							// leave the browser held: no consent grant, no replay.
+							self._discardPostedEvents(postedEvents, resp.data || {});
+							self._releasing = false;
+							resolve(resp);
+							return;
+						}
 						self._handleReleaseResponse(resp.data || {}, attribution);
 						resolve(resp);
 					} catch(e) { self._releasing = false; reject(e); }
@@ -596,6 +624,13 @@ window.FacebookSignals = window.FacebookSignals || {
 			};
 			xhr.onerror = function() { self._releasing = false; reject(new Error('Network error')); };
 			xhr.send(payload);
+		});
+	},
+
+	_discardPostedEvents: function(postedEvents, data) {
+		if (!data || !(data.sent_count > 0)) return;
+		this._queue = this._queue.filter(function(ev) {
+			return postedEvents.indexOf(ev) === -1;
 		});
 	},
 

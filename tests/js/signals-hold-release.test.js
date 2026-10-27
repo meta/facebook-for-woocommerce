@@ -275,6 +275,45 @@ describe('Signals hold/release browser runtime', function () {
             expect(signals._queue).toHaveLength(1);
         });
 
+        it('puts the held cookie back when a stale release response carries an active cookie', async function () {
+            const signals = bootPage('held');
+            signals.trackEvent('ViewContent', { content_ids: ['1'] });
+
+            setStateCookie('active');
+            const pending = signals.release();
+            signals.hold();
+            expect(readStateCookie()).toBe('held');
+
+            // A CMP bridge answered the release request with the state it saw then.
+            const queuedId = JSON.parse(releaseRequests()[0].body).events[0].event_id;
+            releaseRequests()[0].respond(200, { success: true, data: { sent_count: 1, sent_event_ids: [queuedId] } }, {
+                setCookie: `${STATE_COOKIE}=active;path=/`,
+            });
+            await pending;
+
+            expect(signals._held).toBe(true);
+            expect(readStateCookie()).toBe('held');
+            expect(window.fbwcsignal.getState()).toBe('held');
+        });
+
+        it('puts the held cookie back when a stale release response fails with an active cookie', async function () {
+            const signals = bootPage('held');
+            signals.trackEvent('ViewContent', { content_ids: ['1'] });
+
+            setStateCookie('active');
+            const pending = signals.release();
+            signals.hold();
+
+            releaseRequests()[0].respond(403, { success: false, data: { message: 'Signals are held.' } }, {
+                setCookie: `${STATE_COOKIE}=active;path=/`,
+            });
+            await pending.catch(() => {});
+
+            expect(signals._held).toBe(true);
+            expect(readStateCookie()).toBe('held');
+            expect(signals._queue).toHaveLength(1);
+        });
+
         it('does not post the queue when the state cookie already says held', async function () {
             const signals = bootPage('held');
             signals.trackEvent('ViewContent', { content_ids: ['1'] });

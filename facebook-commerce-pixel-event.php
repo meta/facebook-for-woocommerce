@@ -431,6 +431,7 @@ window.FacebookSignals = window.FacebookSignals || {
 	_releasing: false,
 	_releasePromise: null,
 	_holdGeneration: 0,
+	_requestedState: null,
 	_pixelInitialized: false,
 	_pixelId: null,
 	_pixelUserInfo: {},
@@ -563,9 +564,18 @@ window.FacebookSignals = window.FacebookSignals || {
 		// makes a release that is still in flight discard its response.
 		this._held = true;
 		this._holdGeneration++;
+		this._requestedState = 'held';
+		this._setStateCookie('held');
 		if (typeof fbq === 'function') {
 			fbq('consent', 'revoke');
 		}
+	},
+
+	_setStateCookie: function(state) {
+		// Same attributes as the fbwcsignal helper so both write one cookie.
+		var d = new Date();
+		d.setTime(d.getTime() + 365 * 86400000);
+		document.cookie = 'wc_facebook_signals_state=' + state + ';expires=' + d.toUTCString() + ';path=/;SameSite=Lax';
 	},
 
 	release: function() {
@@ -579,6 +589,7 @@ window.FacebookSignals = window.FacebookSignals || {
 			// a hold arrives in between. Without this, a release requested after a
 			// withdrawal would be dropped while the older response is discarded,
 			// leaving the page held for good.
+			self._requestedState = 'active';
 			var requestedAt = self._holdGeneration;
 			var rerun = function() {
 				if (self._holdGeneration !== requestedAt) {
@@ -596,6 +607,7 @@ window.FacebookSignals = window.FacebookSignals || {
 		}
 
 		self._releasing = true;
+		self._requestedState = 'active';
 		var generation = self._holdGeneration;
 		var postedEvents = self._queue.slice();
 		var attribution = self._collectAttribution();
@@ -618,6 +630,16 @@ window.FacebookSignals = window.FacebookSignals || {
 			xhr.open('POST', url, true);
 			xhr.setRequestHeader('Content-Type', 'application/json');
 			xhr.onload = function() {
+				// A CMP bridge runs on this request too and may answer with a
+				// Set-Cookie for the state it saw when the request was made. If a
+				// hold happened since, that cookie is stale: put the latest
+				// requested state back before anything reads it. That is `held`,
+				// or `active` again if a newer release has been queued behind this
+				// request.
+				if (self._holdGeneration !== generation && self._requestedState) {
+					self._setStateCookie(self._requestedState);
+				}
+
 				if (xhr.status >= 200 && xhr.status < 300) {
 					try {
 						var resp = JSON.parse(xhr.responseText);

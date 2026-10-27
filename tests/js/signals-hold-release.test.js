@@ -59,9 +59,16 @@ class FakeXHR {
     send(body) {
         this.body = body || '';
     }
-    respond(status, body) {
+    /**
+     * Answers the request. `setCookie` mimics a Set-Cookie header: the browser
+     * applies it before the load event reaches page code.
+     */
+    respond(status, body, options) {
         this.status = status;
         this.responseText = typeof body === 'string' ? body : JSON.stringify(body);
+        if (options && options.setCookie) {
+            document.cookie = options.setCookie;
+        }
         if (this.onload) {
             this.onload();
         }
@@ -305,6 +312,36 @@ describe('Signals hold/release browser runtime', function () {
             expect(fbqCalls('track')).toHaveLength(0);
 
             stateRequests()[1].respond(200, { success: true, data: { state: 'held' } });
+        });
+
+        it('keeps the cookie on the latest requested state when a stale response lands last', async function () {
+            const signals = bootPage('held');
+            signals.trackEvent('AddToCart', { content_ids: ['2'] });
+
+            const releasing = window.fbwcsignal.release();
+            const holding = window.fbwcsignal.hold();
+            expect(stateRequests()).toHaveLength(2);
+            expect(readStateCookie()).toBe('held');
+
+            // The newer hold is answered first; PHP sets the cookie it applied.
+            stateRequests()[1].respond(200, { success: true, data: { state: 'held' } }, {
+                setCookie: `${STATE_COOKIE}=held;path=/`,
+            });
+            await holding;
+            expect(readStateCookie()).toBe('held');
+
+            // Then the older release-state response arrives with its own Set-Cookie.
+            stateRequests()[0].respond(200, { success: true, data: { state: 'active' } }, {
+                setCookie: `${STATE_COOKIE}=active;path=/`,
+            });
+            await flushPromises();
+            await releasing;
+
+            expect(readStateCookie()).toBe('held');
+            expect(window.fbwcsignal.getState()).toBe('held');
+            expect(signals._held).toBe(true);
+            expect(releaseRequests()).toHaveLength(0);
+            expect(signals._queue).toHaveLength(1);
         });
     });
 });

@@ -10,6 +10,7 @@ declare( strict_types=1 );
 
 namespace WooCommerce\Facebook\Tests\Unit\Events;
 
+use WooCommerce\Facebook\Events\Event;
 use WooCommerce\Facebook\Events\ReleaseSignalsAjax;
 use WooCommerce\Facebook\Signals;
 use WP_UnitTestCase;
@@ -23,6 +24,7 @@ use WP_UnitTestCase;
  * cookie to `held`, and the endpoint must then refuse to send anything.
  *
  * @covers \WooCommerce\Facebook\Events\ReleaseSignalsAjax::is_releasable_state
+ * @covers \WooCommerce\Facebook\Events\ReleaseSignalsAjax::get_event_ids
  */
 class ReleaseSignalsAjaxStateTest extends WP_UnitTestCase {
 
@@ -42,5 +44,20 @@ class ReleaseSignalsAjaxStateTest extends WP_UnitTestCase {
 		// Any non-empty value other than `held` keeps today's behaviour: the
 		// endpoint only ever rejected a missing cookie.
 		$this->assertTrue( ReleaseSignalsAjax::is_releasable_state( 'something-else' ) );
+	}
+
+	public function test_sent_event_ids_lists_the_ids_handed_to_the_api(): void {
+		$events = array(
+			new Event( array( 'event_name' => 'ViewContent', 'event_id' => 'id-one' ) ),
+			new Event( array( 'event_name' => 'Purchase', 'event_id' => 'id-two' ) ),
+		);
+
+		$this->assertSame( array( 'id-one', 'id-two' ), ReleaseSignalsAjax::get_event_ids( $events ) );
+	}
+
+	public function test_sent_event_ids_skips_non_events_and_blank_ids(): void {
+		$event = new Event( array( 'event_name' => 'ViewContent', 'event_id' => 'id-one' ) );
+
+		$this->assertSame( array( 'id-one' ), ReleaseSignalsAjax::get_event_ids( array( $event, 'not-an-event', null ) ) );
 	}
 }

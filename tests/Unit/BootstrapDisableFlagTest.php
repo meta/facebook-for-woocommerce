@@ -83,15 +83,136 @@ class BootstrapDisableFlagTest extends AbstractWPUnitTestWithOptionIsolationAndS
 			)
 		);
 
-		$has_active_disable_flag_file_only = $this->reflection->getMethod( 'has_active_disable_flag_file_only' );
-		$has_active_disable_flag_file_only->setAccessible( true );
-		$this->assertTrue( $has_active_disable_flag_file_only->invoke( $this->loader ) );
+		$this->assertTrue( $this->has_valid_disable_flag() );
+
+		$this->assert_init_skipped_when_disabled();
+	}
+
+	public function test_current_format_flag_with_active_pause_is_detected(): void {
+		$this->write_flag_file(
+			[
+				'version'        => 2,
+				'level'          => 1,
+				'disabled_at'    => time() - 60,
+				'disabled_until' => time() + 540,
+				'last_crash_at'  => time() - 60,
+				'updated_at'     => time() - 60,
+			]
+		);
+
+		$this->assertTrue( $this->has_valid_disable_flag() );
+
+		$this->assert_init_skipped_when_disabled();
+	}
+
+	public function test_current_format_flag_with_expired_pause_is_not_detected(): void {
+		$this->write_flag_file(
+			[
+				'version'        => 2,
+				'level'          => 1,
+				'disabled_at'    => time() - 700,
+				'disabled_until' => time() - 100,
+				'last_crash_at'  => time() - 700,
+				'updated_at'     => time() - 700,
+			]
+		);
 
 		$has_valid_disable_flag = $this->reflection->getMethod( 'has_valid_disable_flag' );
 		$has_valid_disable_flag->setAccessible( true );
-		$this->assertTrue( $has_valid_disable_flag->invoke( $this->loader ) );
+		$this->assertFalse( $has_valid_disable_flag->invoke( $this->loader ), 'An expired pause must let the plugin boot again.' );
+	}
 
-		$this->assert_init_skipped_when_disabled();
+	public function test_newer_idle_transient_overrides_a_stale_paused_file_at_bootstrap(): void {
+		$this->write_flag_file( $this->active_pause_payload() );
+
+		$tombstone = \WooCommerce\Facebook\Framework\CrashGuardState::empty_state( time() );
+		set_transient( \WooCommerce\Facebook\Framework\CrashGuardState::TRANSIENT_KEY, $tombstone, HOUR_IN_SECONDS );
+
+		$this->assertFalse( $this->has_valid_disable_flag(), 'A newer idle transient must win over the stale paused file.' );
+		$this->assert_init_not_skipped();
+	}
+
+	public function test_resume_now_takes_effect_even_when_the_flag_file_cannot_be_deleted(): void {
+		if ( function_exists( 'posix_geteuid' ) && 0 === posix_geteuid() ) {
+			$this->markTestSkipped( 'File permission checks do not apply to root.' );
+		}
+
+		$this->write_flag_file( $this->active_pause_payload() );
+		$this->assertTrue( $this->has_valid_disable_flag(), 'Precondition: the plugin is paused.' );
+
+		$dir = dirname( $this->flag_file_path );
+		chmod( $dir, 0555 );
+		try {
+			$clear = $this->reflection->getMethod( 'clear_disable_flag_state' );
+			$clear->setAccessible( true );
+			$this->assertTrue( (bool) $clear->invoke( $this->loader ) );
+			$this->assertFileExists( $this->flag_file_path, 'Precondition: the stale file really could not be removed.' );
+
+			$this->assertFalse( $this->has_valid_disable_flag(), 'Resume now must re-enable the plugin although the stale file remains.' );
+			$this->assert_init_not_skipped();
+
+			// A healthy shutdown afterwards must not bring the pause back.
+			\WooCommerce\Facebook\Framework\CrashGuardState::record_healthy_request( \WooCommerce\Facebook\Framework\CrashGuardState::REQUEST_CLASS_FRONTEND );
+			$this->assertFalse( $this->has_valid_disable_flag(), 'The loader must stay enabled after healthy shutdowns while the stale file lingers.' );
+		} finally {
+			chmod( $dir, 0755 );
+		}
+	}
+
+	/**
+	 * Returns a current-format payload describing an active 10-minute pause.
+	 *
+	 * @return array
+	 */
+	private function active_pause_payload(): array {
+		return [
+			'version'        => 2,
+			'level'          => 1,
+			'disabled_at'    => time() - 60,
+			'disabled_until' => time() + 540,
+			'last_crash_at'  => time() - 60,
+			'updated_at'     => time() - 60,
+		];
+	}
+
+	/**
+	 * Invokes the loader's private has_valid_disable_flag().
+	 *
+	 * @return bool
+	 */
+	private function has_valid_disable_flag(): bool {
+		$method = $this->reflection->getMethod( 'has_valid_disable_flag' );
+		$method->setAccessible( true );
+
+		return (bool) $method->invoke( $this->loader );
+	}
+
+	/**
+	 * Asserts that init_plugin takes the normal path rather than disabled mode.
+	 */
+	private function assert_init_not_skipped(): void {
+		remove_action( ErrorLogHandler::META_LOG_API, [ $this->loader, 'handle_disabled_mode_crash_report' ], 10 );
+
+		$this->loader->init_plugin();
+
+		$this->assertFalse(
+			has_action( ErrorLogHandler::META_LOG_API, [ $this->loader, 'handle_disabled_mode_crash_report' ] ),
+			'Disabled-mode services must not be registered when the reconciled state is idle.'
+		);
+	}
+
+	/**
+	 * Writes a raw payload to the flag file.
+	 *
+	 * @param array $payload payload to encode.
+	 */
+	private function write_flag_file( array $payload ): void {
+		$flag_dir = dirname( $this->flag_file_path );
+		if ( ! is_dir( $flag_dir ) ) {
+			wp_mkdir_p( $flag_dir );
+		}
+
+		file_put_contents( $this->flag_file_path, wp_json_encode( $payload ) ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents
 	}
 
 	/**

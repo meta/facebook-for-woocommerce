@@ -13,7 +13,7 @@ namespace WooCommerce\Facebook\Tests;
 use ReflectionClass;
 
 /**
- * Unit test for disable-window escalation by crash count.
+ * Unit test for disable-window escalation by crash guard level.
  *
  * @since 3.6.4
  */
@@ -31,18 +31,14 @@ class BootstrapDisableWindowEscalationTest extends AbstractWPUnitTestWithSafeFil
 		$this->reflection = new ReflectionClass( \WC_Facebook_Loader::class );
 	}
 
-	public function test_disable_window_escalates_with_crash_count(): void {
+	public function test_disable_window_escalates_and_caps_without_a_permanent_tier(): void {
 		$get_disable_window_seconds = $this->reflection->getMethod( 'get_disable_window_seconds' );
 		$get_disable_window_seconds->setAccessible( true );
 
-		// 1st crash => temporary 10-minute disable window.
 		$this->assertSame( 10 * MINUTE_IN_SECONDS, $get_disable_window_seconds->invoke( $this->loader, 1 ) );
-
-		// 2nd crash => temporary 1-hour disable window.
 		$this->assertSame( HOUR_IN_SECONDS, $get_disable_window_seconds->invoke( $this->loader, 2 ) );
-
-		// 3rd+ crash => permanent disable (no automatic re-enable window).
-		$this->assertNull( $get_disable_window_seconds->invoke( $this->loader, 3 ) );
-		$this->assertNull( $get_disable_window_seconds->invoke( $this->loader, 4 ) );
+		$this->assertSame( 6 * HOUR_IN_SECONDS, $get_disable_window_seconds->invoke( $this->loader, 3 ) );
+		$this->assertSame( DAY_IN_SECONDS, $get_disable_window_seconds->invoke( $this->loader, 4 ) );
+		$this->assertSame( DAY_IN_SECONDS, $get_disable_window_seconds->invoke( $this->loader, 5 ), 'The pause caps at 24 hours; there is no permanent disable.' );
 	}
 }

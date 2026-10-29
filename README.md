@@ -29,6 +29,24 @@ panel under the `Enable debug mode` section.
 By default plugin omits headers in the requests to make the logs more readable. If debugging with headers is necessary
 you can enable the headers in the logs by setting `wc_facebook_request_headers_in_debug_log` option to true.
 
+### Crash recovery
+
+A shutdown handler watches for fatal errors and uncaught exceptions raised in plugin files (including `vendor/`).
+Each one increments a consecutive-crash streak for its request class (storefront or backend); crashes within
+30 seconds of each other count once, and any request that runs the plugin and finishes cleanly resets the streak.
+Three counted crashes in a row would pause the plugin. Before that happens, for a storefront crash, the guard runs a
+self-check: a plain loopback request to the crashing page that carries nothing the client sent (no cookies, query
+string or body), marked with a one-time token so the events tracker sends nothing to Meta for it. If that request
+runs the plugin cleanly, the crash depends on client input, the streak resets and the plugin stays on. If it crashes
+too, or no verdict can be obtained (loopback blocked, a cached page, an auth wall), the plugin pauses for 10 minutes.
+Backend crashes (wp-admin, admin-ajax, REST, cron, CLI) are not self-checked, since a storefront request cannot vouch
+for them; they pause on their own streak, which only clean backend requests reset. A full
+streak again within a day grows the pause to 1 hour, 6 hours and then 24 hours; it never becomes permanent, a single
+crash after a pause never escalates on its own, and the level decays after a day without crashes. The state lives in
+`wp-content/uploads/facebook-for-woocommerce/.disabled`; the plugins screen shows a notice with a "Resume now"
+button, and every crash writes one `Meta for WooCommerce crash guard:` line to the PHP error log with the self-check
+result and the decision taken. See `includes/Framework/CrashGuardState.php` and `PluginCrashHandler::run_self_check()`.
+
 ### Crash recovery limitation (known gap)
 
 Crash recovery uses a shutdown handler to write a disable flag and queue a sanitized crash report.

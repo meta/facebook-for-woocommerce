@@ -33,14 +33,17 @@ you can enable the headers in the logs by setting `wc_facebook_request_headers_i
 
 A shutdown handler watches for fatal errors and uncaught exceptions raised in plugin files (including `vendor/`).
 Each one increments a consecutive-crash streak for its request class. Requests are classed by who could have shaped
-their input: trusted (WP-CLI, cron, and logged-in users who can manage WooCommerce or the site) or untrusted
-(everyone else, logged-in customers included). Crashes within 30 seconds of each other count once, and any request
-that runs the plugin and finishes cleanly resets the streak of its class.
+their input: trusted (WP-CLI, cron requests that carry no client input, and logged-in users who can manage
+WooCommerce or the site) or untrusted (everyone else, logged-in customers included). A cron request is trusted only
+when it looks like the one WordPress spawns itself: no cookies, no body, no referrer and no query argument other than
+`doing_wp_cron`. Anyone can request `wp-cron.php`, and that request keeps the client's cookies and query string, so a
+cron request that carries them is an outsider's request like any other. Crashes within 30 seconds of each other
+count once, and any request that runs the plugin and finishes cleanly resets the streak of its class.
 
 Three counted crashes in a row would pause the plugin. Trusted crashes do so on the streak alone. For an untrusted
 crash the guard first runs a self-check: a plain loopback request that carries nothing the client sent (no cookies,
 query string or body), marked with a one-time token so the events tracker sends nothing to Meta for it. It targets
-the crashing page for a storefront GET and the home page otherwise, admin-ajax and REST included. If that request
+the crashing page for a storefront GET and the home page otherwise, admin-ajax, REST and cron included. If that request
 runs the plugin cleanly, the crash depends on client input, the streak resets and the plugin stays on. If it crashes
 too, the plugin pauses for 10 minutes. If no verdict can be obtained (loopback blocked, a cached page, an auth wall,
 a request that never bootstrapped the plugin), the crash is counted as unverified and the plugin stays on rather

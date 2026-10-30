@@ -22,8 +22,8 @@ defined( 'ABSPATH' ) || exit;
  * The model:
  *
  * - Every plugin crash increments a consecutive-crash streak for its request class: trusted
- *   (WP-CLI, cron, users who can manage WooCommerce or the site) or untrusted (everyone else,
- *   logged-in customers included). Crashes closer together than CRASH_SPACING_SECONDS count once, so a burst of
+ *   (WP-CLI, cron requests that carry no client input, users who can manage WooCommerce or the
+ *   site) or untrusted (everyone else, logged-in customers included). Crashes closer together than CRASH_SPACING_SECONDS count once, so a burst of
  *   concurrent requests cannot inflate the streak, and a streak older than STREAK_TTL_SECONDS
  *   starts over.
  * - Any request where the plugin initialized and finished without a plugin fatal resets the
@@ -138,12 +138,21 @@ final class CrashGuardState {
 	/**
 	 * Classifies the current request by who could have shaped its input.
 	 *
-	 * Trusted: WP-CLI, cron, and logged-in users who can manage WooCommerce or the site. Their
-	 * input is not an outsider's, so their crashes pause the plugin on the streak alone, and a
-	 * plugin broken on every request is still caught through cron and wp-admin even where the
-	 * self-check cannot run. Untrusted: everyone else, logged-in customers included, because open
-	 * registration makes a login prove nothing. Streaks are tracked per class so that trusted
-	 * traffic cannot mask a storefront that crashes for visitors, and vice versa.
+	 * Trusted: WP-CLI, cron requests that carry no client input, and logged-in users who can
+	 * manage WooCommerce or the site. Their input is not an outsider's, so their crashes pause the
+	 * plugin on the streak alone, and a plugin broken on every request is still caught through
+	 * cron and wp-admin even where the self-check cannot run. Untrusted: everyone else, logged-in
+	 * customers included, because open registration makes a login prove nothing. Streaks are
+	 * tracked per class so that trusted traffic cannot mask a storefront that crashes for
+	 * visitors, and vice versa.
+	 *
+	 * Cron is not trusted by itself. wp-cron.php defines DOING_CRON for any GET request it receives,
+	 * and that request keeps the client's cookies, query string and headers, which the plugin reads
+	 * while it bootstraps; with ALTERNATE_WP_CRON a visitor's own request even becomes the cron run.
+	 * A cron request is therefore trusted only when it carries nothing a client could have shaped
+	 * (see is_input_free_request()), which is the shape of the loopback WordPress's spawn_cron()
+	 * sends and of the usual system-cron ping. Anyone can send such a bare request too, but a crash
+	 * it causes is one the site's own cron spawn hits as well, so it was not shaped by an outsider.
 	 *
 	 * The user is resolved defensively: this runs at shutdown, possibly after a fatal, and
 	 * anything that cannot be resolved counts as untrusted.
@@ -153,7 +162,11 @@ final class CrashGuardState {
 	 * @return string one of the REQUEST_CLASS_* constants.
 	 */
 	public static function get_request_class() {
-		if ( ( defined( 'WP_CLI' ) && WP_CLI ) || ( defined( 'DOING_CRON' ) && DOING_CRON ) ) {
+		if ( defined( 'WP_CLI' ) && WP_CLI ) {
+			return self::REQUEST_CLASS_TRUSTED;
+		}
+
+		if ( self::is_doing_cron() && self::is_input_free_request() ) {
 			return self::REQUEST_CLASS_TRUSTED;
 		}
 
@@ -168,6 +181,56 @@ final class CrashGuardState {
 		}
 
 		return self::REQUEST_CLASS_UNTRUSTED;
+	}
+
+	/**
+	 * Whether this is a cron request.
+	 *
+	 * Prefers wp_doing_cron() so the `wp_doing_cron` filter is honored, and falls back to the
+	 * constant when WordPress's load.php functions are not available.
+	 *
+	 * @since 3.7.9
+	 *
+	 * @return bool
+	 */
+	public static function is_doing_cron() {
+		if ( function_exists( 'wp_doing_cron' ) ) {
+			return (bool) wp_doing_cron();
+		}
+
+		return defined( 'DOING_CRON' ) && DOING_CRON;
+	}
+
+	/**
+	 * Whether the current request carries nothing a client could have shaped.
+	 *
+	 * True for a bare request: no cookies, no body, no referrer and no query argument other than
+	 * `doing_wp_cron`. That is what spawn_cron() sends to wp-cron.php and what a system-cron ping
+	 * looks like. Remaining request headers such as the user agent are not considered: the plugin
+	 * only ever reads them as sanitized strings.
+	 *
+	 * @since 3.7.9
+	 *
+	 * @return bool
+	 */
+	public static function is_input_free_request() {
+		// phpcs:disable WordPress.Security.NonceVerification, WordPress.Security.ValidatedSanitizedInput -- Only the presence of input is inspected, no value is used.
+		if ( ! empty( $_COOKIE ) || ! empty( $_POST ) || ! empty( $_FILES ) ) {
+			return false;
+		}
+
+		if ( ! empty( $_SERVER['HTTP_COOKIE'] ) || ! empty( $_SERVER['HTTP_REFERER'] ) ) {
+			return false;
+		}
+
+		foreach ( array_keys( (array) $_GET ) as $key ) {
+			if ( 'doing_wp_cron' !== $key ) {
+				return false;
+			}
+		}
+		// phpcs:enable
+
+		return true;
 	}
 
 	/**

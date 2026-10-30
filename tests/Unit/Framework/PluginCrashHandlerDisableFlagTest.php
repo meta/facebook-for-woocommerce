@@ -34,6 +34,9 @@ class PluginCrashHandlerDisableFlagTest extends AbstractWPUnitTestWithOptionIsol
 	/** @var bool */
 	private $original_plugin_initialized;
 
+	/** @var array request globals ($_GET, $_COOKIE, the cookie and referrer headers, URI and method) as they were before the test. */
+	private $original_request_input;
+
 	public function setUp(): void {
 		parent::setUp();
 
@@ -65,6 +68,7 @@ class PluginCrashHandlerDisableFlagTest extends AbstractWPUnitTestWithOptionIsol
 		$this->reflection                  = new ReflectionClass( PluginCrashHandler::class );
 		$this->original_plugin_initialized = (bool) $this->get_static( 'plugin_initialized' );
 		$this->set_static( 'plugin_initialized', true );
+		$this->original_request_input = [ $_GET, $_COOKIE, $_SERVER['HTTP_COOKIE'] ?? null, $_SERVER['HTTP_REFERER'] ?? null, $_SERVER['REQUEST_URI'] ?? null, $_SERVER['REQUEST_METHOD'] ?? null ];
 
 		CrashGuardState::clear();
 		delete_transient( PluginCrashHandler::LAST_CRASH_TRANSIENT );
@@ -72,8 +76,18 @@ class PluginCrashHandlerDisableFlagTest extends AbstractWPUnitTestWithOptionIsol
 
 	public function tearDown(): void {
 		wp_set_current_user( 0 );
-		unset( $_GET[ PluginCrashHandler::SELF_CHECK_QUERY_ARG ], $_SERVER['REQUEST_URI'] );
-		$_SERVER['REQUEST_METHOD'] = 'GET';
+		// Restore the request globals as they were, rather than unsetting them: since WordPress 6.9
+		// _wp_cron() reads REQUEST_URI on shutdown and warns when a test left it undefined.
+		list( $_GET, $_COOKIE, $cookie_header, $referer, $request_uri, $request_method ) = $this->original_request_input;
+		$this->set_request_headers( $cookie_header, $referer );
+		foreach ( [ 'REQUEST_URI' => $request_uri, 'REQUEST_METHOD' => $request_method ] as $key => $value ) {
+			if ( null === $value ) {
+				unset( $_SERVER[ $key ] );
+			} else {
+				$_SERVER[ $key ] = $value;
+			}
+		}
+		unset( $_GET[ PluginCrashHandler::SELF_CHECK_QUERY_ARG ] );
 		PluginCrashHandler::detect_self_check_request();
 		$this->set_static( 'plugin_initialized', $this->original_plugin_initialized );
 		CrashGuardState::clear();
@@ -305,6 +319,49 @@ class PluginCrashHandlerDisableFlagTest extends AbstractWPUnitTestWithOptionIsol
 
 		$this->assertCount( 1, $this->handler->self_check_urls, 'A customer login proves nothing; the self-check still decides.' );
 		$this->assertFalse( CrashGuardState::is_disabled( CrashGuardState::read( self::T0 + 60 ), self::T0 + 61 ) );
+	}
+
+	public function test_bare_cron_crashes_are_trusted_and_pause_on_their_streak(): void {
+		$this->add_filter_with_safe_teardown( 'wp_doing_cron', '__return_true' );
+		$this->handler->self_check_behaviour = $this->self_check_recording( PluginCrashHandler::SELF_CHECK_CLEAN );
+		$_GET                                = [ 'doing_wp_cron' => '1700000000.1234567890123456789012' ];
+		$_COOKIE                             = [];
+		$this->set_request_headers( null, null );
+		$_SERVER['REQUEST_METHOD'] = 'POST';
+		$_SERVER['REQUEST_URI']    = '/wp-cron.php?doing_wp_cron=1700000000.1234567890123456789012';
+
+		$this->assertSame( CrashGuardState::REQUEST_CLASS_TRUSTED, CrashGuardState::get_request_class(), 'Precondition: the request spawn_cron() sends.' );
+
+		$this->simulate_plugin_crash( self::T0 );
+		$this->simulate_plugin_crash( self::T0 + 30 );
+		$this->simulate_plugin_crash( self::T0 + 60 );
+
+		$this->assertCount( 0, $this->handler->self_check_urls, 'A bare cron request carries no outsider input and needs no self-check.' );
+		$this->assertTrue( CrashGuardState::is_disabled( CrashGuardState::read( self::T0 + 60 ), self::T0 + 61 ), 'A plugin broken in cron is still caught.' );
+	}
+
+	public function test_cron_request_carrying_client_input_is_untrusted_and_self_checked_against_the_home_page(): void {
+		$this->add_filter_with_safe_teardown( 'wp_doing_cron', '__return_true' );
+		$this->handler->self_check_behaviour = $this->self_check_recording( PluginCrashHandler::SELF_CHECK_CLEAN );
+		$_GET                                = [ 'doing_wp_cron' => '1700000000.1234567890123456789012' ];
+		$_COOKIE                             = [ '_fbc' => [ 'x' => '1' ] ];
+		$this->set_request_headers( '_fbc[x]=1', null );
+		$_SERVER['REQUEST_METHOD'] = 'GET';
+		$_SERVER['REQUEST_URI']    = '/wp-cron.php?doing_wp_cron=1700000000.1234567890123456789012';
+
+		$this->assertSame( CrashGuardState::REQUEST_CLASS_UNTRUSTED, CrashGuardState::get_request_class(), 'Precondition: anyone can GET wp-cron.php with their own cookies.' );
+
+		$this->simulate_plugin_crash( self::T0 );
+		$this->simulate_plugin_crash( self::T0 + 30 );
+		$this->simulate_plugin_crash( self::T0 + 60 );
+
+		$this->assertCount( 1, $this->handler->self_check_urls, 'An outsider\'s cron request gets the self-check like any other.' );
+		$this->assertStringStartsWith( home_url( '/' ) . '?', $this->handler->self_check_urls[0], 'The probe goes to the home page, never to wp-cron.php.' );
+
+		$state = CrashGuardState::read( self::T0 + 60 );
+		$this->assertFalse( CrashGuardState::is_disabled( $state, self::T0 + 61 ), 'Anonymous cron crashes that a plain request does not reproduce never pause the plugin.' );
+		$this->assertSame( 0, $state['streaks'][ CrashGuardState::REQUEST_CLASS_TRUSTED ]['count'], 'Nothing was counted against the trusted streak.' );
+		$this->assertSame( 1, $state['streaks'][ CrashGuardState::REQUEST_CLASS_UNTRUSTED ]['count'] );
 	}
 
 	public function inconclusive_self_check_provider(): array {
@@ -593,6 +650,18 @@ class PluginCrashHandlerDisableFlagTest extends AbstractWPUnitTestWithOptionIsol
 	 * @param string $verdict one of the SELF_CHECK_* constants.
 	 * @return callable
 	 */
+	private function set_request_headers( ?string $cookie_header, ?string $referer ): void {
+		unset( $_SERVER['HTTP_COOKIE'], $_SERVER['HTTP_REFERER'] );
+
+		if ( null !== $cookie_header ) {
+			$_SERVER['HTTP_COOKIE'] = $cookie_header;
+		}
+
+		if ( null !== $referer ) {
+			$_SERVER['HTTP_REFERER'] = $referer;
+		}
+	}
+
 	private function self_check_recording( string $verdict ): callable {
 		return function ( string $url ) use ( $verdict ) {
 			set_transient( PluginCrashHandler::SELF_CHECK_OUTCOME_PREFIX . $this->token_from_url( $url ), $verdict, MINUTE_IN_SECONDS );

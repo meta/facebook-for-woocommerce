@@ -21,8 +21,9 @@ if ( function_exists( 'wc_facebook_handle_bootstrap_crash' ) ) {
 /**
  * Fallback crash handling for fatals raised before PluginCrashHandler registers.
  *
- * Applies the same trust policy as the main handler. A trusted request (WP-CLI, cron, or a
- * user who can manage WooCommerce or the site) may pause the plugin on its streak. An
+ * Applies the same trust policy as the main handler. A trusted request (WP-CLI, a cron request
+ * that carries no client input, or a user who can manage WooCommerce or the site) may pause the
+ * plugin on its streak. An
  * untrusted or unresolved request is only ever counted as unverified, because no self-check
  * can run this early, so an outsider cannot switch the integration off through a bootstrap
  * fatal either.
@@ -81,7 +82,13 @@ function wc_facebook_handle_bootstrap_crash( $error, $plugin_dir ) {
 
 	// Last resort: even the state class could not be loaded, so there is no streak and no
 	// unverified record to keep. Only a trusted request may pause, for the shortest window.
-	$trusted = ( defined( 'WP_CLI' ) && WP_CLI ) || ( defined( 'DOING_CRON' ) && DOING_CRON );
+	// Mirrors CrashGuardState::get_request_class(): WP-CLI, or a cron request that carries nothing a
+	// client could have shaped. wp-cron.php accepts any GET, cookies and query string included.
+	$trusted = defined( 'WP_CLI' ) && WP_CLI;
+	if ( ! $trusted && ( function_exists( 'wp_doing_cron' ) ? wp_doing_cron() : ( defined( 'DOING_CRON' ) && DOING_CRON ) ) ) {
+		// phpcs:ignore WordPress.Security.NonceVerification, WordPress.Security.ValidatedSanitizedInput -- Only the presence of input is inspected, no value is used.
+		$trusted = empty( $_COOKIE ) && empty( $_POST ) && empty( $_FILES ) && empty( $_SERVER['HTTP_COOKIE'] ) && empty( $_SERVER['HTTP_REFERER'] ) && [] === array_diff( array_keys( (array) $_GET ), [ 'doing_wp_cron' ] );
+	}
 	if ( ! $trusted && function_exists( 'current_user_can' ) && function_exists( 'wp_get_current_user' ) ) {
 		try {
 			$trusted = current_user_can( 'manage_woocommerce' ) || current_user_can( 'manage_options' );

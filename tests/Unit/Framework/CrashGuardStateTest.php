@@ -782,6 +782,46 @@ class CrashGuardStateTest extends AbstractWPUnitTestWithSafeFiltering {
 		}
 	}
 
+	public function test_cron_request_is_trusted_only_when_it_carries_no_client_input(): void {
+		$this->add_filter_with_safe_teardown( 'wp_doing_cron', '__return_true' );
+		$saved = [ $_GET, $_COOKIE, $_POST, $_SERVER ];
+
+		try {
+			$_GET    = [];
+			$_COOKIE = [];
+			$_POST   = [];
+			unset( $_SERVER['HTTP_COOKIE'], $_SERVER['HTTP_REFERER'] );
+
+			$this->assertTrue( CrashGuardState::is_doing_cron() );
+			$this->assertTrue( CrashGuardState::is_input_free_request() );
+			$this->assertSame( CrashGuardState::REQUEST_CLASS_TRUSTED, CrashGuardState::get_request_class(), 'A bare cron request, as spawn_cron() sends it, is trusted.' );
+
+			$_GET = [ 'doing_wp_cron' => '1700000000.1234567890123456789012' ];
+			$this->assertSame( CrashGuardState::REQUEST_CLASS_TRUSTED, CrashGuardState::get_request_class(), 'The spawn key is the one query argument a cron request may carry.' );
+
+			$_GET = [ 'doing_wp_cron' => '1', 'fbclid' => [ 'x' => '1' ] ];
+			$this->assertSame( CrashGuardState::REQUEST_CLASS_UNTRUSTED, CrashGuardState::get_request_class(), 'Any other query argument is client input.' );
+
+			$_GET    = [];
+			$_COOKIE = [ '_fbc' => [ 'x' => '1' ] ];
+			$this->assertSame( CrashGuardState::REQUEST_CLASS_UNTRUSTED, CrashGuardState::get_request_class(), 'Cookies are client input: wp-cron.php accepts any GET, cookies included.' );
+
+			$_COOKIE                = [];
+			$_SERVER['HTTP_COOKIE'] = '_fbc[x]=1';
+			$this->assertSame( CrashGuardState::REQUEST_CLASS_UNTRUSTED, CrashGuardState::get_request_class(), 'A cookie header counts even when PHP did not populate $_COOKIE.' );
+
+			unset( $_SERVER['HTTP_COOKIE'] );
+			$_SERVER['HTTP_REFERER'] = 'https://example.com/?_fbc[x]=1';
+			$this->assertSame( CrashGuardState::REQUEST_CLASS_UNTRUSTED, CrashGuardState::get_request_class(), 'The referrer reaches the CAPI parameter builder, so it is client input.' );
+
+			unset( $_SERVER['HTTP_REFERER'] );
+			$_POST = [ 'x' => '1' ];
+			$this->assertSame( CrashGuardState::REQUEST_CLASS_UNTRUSTED, CrashGuardState::get_request_class(), 'A request body is client input.' );
+		} finally {
+			list( $_GET, $_COOKIE, $_POST, $_SERVER ) = $saved;
+		}
+	}
+
 	public function test_unverified_crash_counts_without_pausing_and_holds_the_streak(): void {
 		$this->crash( self::T0 );
 		$this->crash( self::T0 + 30 );

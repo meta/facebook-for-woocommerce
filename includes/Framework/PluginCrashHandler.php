@@ -1174,7 +1174,7 @@ class PluginCrashHandler {
 		$request_class = CrashGuardState::get_request_class();
 		$now           = $this->get_current_time();
 
-		// Trusted requests (WP-CLI, cron, managers) pause on the streak alone. An untrusted request
+		// Trusted requests (WP-CLI, input-free cron, managers) pause on the streak alone. An untrusted request
 		// may pause only when its own self-check saw a plain request crash too. The default is
 		// therefore "cannot pause": the preview below is unlocked, and if another request pushes
 		// the streak to the threshold between the preview and the locked write, this crash is
@@ -1213,7 +1213,7 @@ class PluginCrashHandler {
 	 *
 	 * Only untrusted crashes are checked; trusted ones pause on their streak alone. The question
 	 * the check answers is whether the plugin runs cleanly for a visitor who sends nothing, so it
-	 * applies to admin-ajax and REST crashes as much as to page views.
+	 * applies to admin-ajax, REST and cron crashes as much as to page views.
 	 *
 	 * The target is the path of the crashing request without its query string for a storefront
 	 * GET, and the home page for everything else. The request carries a one-time token; the
@@ -1363,7 +1363,13 @@ class PluginCrashHandler {
 	/**
 	 * Chooses what the self-check requests: for a storefront GET, the crashing request's path
 	 * stripped of everything the client sent; for anything else (admin-ajax, REST, wp-admin,
-	 * POST), the home page.
+	 * cron, POST), the home page.
+	 *
+	 * A cron request that reaches this point carried client input, since an input-free one is
+	 * trusted and never self-checked. Its own URL is no use as a target: wp-cron.php ends the
+	 * HTTP response before WordPress loads, so no verdict would arrive in time, and the probe
+	 * would run the due cron jobs. The home page answers the question that matters, whether the
+	 * plugin runs cleanly for a visitor who sends nothing.
 	 *
 	 * @since 3.7.9
 	 *
@@ -1372,7 +1378,7 @@ class PluginCrashHandler {
 	private function get_self_check_target() {
 		$method = isset( $_SERVER['REQUEST_METHOD'] ) ? strtoupper( sanitize_key( wp_unslash( $_SERVER['REQUEST_METHOD'] ) ) ) : 'GET';
 
-		$is_storefront = ! ( function_exists( 'is_admin' ) && is_admin() ) && ! ( defined( 'REST_REQUEST' ) && REST_REQUEST ) && ! ( function_exists( 'wp_doing_ajax' ) && wp_doing_ajax() );
+		$is_storefront = ! ( function_exists( 'is_admin' ) && is_admin() ) && ! ( defined( 'REST_REQUEST' ) && REST_REQUEST ) && ! ( function_exists( 'wp_doing_ajax' ) && wp_doing_ajax() ) && ! CrashGuardState::is_doing_cron();
 
 		if ( ! $is_storefront || ! in_array( $method, [ 'GET', 'HEAD' ], true ) ) {
 			return '/';
@@ -1664,7 +1670,7 @@ class PluginCrashHandler {
 			return 'cli';
 		}
 
-		if ( defined( 'DOING_CRON' ) && DOING_CRON ) {
+		if ( CrashGuardState::is_doing_cron() ) {
 			return 'cron';
 		}
 

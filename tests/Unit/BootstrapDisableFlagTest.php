@@ -173,6 +173,55 @@ class BootstrapDisableFlagTest extends AbstractWPUnitTestWithOptionIsolationAndS
 		$this->assert_init_not_skipped();
 	}
 
+	public function test_bootstrap_fallback_counts_an_anonymous_crash_as_unverified(): void {
+		\WooCommerce\Facebook\Framework\CrashGuardState::record_crash( \WooCommerce\Facebook\Framework\CrashGuardState::REQUEST_CLASS_UNTRUSTED, time() - 60 );
+		\WooCommerce\Facebook\Framework\CrashGuardState::record_crash( \WooCommerce\Facebook\Framework\CrashGuardState::REQUEST_CLASS_UNTRUSTED, time() - 30 );
+
+		$this->assertSame( 'recorded', wc_facebook_handle_bootstrap_crash( $this->bootstrap_fatal(), rtrim( WC_FACEBOOK_PLUGIN_PATH, '/' ) ) );
+
+		$this->assertFalse( $this->has_valid_disable_flag(), 'An anonymous fatal during plugin load must not pause: no self-check can vouch for it.' );
+		$state = \WooCommerce\Facebook\Framework\CrashGuardState::read();
+		$this->assertSame( 1, $state['unverified']['count'] );
+		$this->assertStringContainsString( 'bootstrap', $state['unverified']['reason'] );
+	}
+
+	public function test_bootstrap_fallback_pauses_a_trusted_crash(): void {
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
+		try {
+			\WooCommerce\Facebook\Framework\CrashGuardState::record_crash( \WooCommerce\Facebook\Framework\CrashGuardState::REQUEST_CLASS_TRUSTED, time() - 60 );
+			\WooCommerce\Facebook\Framework\CrashGuardState::record_crash( \WooCommerce\Facebook\Framework\CrashGuardState::REQUEST_CLASS_TRUSTED, time() - 30 );
+
+			$this->assertSame( 'recorded', wc_facebook_handle_bootstrap_crash( $this->bootstrap_fatal(), rtrim( WC_FACEBOOK_PLUGIN_PATH, '/' ) ) );
+
+			$this->assertTrue( $this->has_valid_disable_flag(), 'A manager\'s third crash during plugin load pauses on the streak.' );
+		} finally {
+			wp_set_current_user( 0 );
+		}
+	}
+
+	public function test_bootstrap_fallback_ignores_fatals_outside_the_plugin(): void {
+		$fatal         = $this->bootstrap_fatal();
+		$fatal['file'] = '/srv/www/wp-content/plugins/some-other-plugin/other.php';
+
+		$this->assertNull( wc_facebook_handle_bootstrap_crash( $fatal, rtrim( WC_FACEBOOK_PLUGIN_PATH, '/' ) ) );
+		$this->assertNull( wc_facebook_handle_bootstrap_crash( null, rtrim( WC_FACEBOOK_PLUGIN_PATH, '/' ) ) );
+		$this->assertTrue( \WooCommerce\Facebook\Framework\CrashGuardState::is_idle( \WooCommerce\Facebook\Framework\CrashGuardState::read() ) );
+	}
+
+	/**
+	 * Returns an error_get_last() style payload for a fatal in a plugin bootstrap file.
+	 *
+	 * @return array
+	 */
+	private function bootstrap_fatal(): array {
+		return [
+			'type'    => E_ERROR,
+			'message' => 'Uncaught Error: Class "Missing" not found',
+			'file'    => WC_FACEBOOK_PLUGIN_PATH . 'class-wc-facebookcommerce.php',
+			'line'    => 12,
+		];
+	}
+
 	/**
 	 * Returns a current-format payload describing an active 10-minute pause.
 	 *

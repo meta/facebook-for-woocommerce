@@ -28,11 +28,12 @@ defined( 'ABSPATH' ) || exit;
 
 // Load the crash guard state class before anything else, so the fallback shutdown handler
 // below, the main crash handler and this loader share one definition of "paused".
-$wc_facebook_crash_guard_state_file = __DIR__ . '/includes/Framework/CrashGuardState.php';
-if ( is_readable( $wc_facebook_crash_guard_state_file ) ) {
-	require_once $wc_facebook_crash_guard_state_file;
+foreach ( [ 'CrashGuardState.php', 'crash-guard-bootstrap-fallback.php' ] as $wc_facebook_crash_guard_file ) {
+	if ( is_readable( __DIR__ . '/includes/Framework/' . $wc_facebook_crash_guard_file ) ) {
+		require_once __DIR__ . '/includes/Framework/' . $wc_facebook_crash_guard_file;
+	}
 }
-unset( $wc_facebook_crash_guard_state_file );
+unset( $wc_facebook_crash_guard_file );
 
 // Register a minimal fallback shutdown handler before main plugin initialization.
 register_shutdown_function(
@@ -41,68 +42,9 @@ register_shutdown_function(
 			return;
 		}
 
-		$error = error_get_last();
-		if ( ! is_array( $error ) || empty( $error['type'] ) ) {
-			return;
+		if ( function_exists( 'wc_facebook_handle_bootstrap_crash' ) ) {
+			wc_facebook_handle_bootstrap_crash( error_get_last(), __DIR__ );
 		}
-
-		if ( ! in_array( (int) $error['type'], [ E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR ], true ) ) {
-			return;
-		}
-
-		$error_file = isset( $error['file'] ) ? (string) $error['file'] : '';
-		if ( '' === $error_file ) {
-			return;
-		}
-
-		$normalized_error_file = str_replace( '\\', '/', $error_file );
-		$normalized_plugin_dir = rtrim( str_replace( '\\', '/', __DIR__ ), '/' );
-		if ( 0 !== strpos( $normalized_error_file, $normalized_plugin_dir . '/' ) ) {
-			return;
-		}
-
-		if ( class_exists( '\\WooCommerce\\Facebook\\Framework\\CrashGuardState' ) ) {
-			$result = \WooCommerce\Facebook\Framework\CrashGuardState::record_crash( \WooCommerce\Facebook\Framework\CrashGuardState::get_request_class() );
-			error_log( // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
-				sprintf(
-					'Meta for WooCommerce crash guard (bootstrap): "%s" in %s:%d. %s',
-					isset( $error['message'] ) ? (string) $error['message'] : '',
-					$error_file,
-					isset( $error['line'] ) ? (int) $error['line'] : 0,
-					\WooCommerce\Facebook\Framework\CrashGuardState::describe_decision( $result )
-				)
-			);
-			return;
-		}
-
-		// Last resort when even the state class could not be loaded: pause for the shortest window.
-		$wp_content_dir = defined( 'WP_CONTENT_DIR' ) ? WP_CONTENT_DIR : dirname( dirname( __DIR__ ) );
-		$flag_file      = rtrim( str_replace( '\\', '/', (string) $wp_content_dir ), '/' ) . '/uploads/facebook-for-woocommerce/.disabled';
-		$flag_dir       = dirname( $flag_file );
-		$now            = time();
-		$payload_json   = wp_json_encode(
-			[
-				'version'        => 2,
-				'level'          => 1,
-				'disabled_at'    => $now,
-				'disabled_until' => $now + 10 * MINUTE_IN_SECONDS,
-				'last_crash_at'  => $now,
-				'updated_at'     => $now,
-			]
-		);
-		if ( ! is_string( $payload_json ) || '' === $payload_json ) {
-			return;
-		}
-
-		if ( ! is_dir( $flag_dir ) ) {
-			if ( function_exists( 'wp_mkdir_p' ) ) {
-				wp_mkdir_p( $flag_dir );
-			} else {
-				@mkdir( $flag_dir, 0755, true ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged,WordPress.WP.AlternativeFunctions.file_system_operations_mkdir
-			}
-		}
-
-		@file_put_contents( $flag_file, $payload_json ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged,WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents
 	}
 );
 

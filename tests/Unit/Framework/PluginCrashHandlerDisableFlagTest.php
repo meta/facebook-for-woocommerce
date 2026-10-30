@@ -71,6 +71,7 @@ class PluginCrashHandlerDisableFlagTest extends AbstractWPUnitTestWithOptionIsol
 	}
 
 	public function tearDown(): void {
+		wp_set_current_user( 0 );
 		unset( $_GET[ PluginCrashHandler::SELF_CHECK_QUERY_ARG ], $_SERVER['REQUEST_URI'] );
 		$_SERVER['REQUEST_METHOD'] = 'GET';
 		PluginCrashHandler::detect_self_check_request();
@@ -84,7 +85,7 @@ class PluginCrashHandlerDisableFlagTest extends AbstractWPUnitTestWithOptionIsol
 		$this->simulate_plugin_crash( self::T0 );
 
 		$state = CrashGuardState::read( self::T0 );
-		$this->assertSame( 1, $state['streaks'][ CrashGuardState::REQUEST_CLASS_FRONTEND ]['count'] );
+		$this->assertSame( 1, $state['streaks'][ CrashGuardState::REQUEST_CLASS_UNTRUSTED ]['count'] );
 		$this->assertFalse( CrashGuardState::is_disabled( $state, self::T0 ), 'One crash must not pause the plugin.' );
 
 		$summary = get_transient( PluginCrashHandler::LAST_CRASH_TRANSIENT );
@@ -95,6 +96,9 @@ class PluginCrashHandlerDisableFlagTest extends AbstractWPUnitTestWithOptionIsol
 	}
 
 	public function test_three_spaced_plugin_crashes_pause_the_plugin(): void {
+		// Anonymous crashes pause only once a plain request is shown to crash too.
+		$this->handler->self_check_behaviour = $this->self_check_recording( PluginCrashHandler::SELF_CHECK_CRASHED );
+
 		$this->simulate_plugin_crash( self::T0 );
 		$this->simulate_plugin_crash( self::T0 + 30 );
 		$this->simulate_plugin_crash( self::T0 + 60 );
@@ -111,7 +115,7 @@ class PluginCrashHandlerDisableFlagTest extends AbstractWPUnitTestWithOptionIsol
 
 		$this->simulate_healthy_shutdown( self::T0 + 40 );
 
-		$this->assertSame( 0, CrashGuardState::read( self::T0 + 40 )['streaks'][ CrashGuardState::REQUEST_CLASS_FRONTEND ]['count'] );
+		$this->assertSame( 0, CrashGuardState::read( self::T0 + 40 )['streaks'][ CrashGuardState::REQUEST_CLASS_UNTRUSTED ]['count'] );
 	}
 
 	public function test_healthy_shutdown_in_disabled_mode_does_not_reset_the_streak(): void {
@@ -123,7 +127,7 @@ class PluginCrashHandlerDisableFlagTest extends AbstractWPUnitTestWithOptionIsol
 
 		$this->assertSame(
 			2,
-			CrashGuardState::read( self::T0 + 40 )['streaks'][ CrashGuardState::REQUEST_CLASS_FRONTEND ]['count'],
+			CrashGuardState::read( self::T0 + 40 )['streaks'][ CrashGuardState::REQUEST_CLASS_UNTRUSTED ]['count'],
 			'A request that never bootstrapped the plugin is not evidence that it works.'
 		);
 	}
@@ -220,7 +224,7 @@ class PluginCrashHandlerDisableFlagTest extends AbstractWPUnitTestWithOptionIsol
 		$this->assertCount( 1, $this->handler->self_check_urls );
 		$state = CrashGuardState::read( self::T0 + 60 );
 		$this->assertFalse( CrashGuardState::is_disabled( $state, self::T0 + 61 ), 'A crash that a plain request cannot reproduce must not pause the plugin.' );
-		$this->assertSame( 1, $state['streaks'][ CrashGuardState::REQUEST_CLASS_FRONTEND ]['count'], 'The self-check counts as the healthy request; this crash starts a new streak.' );
+		$this->assertSame( 1, $state['streaks'][ CrashGuardState::REQUEST_CLASS_UNTRUSTED ]['count'], 'The self-check counts as the healthy request; this crash starts a new streak.' );
 
 		$token = $this->token_from_url( $this->handler->self_check_urls[0] );
 		$this->assertFalse( get_transient( PluginCrashHandler::SELF_CHECK_PENDING_PREFIX . $token ), 'The one-time token is withdrawn afterwards.' );
@@ -243,7 +247,7 @@ class PluginCrashHandlerDisableFlagTest extends AbstractWPUnitTestWithOptionIsol
 	/**
 	 * @dataProvider inconclusive_self_check_provider
 	 */
-	public function test_self_check_without_a_verdict_pauses_as_a_precaution( callable $behaviour ): void {
+	public function test_self_check_without_a_verdict_counts_as_unverified_instead_of_pausing( callable $behaviour ): void {
 		$this->handler->self_check_behaviour = $behaviour;
 
 		$this->simulate_plugin_crash( self::T0 );
@@ -251,7 +255,56 @@ class PluginCrashHandlerDisableFlagTest extends AbstractWPUnitTestWithOptionIsol
 		$this->simulate_plugin_crash( self::T0 + 60 );
 
 		$this->assertCount( 1, $this->handler->self_check_urls );
-		$this->assertTrue( CrashGuardState::is_disabled( CrashGuardState::read( self::T0 + 60 ), self::T0 + 61 ) );
+		$state = CrashGuardState::read( self::T0 + 60 );
+		$this->assertFalse( CrashGuardState::is_disabled( $state, self::T0 + 61 ), 'Without a verdict an outsider must not be able to pause the plugin.' );
+		$this->assertSame( 1, $state['unverified']['count'] );
+		$this->assertStringStartsWith( 'inconclusive', $state['unverified']['reason'] );
+		$this->assertSame( 3, $state['streaks'][ CrashGuardState::REQUEST_CLASS_UNTRUSTED ]['count'] );
+	}
+
+	public function test_unverified_crashes_are_resolved_by_a_later_verdict(): void {
+		$this->handler->self_check_behaviour = static function () {
+			return new \WP_Error( 'http_request_failed', 'cURL error 28: timed out' );
+		};
+		$this->simulate_plugin_crash( self::T0 );
+		$this->simulate_plugin_crash( self::T0 + 30 );
+		$this->simulate_plugin_crash( self::T0 + 60 );
+		$this->assertFalse( CrashGuardState::is_disabled( CrashGuardState::read( self::T0 + 60 ), self::T0 + 61 ) );
+
+		// Loopback works again and the plain request crashes too: now it pauses.
+		$this->handler->self_check_behaviour = $this->self_check_recording( PluginCrashHandler::SELF_CHECK_CRASHED );
+		$this->simulate_plugin_crash( self::T0 + 90 );
+
+		$state = CrashGuardState::read( self::T0 + 90 );
+		$this->assertTrue( CrashGuardState::is_disabled( $state, self::T0 + 91 ) );
+		$this->assertSame( 0, $state['unverified']['count'] );
+	}
+
+	public function test_anonymous_ajax_crash_is_self_checked_against_the_home_page(): void {
+		$this->add_filter_with_safe_teardown( 'wp_doing_ajax', '__return_true' );
+		$this->handler->self_check_behaviour = $this->self_check_recording( PluginCrashHandler::SELF_CHECK_CLEAN );
+		$_SERVER['REQUEST_METHOD']           = 'POST';
+		$_SERVER['REQUEST_URI']              = '/wp-admin/admin-ajax.php';
+
+		$this->simulate_plugin_crash( self::T0 );
+		$this->simulate_plugin_crash( self::T0 + 30 );
+		$this->simulate_plugin_crash( self::T0 + 60 );
+
+		$this->assertCount( 1, $this->handler->self_check_urls, 'An anonymous admin-ajax crash is untrusted and gets the self-check.' );
+		$this->assertStringStartsWith( home_url( '/' ) . '?', $this->handler->self_check_urls[0] );
+		$this->assertFalse( CrashGuardState::is_disabled( CrashGuardState::read( self::T0 + 60 ), self::T0 + 61 ) );
+	}
+
+	public function test_logged_in_customer_is_untrusted(): void {
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'subscriber' ] ) );
+		$this->handler->self_check_behaviour = $this->self_check_recording( PluginCrashHandler::SELF_CHECK_CLEAN );
+
+		$this->simulate_plugin_crash( self::T0 );
+		$this->simulate_plugin_crash( self::T0 + 30 );
+		$this->simulate_plugin_crash( self::T0 + 60 );
+
+		$this->assertCount( 1, $this->handler->self_check_urls, 'A customer login proves nothing; the self-check still decides.' );
+		$this->assertFalse( CrashGuardState::is_disabled( CrashGuardState::read( self::T0 + 60 ), self::T0 + 61 ) );
 	}
 
 	public function inconclusive_self_check_provider(): array {
@@ -334,7 +387,7 @@ class PluginCrashHandlerDisableFlagTest extends AbstractWPUnitTestWithOptionIsol
 
 			$state = CrashGuardState::read( self::T0 + 60 );
 			$this->assertFalse( CrashGuardState::is_disabled( $state, self::T0 + 61 ), 'A verdict that lands during the retry delay must be honored, not deleted.' );
-			$this->assertSame( 1, $state['streaks'][ CrashGuardState::REQUEST_CLASS_FRONTEND ]['count'] );
+			$this->assertSame( 1, $state['streaks'][ CrashGuardState::REQUEST_CLASS_UNTRUSTED ]['count'] );
 		} finally {
 			if ( '' !== $token ) {
 				wp_cache_delete( PluginCrashHandler::SELF_CHECK_OUTCOME_PREFIX . $token, 'transient' );
@@ -379,32 +432,28 @@ class PluginCrashHandlerDisableFlagTest extends AbstractWPUnitTestWithOptionIsol
 
 			$state = CrashGuardState::read( self::T0 + 60 );
 			$this->assertFalse( CrashGuardState::is_disabled( $state, self::T0 + 61 ), 'The retry must get past the memoized miss and find the stored verdict.' );
-			$this->assertSame( 1, $state['streaks'][ CrashGuardState::REQUEST_CLASS_FRONTEND ]['count'] );
+			$this->assertSame( 1, $state['streaks'][ CrashGuardState::REQUEST_CLASS_UNTRUSTED ]['count'] );
 		} finally {
 			wp_using_ext_object_cache( $was_using_ext_cache );
 		}
 	}
 
-	public function test_backend_crashes_pause_on_their_streak_without_a_storefront_check(): void {
+	public function test_trusted_crashes_pause_on_their_streak_without_a_self_check(): void {
 		$this->handler->self_check_behaviour = $this->self_check_recording( PluginCrashHandler::SELF_CHECK_CLEAN );
-		set_current_screen( 'dashboard' );
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
 
-		try {
-			$this->assertSame( CrashGuardState::REQUEST_CLASS_BACKEND, CrashGuardState::get_request_class(), 'Precondition: this is an admin request.' );
+		$this->assertSame( CrashGuardState::REQUEST_CLASS_TRUSTED, CrashGuardState::get_request_class(), 'Precondition: a manager is logged in.' );
 
-			$this->simulate_plugin_crash( self::T0 );
-			$this->simulate_plugin_crash( self::T0 + 30 );
-			$this->simulate_plugin_crash( self::T0 + 60 );
+		$this->simulate_plugin_crash( self::T0 );
+		$this->simulate_plugin_crash( self::T0 + 30 );
+		$this->simulate_plugin_crash( self::T0 + 60 );
 
-			$this->assertCount( 0, $this->handler->self_check_urls, 'A storefront request cannot vouch for wp-admin, so none is made.' );
+		$this->assertCount( 0, $this->handler->self_check_urls, 'Trusted input needs no self-check.' );
 
-			$state = CrashGuardState::read( self::T0 + 60 );
-			$this->assertTrue( CrashGuardState::is_disabled( $state, self::T0 + 61 ), 'An admin-only fatal must still reach recovery while the storefront works.' );
-			$this->assertSame( 1, $state['level'] );
-			$this->assertSame( 0, $state['streaks'][ CrashGuardState::REQUEST_CLASS_FRONTEND ]['count'] );
-		} finally {
-			set_current_screen( 'front' );
-		}
+		$state = CrashGuardState::read( self::T0 + 60 );
+		$this->assertTrue( CrashGuardState::is_disabled( $state, self::T0 + 61 ), 'A crash under a manager still reaches recovery.' );
+		$this->assertSame( 1, $state['level'] );
+		$this->assertSame( 0, $state['streaks'][ CrashGuardState::REQUEST_CLASS_UNTRUSTED ]['count'] );
 	}
 
 	public function test_self_check_request_records_a_verdict_instead_of_counting(): void {
@@ -416,16 +465,16 @@ class PluginCrashHandlerDisableFlagTest extends AbstractWPUnitTestWithOptionIsol
 		$this->assertTrue( PluginCrashHandler::is_self_check_request() );
 
 		// A streak from earlier must be left alone by the self-check's own shutdown.
-		CrashGuardState::record_crash( CrashGuardState::REQUEST_CLASS_FRONTEND, self::T0 );
-		CrashGuardState::record_crash( CrashGuardState::REQUEST_CLASS_FRONTEND, self::T0 + 30 );
+		CrashGuardState::record_crash( CrashGuardState::REQUEST_CLASS_UNTRUSTED, self::T0 );
+		CrashGuardState::record_crash( CrashGuardState::REQUEST_CLASS_UNTRUSTED, self::T0 + 30 );
 
 		$this->simulate_healthy_shutdown( self::T0 + 40 );
 		$this->assertSame( PluginCrashHandler::SELF_CHECK_CLEAN, get_transient( PluginCrashHandler::SELF_CHECK_OUTCOME_PREFIX . $token ) );
-		$this->assertSame( 2, CrashGuardState::read( self::T0 + 40 )['streaks'][ CrashGuardState::REQUEST_CLASS_FRONTEND ]['count'], 'A self-check is not a visitor and resets nothing itself.' );
+		$this->assertSame( 2, CrashGuardState::read( self::T0 + 40 )['streaks'][ CrashGuardState::REQUEST_CLASS_UNTRUSTED ]['count'], 'A self-check is not a visitor and resets nothing itself.' );
 
 		$this->simulate_plugin_crash( self::T0 + 70 );
 		$this->assertSame( PluginCrashHandler::SELF_CHECK_CRASHED, get_transient( PluginCrashHandler::SELF_CHECK_OUTCOME_PREFIX . $token ) );
-		$this->assertSame( 2, CrashGuardState::read( self::T0 + 70 )['streaks'][ CrashGuardState::REQUEST_CLASS_FRONTEND ]['count'], 'A crash inside the self-check is reported through the verdict, not the streak.' );
+		$this->assertSame( 2, CrashGuardState::read( self::T0 + 70 )['streaks'][ CrashGuardState::REQUEST_CLASS_UNTRUSTED ]['count'], 'A crash inside the self-check is reported through the verdict, not the streak.' );
 		$this->assertFalse( CrashGuardState::is_disabled( CrashGuardState::read( self::T0 + 70 ), self::T0 + 71 ) );
 	}
 

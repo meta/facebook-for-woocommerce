@@ -376,6 +376,9 @@ class WC_Facebook_Loader {
 
 		$state = CrashGuardState::read();
 		if ( ! CrashGuardState::is_disabled( $state ) ) {
+			if ( $this->has_unverified_crashes( $state ) ) {
+				$this->render_unverified_crashes_notice( $state );
+			}
 			return;
 		}
 
@@ -416,6 +419,74 @@ class WC_Facebook_Loader {
 			echo '<p><strong>' . esc_html__( 'Last crash:', 'facebook-for-woocommerce' ) . '</strong> <code>' . esc_html( $last_crash_label ) . '</code></p>';
 		}
 		echo '<p><a class="button button-primary" href="' . esc_url( $clear_url ) . '">' . esc_html__( 'Resume now', 'facebook-for-woocommerce' ) . '</a></p>';
+		echo '<button type="button" class="notice-dismiss"><span class="screen-reader-text">' . esc_html__( 'Dismiss this notice.', 'facebook-for-woocommerce' ) . '</span></button><input type="hidden" class="wc-facebook-disabled-notice-signature" value="' . esc_attr( $signature ) . '" /></div></td></tr>';
+	}
+
+	/**
+	 * Whether crashes reached the pause threshold without the self-check being able to confirm them.
+	 *
+	 * Such crashes do not pause the plugin (an outsider must not be able to switch the
+	 * integration off), so the admin is told instead.
+	 *
+	 * @since 3.7.9
+	 *
+	 * @param array|null $state crash guard state, read when null.
+	 * @return bool
+	 */
+	private function has_unverified_crashes( $state = null ) {
+		if ( null === $state ) {
+			$state = CrashGuardState::read();
+		}
+
+		return ! CrashGuardState::is_disabled( $state ) && (int) $state['unverified']['count'] > 0;
+	}
+
+	/**
+	 * Renders the plugins-page notice for crashes that could not be verified.
+	 *
+	 * @since 3.7.9
+	 *
+	 * @param array $state crash guard state.
+	 */
+	private function render_unverified_crashes_notice( array $state ) {
+		$signature = md5( 'unverified|' . (int) $state['unverified']['last_at'] . '|' . (int) $state['unverified']['count'] );
+		if ( $this->is_disabled_notice_dismissed_for_current_user( $signature ) ) {
+			return;
+		}
+
+		$clear_url = wp_nonce_url(
+			admin_url( 'admin-post.php?action=wc_facebook_clear_disable_flag' ),
+			'wc_facebook_clear_disable_flag'
+		);
+
+		$count   = (int) $state['unverified']['count'];
+		$last_at = wp_date( get_option( 'date_format' ) . ' ' . get_option( 'time_format' ), (int) $state['unverified']['last_at'] );
+		$reason  = (string) $state['unverified']['reason'];
+
+		$last_crash       = get_transient( PluginCrashHandler::LAST_CRASH_TRANSIENT );
+		$last_crash_label = '';
+		if ( is_array( $last_crash ) && ! empty( $last_crash['message'] ) ) {
+			$last_crash_label = (string) $last_crash['message'];
+			if ( ! empty( $last_crash['file'] ) ) {
+				$last_crash_label .= ' (' . (string) $last_crash['file'] . ':' . (int) ( $last_crash['line'] ?? 0 ) . ')';
+			}
+		}
+
+		echo '<tr class="plugin-update-tr active wc-facebook-disabled-notice-row"><td colspan="4" class="plugin-update colspanchange"><div class="notice inline notice-warning notice-alt wc-facebook-disabled-notice is-dismissible" data-wc-facebook-disabled-notice="1">';
+		echo '<p><strong>' . esc_html__( 'Meta for WooCommerce has crashed repeatedly but was not paused.', 'facebook-for-woocommerce' ) . '</strong></p>';
+		echo '<p>' . sprintf(
+			/* translators: 1: number of unverified crashes, 2: date and time of the latest one. */
+			esc_html( _n( 'Visitor requests crashed the plugin %1$d time (last at %2$s), but the plugin could not confirm that a plain request crashes too, so it stays on rather than let outside requests switch it off. Check the error log for the crash.', 'Visitor requests crashed the plugin %1$d times (last at %2$s), but the plugin could not confirm that a plain request crashes too, so it stays on rather than let outside requests switch it off. Check the error log for the crash.', $count, 'facebook-for-woocommerce' ) ),
+			(int) $count,
+			'<strong>' . esc_html( $last_at ) . '</strong>'
+		) . '</p>';
+		if ( '' !== $reason ) {
+			echo '<p><strong>' . esc_html__( 'Self-check:', 'facebook-for-woocommerce' ) . '</strong> ' . esc_html( $reason ) . '</p>';
+		}
+		if ( '' !== $last_crash_label ) {
+			echo '<p><strong>' . esc_html__( 'Last crash:', 'facebook-for-woocommerce' ) . '</strong> <code>' . esc_html( $last_crash_label ) . '</code></p>';
+		}
+		echo '<p><a class="button" href="' . esc_url( $clear_url ) . '">' . esc_html__( 'Clear crash records', 'facebook-for-woocommerce' ) . '</a></p>';
 		echo '<button type="button" class="notice-dismiss"><span class="screen-reader-text">' . esc_html__( 'Dismiss this notice.', 'facebook-for-woocommerce' ) . '</span></button><input type="hidden" class="wc-facebook-disabled-notice-signature" value="' . esc_attr( $signature ) . '" /></div></td></tr>';
 	}
 
@@ -511,7 +582,7 @@ class WC_Facebook_Loader {
 	 */
 	public function print_disabled_notice_dismiss_script() {
 		global $pagenow;
-		if ( 'plugins.php' !== $pagenow || ! current_user_can( 'manage_woocommerce' ) || ! $this->has_valid_disable_flag() ) {
+		if ( 'plugins.php' !== $pagenow || ! current_user_can( 'manage_woocommerce' ) || ( ! $this->has_valid_disable_flag() && ! $this->has_unverified_crashes() ) ) {
 			return;
 		}
 

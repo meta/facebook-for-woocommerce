@@ -103,7 +103,7 @@ class CrashGuardStateTest extends AbstractWPUnitTestWithSafeFiltering {
 		$this->crash( self::T0 + 30 );
 		$this->assertSame( 2, $this->frontend_streak( self::T0 + 30 ) );
 
-		$reset = CrashGuardState::record_healthy_request( CrashGuardState::REQUEST_CLASS_FRONTEND, self::T0 + 40 );
+		$reset = CrashGuardState::record_healthy_request( CrashGuardState::REQUEST_CLASS_UNTRUSTED, self::T0 + 40 );
 
 		$this->assertTrue( $reset );
 		$this->assertSame( 0, $this->frontend_streak( self::T0 + 40 ) );
@@ -118,30 +118,30 @@ class CrashGuardStateTest extends AbstractWPUnitTestWithSafeFiltering {
 		$this->crash( self::T0 );
 		$this->crash( self::T0 + 30 );
 
-		$reset = CrashGuardState::record_healthy_request( CrashGuardState::REQUEST_CLASS_BACKEND, self::T0 + 40 );
+		$reset = CrashGuardState::record_healthy_request( CrashGuardState::REQUEST_CLASS_TRUSTED, self::T0 + 40 );
 
 		$this->assertFalse( $reset );
 		$this->assertSame( 2, $this->frontend_streak( self::T0 + 40 ), 'An administrator browsing wp-admin must not mask a crashing storefront.' );
 	}
 
 	public function test_streaks_are_tracked_per_request_class(): void {
-		$this->crash( self::T0, CrashGuardState::REQUEST_CLASS_BACKEND );
-		$this->crash( self::T0 + 30, CrashGuardState::REQUEST_CLASS_BACKEND );
-		$this->crash( self::T0 + 60, CrashGuardState::REQUEST_CLASS_FRONTEND );
+		$this->crash( self::T0, CrashGuardState::REQUEST_CLASS_TRUSTED );
+		$this->crash( self::T0 + 30, CrashGuardState::REQUEST_CLASS_TRUSTED );
+		$this->crash( self::T0 + 60, CrashGuardState::REQUEST_CLASS_UNTRUSTED );
 
 		$state = CrashGuardState::read( self::T0 + 60 );
-		$this->assertSame( 2, $state['streaks'][ CrashGuardState::REQUEST_CLASS_BACKEND ]['count'] );
-		$this->assertSame( 1, $state['streaks'][ CrashGuardState::REQUEST_CLASS_FRONTEND ]['count'] );
+		$this->assertSame( 2, $state['streaks'][ CrashGuardState::REQUEST_CLASS_TRUSTED ]['count'] );
+		$this->assertSame( 1, $state['streaks'][ CrashGuardState::REQUEST_CLASS_UNTRUSTED ]['count'] );
 		$this->assertFalse( CrashGuardState::is_disabled( $state, self::T0 + 60 ) );
 	}
 
 	public function test_healthy_request_is_cheap_without_state_and_removes_idle_file(): void {
-		$this->assertFalse( CrashGuardState::record_healthy_request( CrashGuardState::REQUEST_CLASS_FRONTEND, self::T0 ) );
+		$this->assertFalse( CrashGuardState::record_healthy_request( CrashGuardState::REQUEST_CLASS_UNTRUSTED, self::T0 ) );
 
 		$this->write_raw( CrashGuardState::empty_state( self::T0 ) );
 		$this->assertFileExists( $this->flag_file_path );
 
-		$this->assertFalse( CrashGuardState::record_healthy_request( CrashGuardState::REQUEST_CLASS_FRONTEND, self::T0 + 1 ) );
+		$this->assertFalse( CrashGuardState::record_healthy_request( CrashGuardState::REQUEST_CLASS_UNTRUSTED, self::T0 + 1 ) );
 		$this->assertFileDoesNotExist( $this->flag_file_path, 'An idle state file is removed so later requests stop reading it.' );
 	}
 
@@ -166,7 +166,7 @@ class CrashGuardStateTest extends AbstractWPUnitTestWithSafeFiltering {
 		$this->assertSame( 1, $result['state']['level'], 'The escalation level persists between episodes.' );
 		$this->assertFalse( CrashGuardState::is_disabled( $result['state'], $until + 60 ) );
 
-		$this->assertTrue( CrashGuardState::record_healthy_request( CrashGuardState::REQUEST_CLASS_FRONTEND, $until + 70 ), 'Healthy traffic resets the streak after a pause just as before it.' );
+		$this->assertTrue( CrashGuardState::record_healthy_request( CrashGuardState::REQUEST_CLASS_UNTRUSTED, $until + 70 ), 'Healthy traffic resets the streak after a pause just as before it.' );
 		$this->assertSame( 0, $this->frontend_streak( $until + 70 ) );
 
 		$this->crash( $until + 100 );
@@ -269,8 +269,8 @@ class CrashGuardStateTest extends AbstractWPUnitTestWithSafeFiltering {
 
 	public function test_newer_store_wins_regardless_of_which_one_it_is(): void {
 		$stale_file               = CrashGuardState::empty_state( self::T0 );
-		$stale_file['streaks'][ CrashGuardState::REQUEST_CLASS_FRONTEND ]['count'] = 1;
-		$stale_file['streaks'][ CrashGuardState::REQUEST_CLASS_FRONTEND ]['last_counted_at'] = self::T0;
+		$stale_file['streaks'][ CrashGuardState::REQUEST_CLASS_UNTRUSTED ]['count'] = 1;
+		$stale_file['streaks'][ CrashGuardState::REQUEST_CLASS_UNTRUSTED ]['last_counted_at'] = self::T0;
 		$this->write_raw( $stale_file );
 
 		$newer_transient                   = CrashGuardState::empty_state( self::T0 + 100 );
@@ -325,7 +325,7 @@ class CrashGuardStateTest extends AbstractWPUnitTestWithSafeFiltering {
 			$this->crash( self::T0 + 30 );
 			$this->assertSame( 2, $this->frontend_streak( self::T0 + 30 ) );
 
-			$this->assertTrue( CrashGuardState::record_healthy_request( CrashGuardState::REQUEST_CLASS_FRONTEND, self::T0 + 40 ) );
+			$this->assertTrue( CrashGuardState::record_healthy_request( CrashGuardState::REQUEST_CLASS_UNTRUSTED, self::T0 + 40 ) );
 			$this->assertSame( 0, $this->frontend_streak( self::T0 + 41 ) );
 		} finally {
 			chmod( $this->flag_file_path, 0644 );
@@ -334,14 +334,14 @@ class CrashGuardStateTest extends AbstractWPUnitTestWithSafeFiltering {
 
 	public function test_locked_update_continues_from_newer_transient(): void {
 		$stale_file = CrashGuardState::empty_state( self::T0 );
-		$stale_file['streaks'][ CrashGuardState::REQUEST_CLASS_FRONTEND ] = [
+		$stale_file['streaks'][ CrashGuardState::REQUEST_CLASS_UNTRUSTED ] = [
 			'count'           => 1,
 			'last_counted_at' => self::T0,
 		];
 		$this->write_raw( $stale_file );
 
 		$newer_transient = CrashGuardState::empty_state( self::T0 + 30 );
-		$newer_transient['streaks'][ CrashGuardState::REQUEST_CLASS_FRONTEND ] = [
+		$newer_transient['streaks'][ CrashGuardState::REQUEST_CLASS_UNTRUSTED ] = [
 			'count'           => 2,
 			'last_counted_at' => self::T0 + 30,
 		];
@@ -383,7 +383,7 @@ class CrashGuardStateTest extends AbstractWPUnitTestWithSafeFiltering {
 
 		$crash_state                  = CrashGuardState::empty_state( self::T0 + 5 );
 		$crash_state['last_crash_at'] = self::T0 + 5;
-		$crash_state['streaks'][ CrashGuardState::REQUEST_CLASS_BACKEND ] = [
+		$crash_state['streaks'][ CrashGuardState::REQUEST_CLASS_TRUSTED ] = [
 			'count'           => 1,
 			'last_counted_at' => self::T0 + 5,
 		];
@@ -393,13 +393,13 @@ class CrashGuardStateTest extends AbstractWPUnitTestWithSafeFiltering {
 
 		try {
 			// This request peeks at an idle file and wants to remove it; it must wait for the lock and re-check.
-			$this->assertFalse( CrashGuardState::record_healthy_request( CrashGuardState::REQUEST_CLASS_FRONTEND, self::T0 + 10 ) );
+			$this->assertFalse( CrashGuardState::record_healthy_request( CrashGuardState::REQUEST_CLASS_UNTRUSTED, self::T0 + 10 ) );
 		} finally {
 			$this->finish_lock_holder( $holder );
 		}
 
 		$this->assertFileExists( $this->flag_file_path, 'A crash recorded while the cleanup waited for the lock must survive.' );
-		$this->assertSame( 1, CrashGuardState::read( self::T0 + 11 )['streaks'][ CrashGuardState::REQUEST_CLASS_BACKEND ]['count'] );
+		$this->assertSame( 1, CrashGuardState::read( self::T0 + 11 )['streaks'][ CrashGuardState::REQUEST_CLASS_TRUSTED ]['count'] );
 	}
 
 	public function test_writer_starts_over_when_the_file_is_removed_while_waiting_for_the_lock(): void {
@@ -478,11 +478,11 @@ class CrashGuardStateTest extends AbstractWPUnitTestWithSafeFiltering {
 			$this->assertFileDoesNotExist( $this->flag_file_path, 'Precondition: the flag file cannot be created.' );
 			$this->assertSame( 1, $this->frontend_streak( self::T0 ) );
 
-			$this->assertTrue( CrashGuardState::record_healthy_request( CrashGuardState::REQUEST_CLASS_FRONTEND, self::T0 + 10 ) );
+			$this->assertTrue( CrashGuardState::record_healthy_request( CrashGuardState::REQUEST_CLASS_UNTRUSTED, self::T0 + 10 ) );
 			$this->assertSame( 0, $this->frontend_streak( self::T0 + 10 ) );
 
 			$this->crash( self::T0 + 40 );
-			$this->assertTrue( CrashGuardState::record_healthy_request( CrashGuardState::REQUEST_CLASS_FRONTEND, self::T0 + 50 ) );
+			$this->assertTrue( CrashGuardState::record_healthy_request( CrashGuardState::REQUEST_CLASS_UNTRUSTED, self::T0 + 50 ) );
 
 			$result = $this->crash( self::T0 + 80 );
 
@@ -501,10 +501,10 @@ class CrashGuardStateTest extends AbstractWPUnitTestWithSafeFiltering {
 
 		try {
 			$this->crash( self::T0 );
-			$this->assertTrue( CrashGuardState::record_healthy_request( CrashGuardState::REQUEST_CLASS_FRONTEND, self::T0 + 10 ) );
+			$this->assertTrue( CrashGuardState::record_healthy_request( CrashGuardState::REQUEST_CLASS_UNTRUSTED, self::T0 + 10 ) );
 			$this->assertIsArray( get_transient( CrashGuardState::TRANSIENT_KEY ), 'The reset itself is stored.' );
 
-			$this->assertFalse( CrashGuardState::record_healthy_request( CrashGuardState::REQUEST_CLASS_FRONTEND, self::T0 + 20 ) );
+			$this->assertFalse( CrashGuardState::record_healthy_request( CrashGuardState::REQUEST_CLASS_UNTRUSTED, self::T0 + 20 ) );
 			$this->assertFalse( get_transient( CrashGuardState::TRANSIENT_KEY ), 'Idle state with no file behind it is dropped.' );
 		} finally {
 			chmod( $dir, 0755 );
@@ -539,12 +539,12 @@ class CrashGuardStateTest extends AbstractWPUnitTestWithSafeFiltering {
 		}
 
 		// File writes work again: the healthy reset lands in the file and must retire the stale transient.
-		$this->assertTrue( CrashGuardState::record_healthy_request( CrashGuardState::REQUEST_CLASS_FRONTEND, self::T0 + 40 ) );
+		$this->assertTrue( CrashGuardState::record_healthy_request( CrashGuardState::REQUEST_CLASS_UNTRUSTED, self::T0 + 40 ) );
 		$this->assertSame( 0, $this->frontend_streak( self::T0 + 40 ) );
 		$this->assertFalse( get_transient( CrashGuardState::TRANSIENT_KEY ), 'A transient older than the file state is stale once the file is written.' );
 
 		// Idle cleanup removes the file; nothing stale may take its place.
-		$this->assertFalse( CrashGuardState::record_healthy_request( CrashGuardState::REQUEST_CLASS_FRONTEND, self::T0 + 50 ) );
+		$this->assertFalse( CrashGuardState::record_healthy_request( CrashGuardState::REQUEST_CLASS_UNTRUSTED, self::T0 + 50 ) );
 		$this->assertFileDoesNotExist( $this->flag_file_path );
 		$this->assertSame( 0, $this->frontend_streak( self::T0 + 51 ), 'The streak must not jump back to two after the idle file is removed.' );
 
@@ -556,14 +556,14 @@ class CrashGuardStateTest extends AbstractWPUnitTestWithSafeFiltering {
 	public function test_idle_cleanup_retires_an_older_transient_it_would_otherwise_promote(): void {
 		$stale_transient = CrashGuardState::empty_state( self::T0 + 30 );
 		$stale_transient['last_crash_at'] = self::T0 + 30;
-		$stale_transient['streaks'][ CrashGuardState::REQUEST_CLASS_FRONTEND ] = [
+		$stale_transient['streaks'][ CrashGuardState::REQUEST_CLASS_UNTRUSTED ] = [
 			'count'           => 2,
 			'last_counted_at' => self::T0 + 30,
 		];
 		set_transient( CrashGuardState::TRANSIENT_KEY, $stale_transient, HOUR_IN_SECONDS );
 		$this->write_raw( CrashGuardState::empty_state( self::T0 + 40 ) );
 
-		$this->assertFalse( CrashGuardState::record_healthy_request( CrashGuardState::REQUEST_CLASS_FRONTEND, self::T0 + 50 ) );
+		$this->assertFalse( CrashGuardState::record_healthy_request( CrashGuardState::REQUEST_CLASS_UNTRUSTED, self::T0 + 50 ) );
 
 		$this->assertFileDoesNotExist( $this->flag_file_path );
 		$this->assertFalse( get_transient( CrashGuardState::TRANSIENT_KEY ) );
@@ -573,17 +573,17 @@ class CrashGuardStateTest extends AbstractWPUnitTestWithSafeFiltering {
 	public function test_cleanup_keeps_a_transient_crash_recorded_in_the_same_second_as_the_file(): void {
 		$concurrent_transient = CrashGuardState::empty_state( self::T0 + 40 );
 		$concurrent_transient['last_crash_at'] = self::T0 + 40;
-		$concurrent_transient['streaks'][ CrashGuardState::REQUEST_CLASS_BACKEND ] = [
+		$concurrent_transient['streaks'][ CrashGuardState::REQUEST_CLASS_TRUSTED ] = [
 			'count'           => 1,
 			'last_counted_at' => self::T0 + 40,
 		];
 		set_transient( CrashGuardState::TRANSIENT_KEY, $concurrent_transient, HOUR_IN_SECONDS );
 		$this->write_raw( CrashGuardState::empty_state( self::T0 + 40 ) );
 
-		$this->assertFalse( CrashGuardState::record_healthy_request( CrashGuardState::REQUEST_CLASS_FRONTEND, self::T0 + 50 ) );
+		$this->assertFalse( CrashGuardState::record_healthy_request( CrashGuardState::REQUEST_CLASS_UNTRUSTED, self::T0 + 50 ) );
 
 		$this->assertFileDoesNotExist( $this->flag_file_path );
-		$this->assertSame( 1, CrashGuardState::read( self::T0 + 51 )['streaks'][ CrashGuardState::REQUEST_CLASS_BACKEND ]['count'], 'A crash that is not older than the file state may be a concurrent fallback write and must survive.' );
+		$this->assertSame( 1, CrashGuardState::read( self::T0 + 51 )['streaks'][ CrashGuardState::REQUEST_CLASS_TRUSTED ]['count'], 'A crash that is not older than the file state may be a concurrent fallback write and must survive.' );
 	}
 
 	public function test_fallback_write_in_the_same_second_outranks_the_file(): void {
@@ -596,7 +596,7 @@ class CrashGuardStateTest extends AbstractWPUnitTestWithSafeFiltering {
 		// The file turns read-only and a healthy request arrives within the same second as the last crash.
 		chmod( $this->flag_file_path, 0444 );
 		try {
-			$this->assertTrue( CrashGuardState::record_healthy_request( CrashGuardState::REQUEST_CLASS_FRONTEND, self::T0 + 30 ) );
+			$this->assertTrue( CrashGuardState::record_healthy_request( CrashGuardState::REQUEST_CLASS_UNTRUSTED, self::T0 + 30 ) );
 
 			$this->assertSame( 0, $this->frontend_streak( self::T0 + 30 ), 'A later write must win even when updated_at ties with the file.' );
 
@@ -615,7 +615,7 @@ class CrashGuardStateTest extends AbstractWPUnitTestWithSafeFiltering {
 		$this->assertSame( 1, $this->crash( self::T0 )['state']['revision'] );
 		$this->assertSame( 2, $this->crash( self::T0 + 30 )['state']['revision'] );
 
-		CrashGuardState::record_healthy_request( CrashGuardState::REQUEST_CLASS_FRONTEND, self::T0 + 40 );
+		CrashGuardState::record_healthy_request( CrashGuardState::REQUEST_CLASS_UNTRUSTED, self::T0 + 40 );
 		$this->assertSame( 3, CrashGuardState::read( self::T0 + 40 )['revision'] );
 
 		$this->assertSame( 4, $this->crash( self::T0 + 70 )['state']['revision'], 'Revisions continue from the reconciled state, never restart.' );
@@ -625,7 +625,7 @@ class CrashGuardStateTest extends AbstractWPUnitTestWithSafeFiltering {
 		$file                = CrashGuardState::empty_state( self::T0 + 100 );
 		$file['revision']    = 2;
 		$file['last_crash_at'] = self::T0 + 100;
-		$file['streaks'][ CrashGuardState::REQUEST_CLASS_FRONTEND ] = [
+		$file['streaks'][ CrashGuardState::REQUEST_CLASS_UNTRUSTED ] = [
 			'count'           => 1,
 			'last_counted_at' => self::T0 + 100,
 		];
@@ -634,7 +634,7 @@ class CrashGuardStateTest extends AbstractWPUnitTestWithSafeFiltering {
 		$transient                  = CrashGuardState::empty_state( self::T0 + 50 );
 		$transient['revision']      = 3;
 		$transient['last_crash_at'] = self::T0 + 50;
-		$transient['streaks'][ CrashGuardState::REQUEST_CLASS_FRONTEND ] = [
+		$transient['streaks'][ CrashGuardState::REQUEST_CLASS_UNTRUSTED ] = [
 			'count'           => 2,
 			'last_counted_at' => self::T0 + 50,
 		];
@@ -642,10 +642,10 @@ class CrashGuardStateTest extends AbstractWPUnitTestWithSafeFiltering {
 
 		$this->assertSame( 2, $this->frontend_streak( self::T0 + 101 ), 'Revision decides before updated_at.' );
 
-		$this->assertTrue( CrashGuardState::record_healthy_request( CrashGuardState::REQUEST_CLASS_FRONTEND, self::T0 + 200 ) );
+		$this->assertTrue( CrashGuardState::record_healthy_request( CrashGuardState::REQUEST_CLASS_UNTRUSTED, self::T0 + 200 ) );
 		$state = CrashGuardState::read( self::T0 + 200, false );
 		$this->assertSame( 4, $state['revision'], 'The file write continues from the highest revision seen.' );
-		$this->assertSame( 0, $state['streaks'][ CrashGuardState::REQUEST_CLASS_FRONTEND ]['count'] );
+		$this->assertSame( 0, $state['streaks'][ CrashGuardState::REQUEST_CLASS_UNTRUSTED ]['count'] );
 		$this->assertFalse( get_transient( CrashGuardState::TRANSIENT_KEY ), 'The lower-revision transient is retired by the file write.' );
 	}
 
@@ -663,9 +663,9 @@ class CrashGuardStateTest extends AbstractWPUnitTestWithSafeFiltering {
 			$this->assertFalse( get_transient( CrashGuardState::TRANSIENT_KEY ), 'No tombstone is needed once the file itself is idle.' );
 
 			// Healthy shutdowns keep finding the leftover file; they must not bring the pause back.
-			$this->assertFalse( CrashGuardState::record_healthy_request( CrashGuardState::REQUEST_CLASS_FRONTEND, self::T0 + 100 ) );
+			$this->assertFalse( CrashGuardState::record_healthy_request( CrashGuardState::REQUEST_CLASS_UNTRUSTED, self::T0 + 100 ) );
 			$this->assertFalse( CrashGuardState::is_disabled( CrashGuardState::read( self::T0 + 101 ), self::T0 + 101 ) );
-			$this->assertFalse( CrashGuardState::record_healthy_request( CrashGuardState::REQUEST_CLASS_FRONTEND, self::T0 + 200 ) );
+			$this->assertFalse( CrashGuardState::record_healthy_request( CrashGuardState::REQUEST_CLASS_UNTRUSTED, self::T0 + 200 ) );
 			$this->assertTrue( CrashGuardState::is_idle( CrashGuardState::read( self::T0 + 201 ) ) );
 		} finally {
 			chmod( $dir, 0755 );
@@ -686,7 +686,7 @@ class CrashGuardStateTest extends AbstractWPUnitTestWithSafeFiltering {
 			$this->assertIsArray( get_transient( CrashGuardState::TRANSIENT_KEY ), 'The tombstone is the only thing superseding the file.' );
 			$this->assertFalse( CrashGuardState::is_disabled( CrashGuardState::read( self::T0 + 71 ), self::T0 + 71 ) );
 
-			$this->assertFalse( CrashGuardState::record_healthy_request( CrashGuardState::REQUEST_CLASS_FRONTEND, self::T0 + 100 ) );
+			$this->assertFalse( CrashGuardState::record_healthy_request( CrashGuardState::REQUEST_CLASS_UNTRUSTED, self::T0 + 100 ) );
 			$this->assertIsArray( get_transient( CrashGuardState::TRANSIENT_KEY ), 'The tombstone must survive healthy shutdowns while the file cannot be removed.' );
 			$this->assertFalse( CrashGuardState::is_disabled( CrashGuardState::read( self::T0 + 101 ), self::T0 + 101 ) );
 		} finally {
@@ -733,7 +733,7 @@ class CrashGuardStateTest extends AbstractWPUnitTestWithSafeFiltering {
 
 	public function test_describe_decision_explains_each_outcome(): void {
 		$counted = $this->crash( self::T0 );
-		$this->assertStringContainsString( 'Crash 1 of 3 for frontend requests', CrashGuardState::describe_decision( $counted ) );
+		$this->assertStringContainsString( 'Crash 1 of 3 for untrusted requests', CrashGuardState::describe_decision( $counted ) );
 
 		$ignored = $this->crash( self::T0 + 1 );
 		$this->assertStringContainsString( 'not counted', CrashGuardState::describe_decision( $ignored ) );
@@ -749,24 +749,76 @@ class CrashGuardStateTest extends AbstractWPUnitTestWithSafeFiltering {
 	}
 
 	public function test_would_pause_previews_the_decision_without_writing(): void {
-		$this->assertFalse( CrashGuardState::would_pause( CrashGuardState::REQUEST_CLASS_FRONTEND, self::T0 ) );
+		$this->assertFalse( CrashGuardState::would_pause( CrashGuardState::REQUEST_CLASS_UNTRUSTED, self::T0 ) );
 
 		$this->crash( self::T0 );
 		$this->crash( self::T0 + 30 );
 
-		$this->assertFalse( CrashGuardState::would_pause( CrashGuardState::REQUEST_CLASS_FRONTEND, self::T0 + 35 ), 'A crash inside the spacing window would not be counted, so it would not pause.' );
-		$this->assertTrue( CrashGuardState::would_pause( CrashGuardState::REQUEST_CLASS_FRONTEND, self::T0 + 60 ) );
-		$this->assertFalse( CrashGuardState::would_pause( CrashGuardState::REQUEST_CLASS_BACKEND, self::T0 + 60 ), 'Streaks are per request class.' );
+		$this->assertFalse( CrashGuardState::would_pause( CrashGuardState::REQUEST_CLASS_UNTRUSTED, self::T0 + 35 ), 'A crash inside the spacing window would not be counted, so it would not pause.' );
+		$this->assertTrue( CrashGuardState::would_pause( CrashGuardState::REQUEST_CLASS_UNTRUSTED, self::T0 + 60 ) );
+		$this->assertFalse( CrashGuardState::would_pause( CrashGuardState::REQUEST_CLASS_TRUSTED, self::T0 + 60 ), 'Streaks are per request class.' );
 
 		$this->assertSame( 2, $this->frontend_streak( self::T0 + 60 ), 'Previewing must not change the stored state.' );
 		$this->assertFalse( CrashGuardState::is_disabled( CrashGuardState::read( self::T0 + 60 ), self::T0 + 60 ) );
 
 		$this->crash( self::T0 + 60 );
-		$this->assertFalse( CrashGuardState::would_pause( CrashGuardState::REQUEST_CLASS_FRONTEND, self::T0 + 90 ), 'While paused nothing pauses again.' );
+		$this->assertFalse( CrashGuardState::would_pause( CrashGuardState::REQUEST_CLASS_UNTRUSTED, self::T0 + 90 ), 'While paused nothing pauses again.' );
 	}
 
-	public function test_request_class_defaults_to_frontend_in_tests(): void {
-		$this->assertSame( CrashGuardState::REQUEST_CLASS_FRONTEND, CrashGuardState::get_request_class() );
+	public function test_request_class_is_trusted_only_for_managers(): void {
+		$this->assertSame( CrashGuardState::REQUEST_CLASS_UNTRUSTED, CrashGuardState::get_request_class(), 'Anonymous requests are untrusted.' );
+
+		try {
+			wp_set_current_user( self::factory()->user->create( [ 'role' => 'subscriber' ] ) );
+			$this->assertSame( CrashGuardState::REQUEST_CLASS_UNTRUSTED, CrashGuardState::get_request_class(), 'A logged-in customer is still an outsider.' );
+
+			wp_set_current_user( self::factory()->user->create( [ 'role' => 'shop_manager' ] ) );
+			$this->assertSame( CrashGuardState::REQUEST_CLASS_TRUSTED, CrashGuardState::get_request_class(), 'Someone who can manage WooCommerce is trusted.' );
+
+			wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
+			$this->assertSame( CrashGuardState::REQUEST_CLASS_TRUSTED, CrashGuardState::get_request_class() );
+		} finally {
+			wp_set_current_user( 0 );
+		}
+	}
+
+	public function test_unverified_crash_counts_without_pausing_and_holds_the_streak(): void {
+		$this->crash( self::T0 );
+		$this->crash( self::T0 + 30 );
+
+		$result = CrashGuardState::record_crash( CrashGuardState::REQUEST_CLASS_UNTRUSTED, self::T0 + 60, false, 'inconclusive: cURL error 7' );
+
+		$this->assertSame( CrashGuardState::DECISION_UNVERIFIED, $result['decision'] );
+		$this->assertFalse( CrashGuardState::is_disabled( $result['state'], self::T0 + 61 ), 'A crash that could not be verified must not pause the plugin.' );
+		$this->assertSame( 3, $this->frontend_streak( self::T0 + 61 ), 'The streak is held at the threshold so the next crash asks again.' );
+		$this->assertSame( 1, $result['state']['unverified']['count'] );
+		$this->assertSame( 'inconclusive: cURL error 7', $result['state']['unverified']['reason'] );
+		$this->assertFalse( CrashGuardState::is_idle( $result['state'] ) );
+		$this->assertStringContainsString( 'could not be verified', CrashGuardState::describe_decision( $result ) );
+
+		$this->assertTrue( CrashGuardState::would_pause( CrashGuardState::REQUEST_CLASS_UNTRUSTED, self::T0 + 90 ) );
+		$again = CrashGuardState::record_crash( CrashGuardState::REQUEST_CLASS_UNTRUSTED, self::T0 + 90, false, 'inconclusive: cURL error 7' );
+		$this->assertSame( 2, $again['state']['unverified']['count'] );
+		$this->assertSame( 3, $this->frontend_streak( self::T0 + 91 ) );
+
+		$this->assertTrue( CrashGuardState::record_healthy_request( CrashGuardState::REQUEST_CLASS_UNTRUSTED, self::T0 + 100 ) );
+		$state = CrashGuardState::read( self::T0 + 101 );
+		$this->assertSame( 0, $this->frontend_streak( self::T0 + 101 ), 'Healthy traffic still resets the streak.' );
+		$this->assertSame( 2, $state['unverified']['count'], 'The unverified record stays for the admin notice.' );
+
+		$this->assertSame( 0, CrashGuardState::read( self::T0 + 90 + DAY_IN_SECONDS )['unverified']['count'], 'The record decays after a day.' );
+	}
+
+	public function test_a_confirmed_crash_after_unverified_ones_pauses_and_clears_the_record(): void {
+		$this->crash( self::T0 );
+		$this->crash( self::T0 + 30 );
+		CrashGuardState::record_crash( CrashGuardState::REQUEST_CLASS_UNTRUSTED, self::T0 + 60, false, 'inconclusive' );
+
+		$result = CrashGuardState::record_crash( CrashGuardState::REQUEST_CLASS_UNTRUSTED, self::T0 + 90, true );
+
+		$this->assertSame( CrashGuardState::DECISION_DISABLED, $result['decision'] );
+		$this->assertTrue( CrashGuardState::is_disabled( $result['state'], self::T0 + 91 ) );
+		$this->assertSame( 0, $result['state']['unverified']['count'], 'A pause supersedes the unverified record.' );
 	}
 
 	/**
@@ -784,12 +836,12 @@ class CrashGuardStateTest extends AbstractWPUnitTestWithSafeFiltering {
 		return (int) $result['state']['disabled_until'];
 	}
 
-	private function crash( int $at, string $class = CrashGuardState::REQUEST_CLASS_FRONTEND ): array {
+	private function crash( int $at, string $class = CrashGuardState::REQUEST_CLASS_UNTRUSTED ): array {
 		return CrashGuardState::record_crash( $class, $at );
 	}
 
 	private function frontend_streak( int $at ): int {
-		return (int) CrashGuardState::read( $at )['streaks'][ CrashGuardState::REQUEST_CLASS_FRONTEND ]['count'];
+		return (int) CrashGuardState::read( $at )['streaks'][ CrashGuardState::REQUEST_CLASS_UNTRUSTED ]['count'];
 	}
 
 	private function write_raw( array $payload ): void {

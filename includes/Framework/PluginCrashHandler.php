@@ -1153,7 +1153,7 @@ class PluginCrashHandler {
 		}
 
 		try {
-			CrashGuardState::record_healthy_request( CrashGuardState::get_request_class(), $this->get_current_time() );
+			CrashGuardState::record_healthy_request( null, $this->get_current_time() );
 		} catch ( Throwable $e ) {
 			unset( $e );
 		}
@@ -1174,18 +1174,27 @@ class PluginCrashHandler {
 		$request_class = CrashGuardState::get_request_class();
 		$now           = $this->get_current_time();
 
+		$may_pause = true;
+		$reason    = '';
+
 		try {
-			if ( CrashGuardState::would_pause( $request_class, $now ) ) {
+			// Trusted requests (WP-CLI, cron, managers) pause on the streak alone. Untrusted ones
+			// pause only when a plain request crashes too; otherwise the crash is counted but the
+			// plugin stays on, so that nobody can switch the integration off from outside.
+			if ( CrashGuardState::REQUEST_CLASS_UNTRUSTED === $request_class && CrashGuardState::would_pause( $request_class, $now ) ) {
 				$self_check = $this->run_self_check();
 
 				if ( self::SELF_CHECK_CLEAN === $self_check['outcome'] ) {
 					// A plain request ran the plugin cleanly, so this crash depends on something the
 					// client sent. The self-check is the healthy request the store did not have.
 					CrashGuardState::record_healthy_request( $request_class, $now );
+				} elseif ( self::SELF_CHECK_CRASHED !== $self_check['outcome'] ) {
+					$may_pause = false;
+					$reason    = $self_check['outcome'] . ': ' . $self_check['detail'];
 				}
 			}
 
-			$result = CrashGuardState::record_crash( $request_class, $now );
+			$result = CrashGuardState::record_crash( $request_class, $now, $may_pause, $reason );
 		} catch ( Throwable $e ) {
 			unset( $e );
 		}
@@ -1199,12 +1208,12 @@ class PluginCrashHandler {
 	/**
 	 * Runs the self-check: a plain loopback request that carries nothing from the client.
 	 *
-	 * Only storefront crashes are checked. A storefront request cannot vouch for wp-admin, cron or
-	 * REST, so a backend crash is not checked at all and pauses on its streak alone; a clean
-	 * storefront result must never reset a backend streak.
+	 * Only untrusted crashes are checked; trusted ones pause on their streak alone. The question
+	 * the check answers is whether the plugin runs cleanly for a visitor who sends nothing, so it
+	 * applies to admin-ajax and REST crashes as much as to page views.
 	 *
-	 * The target is the path of the crashing request without its query string (the home page
-	 * for a storefront request that was not a GET). The request carries a one-time token; the
+	 * The target is the path of the crashing request without its query string for a storefront
+	 * GET, and the home page for everything else. The request carries a one-time token; the
 	 * request it spawns recognizes the token, runs the plugin as any visitor would, and records
 	 * clean, crashed or inconclusive at its own shutdown. The verdict comes from that record,
 	 * never from the HTTP status, so a page cache answering 200 counts as inconclusive.
@@ -1218,10 +1227,6 @@ class PluginCrashHandler {
 	 * }
 	 */
 	private function run_self_check() {
-		if ( CrashGuardState::REQUEST_CLASS_FRONTEND !== CrashGuardState::get_request_class() ) {
-			return $this->self_check_result( self::SELF_CHECK_SKIPPED, '', 'backend request; a storefront check would not establish backend health' );
-		}
-
 		if ( ! function_exists( 'wp_safe_remote_get' ) || ! function_exists( 'home_url' ) || ! function_exists( 'add_query_arg' ) ) {
 			return $this->self_check_result( self::SELF_CHECK_SKIPPED, '', 'HTTP API unavailable' );
 		}
@@ -1353,8 +1358,9 @@ class PluginCrashHandler {
 	}
 
 	/**
-	 * Chooses what the self-check requests: the crashing request's path, stripped of everything
-	 * the client sent, or the home page for requests that were not a GET.
+	 * Chooses what the self-check requests: for a storefront GET, the crashing request's path
+	 * stripped of everything the client sent; for anything else (admin-ajax, REST, wp-admin,
+	 * POST), the home page.
 	 *
 	 * @since 3.7.9
 	 *
@@ -1363,7 +1369,9 @@ class PluginCrashHandler {
 	private function get_self_check_target() {
 		$method = isset( $_SERVER['REQUEST_METHOD'] ) ? strtoupper( sanitize_key( wp_unslash( $_SERVER['REQUEST_METHOD'] ) ) ) : 'GET';
 
-		if ( ! in_array( $method, [ 'GET', 'HEAD' ], true ) ) {
+		$is_storefront = ! ( function_exists( 'is_admin' ) && is_admin() ) && ! ( defined( 'REST_REQUEST' ) && REST_REQUEST ) && ! ( function_exists( 'wp_doing_ajax' ) && wp_doing_ajax() );
+
+		if ( ! $is_storefront || ! in_array( $method, [ 'GET', 'HEAD' ], true ) ) {
 			return '/';
 		}
 
@@ -1438,9 +1446,9 @@ class PluginCrashHandler {
 			case self::SELF_CHECK_CRASHED:
 				return sprintf( ' Self-check: a plain request to %s crashed too.', $target );
 			case self::SELF_CHECK_SKIPPED:
-				return sprintf( ' Self-check skipped (%s); deciding on the streak alone.', $self_check['detail'] );
+				return sprintf( ' Self-check skipped (%s); not pausing on an unverified crash.', $self_check['detail'] );
 			default:
-				return sprintf( ' Self-check of %s inconclusive (%s); pausing as a precaution.', $target, $self_check['detail'] );
+				return sprintf( ' Self-check of %s inconclusive (%s); not pausing on an unverified crash.', $target, $self_check['detail'] );
 		}
 	}
 
@@ -1649,6 +1657,10 @@ class PluginCrashHandler {
 	 * @return string
 	 */
 	private function get_request_context() {
+		if ( defined( 'WP_CLI' ) && WP_CLI ) {
+			return 'cli';
+		}
+
 		if ( defined( 'DOING_CRON' ) && DOING_CRON ) {
 			return 'cron';
 		}

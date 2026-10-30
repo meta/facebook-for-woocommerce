@@ -21,8 +21,9 @@ defined( 'ABSPATH' ) || exit;
  *
  * The model:
  *
- * - Every plugin crash increments a consecutive-crash streak for its request class (frontend
- *   or backend). Crashes closer together than CRASH_SPACING_SECONDS count once, so a burst of
+ * - Every plugin crash increments a consecutive-crash streak for its request class: trusted
+ *   (WP-CLI, cron, users who can manage WooCommerce or the site) or untrusted (everyone else,
+ *   logged-in customers included). Crashes closer together than CRASH_SPACING_SECONDS count once, so a burst of
  *   concurrent requests cannot inflate the streak, and a streak older than STREAK_TTL_SECONDS
  *   starts over.
  * - Any request where the plugin initialized and finished without a plugin fatal resets the
@@ -36,8 +37,11 @@ defined( 'ABSPATH' ) || exit;
  *   pauses for the next longer window; after DECAY_SECONDS without a crash the level resets.
  *   A single crash after a pause never escalates on its own: that would let one request
  *   renew a pause indefinitely.
- * - Before a pause begins, PluginCrashHandler can run a self-check (a plain loopback request
- *   carrying nothing from the client). would_pause() tells it when that is about to happen.
+ * - Trusted crashes pause on the streak alone: their input is not an outsider's. Untrusted
+ *   crashes pause only when PluginCrashHandler's self-check (a plain loopback request carrying
+ *   nothing from the client) confirms that a plain request crashes too. would_pause() tells the
+ *   handler when that decision is due; when the self-check cannot run, record_crash() is asked
+ *   to count the crash as unverified instead of pausing, which the admin notice reports.
  *
  * State is stored as JSON in uploads/facebook-for-woocommerce/.disabled, updated under an
  * exclusive file lock. A transient is the fallback when the file cannot be written. Reads
@@ -76,13 +80,14 @@ final class CrashGuardState {
 	/** Highest escalation level; its window is the longest pause. */
 	const MAX_LEVEL = 4;
 
-	const REQUEST_CLASS_FRONTEND = 'frontend';
-	const REQUEST_CLASS_BACKEND  = 'backend';
+	const REQUEST_CLASS_TRUSTED   = 'trusted';
+	const REQUEST_CLASS_UNTRUSTED = 'untrusted';
 
 	const DECISION_COUNTED          = 'counted';
 	const DECISION_IGNORED_SPACING  = 'ignored_spacing';
 	const DECISION_DISABLED         = 'disabled';
 	const DECISION_ALREADY_DISABLED = 'already_disabled';
+	const DECISION_UNVERIFIED       = 'unverified';
 
 	/**
 	 * Makes every flag file write fail after the truncate, to exercise the fallback in tests.
@@ -131,26 +136,38 @@ final class CrashGuardState {
 	}
 
 	/**
-	 * Classifies the current request as frontend or backend.
+	 * Classifies the current request by who could have shaped its input.
 	 *
-	 * Admin screens, admin-ajax, REST, cron and WP-CLI are backend. Everything else is a
-	 * storefront request. Streaks are tracked per class so that an administrator browsing
-	 * wp-admin cannot mask a storefront that crashes on every page.
+	 * Trusted: WP-CLI, cron, and logged-in users who can manage WooCommerce or the site. Their
+	 * input is not an outsider's, so their crashes pause the plugin on the streak alone, and a
+	 * plugin broken on every request is still caught through cron and wp-admin even where the
+	 * self-check cannot run. Untrusted: everyone else, logged-in customers included, because open
+	 * registration makes a login prove nothing. Streaks are tracked per class so that trusted
+	 * traffic cannot mask a storefront that crashes for visitors, and vice versa.
+	 *
+	 * The user is resolved defensively: this runs at shutdown, possibly after a fatal, and
+	 * anything that cannot be resolved counts as untrusted.
 	 *
 	 * @since 3.7.9
 	 *
 	 * @return string one of the REQUEST_CLASS_* constants.
 	 */
 	public static function get_request_class() {
-		if ( ( defined( 'WP_CLI' ) && WP_CLI ) || ( defined( 'DOING_CRON' ) && DOING_CRON ) || ( defined( 'REST_REQUEST' ) && REST_REQUEST ) ) {
-			return self::REQUEST_CLASS_BACKEND;
+		if ( ( defined( 'WP_CLI' ) && WP_CLI ) || ( defined( 'DOING_CRON' ) && DOING_CRON ) ) {
+			return self::REQUEST_CLASS_TRUSTED;
 		}
 
-		if ( function_exists( 'is_admin' ) && is_admin() ) {
-			return self::REQUEST_CLASS_BACKEND;
+		if ( function_exists( 'current_user_can' ) && function_exists( 'wp_get_current_user' ) ) {
+			try {
+				if ( current_user_can( 'manage_woocommerce' ) || current_user_can( 'manage_options' ) ) {
+					return self::REQUEST_CLASS_TRUSTED;
+				}
+			} catch ( \Throwable $e ) {
+				unset( $e );
+			}
 		}
 
-		return self::REQUEST_CLASS_FRONTEND;
+		return self::REQUEST_CLASS_UNTRUSTED;
 	}
 
 	/**
@@ -171,9 +188,10 @@ final class CrashGuardState {
 			'last_crash_at'  => 0,
 			'updated_at'     => (int) $now,
 			'streaks'        => [
-				self::REQUEST_CLASS_FRONTEND => self::empty_streak(),
-				self::REQUEST_CLASS_BACKEND  => self::empty_streak(),
+				self::REQUEST_CLASS_TRUSTED   => self::empty_streak(),
+				self::REQUEST_CLASS_UNTRUSTED => self::empty_streak(),
 			],
+			'unverified'     => self::empty_unverified(),
 		];
 	}
 
@@ -230,7 +248,7 @@ final class CrashGuardState {
 			}
 		}
 
-		return true;
+		return 0 === (int) $state['unverified']['count'];
 	}
 
 	/**
@@ -240,6 +258,9 @@ final class CrashGuardState {
 	 *
 	 * @param string   $request_class one of the REQUEST_CLASS_* constants.
 	 * @param int|null $now           current Unix timestamp, defaults to time().
+	 * @param bool     $may_pause     false when the self-check could not confirm the crash: the crash
+	 *                                is then counted as unverified and the plugin is not paused.
+	 * @param string   $reason        why the crash could not be verified, for the admin notice.
 	 * @return array {
 	 *     @type string $decision      one of the DECISION_* constants.
 	 *     @type string $request_class the class the crash was recorded against.
@@ -247,13 +268,13 @@ final class CrashGuardState {
 	 *     @type bool   $stored        whether the state could be persisted (file or transient).
 	 * }
 	 */
-	public static function record_crash( $request_class, $now = null ) {
+	public static function record_crash( $request_class, $now = null, $may_pause = true, $reason = '' ) {
 		$now      = self::resolve_now( $now );
 		$class    = self::normalize_request_class( $request_class );
 		$decision = self::DECISION_COUNTED;
 
-		$mutator = static function ( array $state ) use ( $class, $now, &$decision ) {
-			list( $state, $decision ) = self::decide( $state, $class, $now );
+		$mutator = static function ( array $state ) use ( $class, $now, $may_pause, $reason, &$decision ) {
+			list( $state, $decision ) = self::decide( $state, $class, $now, (bool) $may_pause, (string) $reason );
 			return $state;
 		};
 
@@ -298,9 +319,11 @@ final class CrashGuardState {
 	 * @param array  $state         normalized state.
 	 * @param string $request_class one of the REQUEST_CLASS_* constants.
 	 * @param int    $now           current Unix timestamp.
+	 * @param bool   $may_pause     whether reaching the threshold may pause the plugin.
+	 * @param string $reason        why it may not, when it may not.
 	 * @return array [ array $state, string $decision ]
 	 */
-	private static function decide( array $state, $request_class, $now ) {
+	private static function decide( array $state, $request_class, $now, $may_pause = true, $reason = '' ) {
 		if ( $state['disabled_until'] > $now ) {
 			// A request that was already in flight when the pause began. Do not count it twice.
 			$state['last_crash_at'] = $now;
@@ -319,8 +342,20 @@ final class CrashGuardState {
 		$state['streaks'][ $request_class ] = $streak;
 
 		if ( $streak['count'] >= self::STREAK_THRESHOLD ) {
-			$state    = self::disable( $state, $now );
-			$decision = self::DECISION_DISABLED;
+			if ( $may_pause ) {
+				$state    = self::disable( $state, $now );
+				$decision = self::DECISION_DISABLED;
+			} elseif ( self::DECISION_COUNTED === $decision ) {
+				// Could not be verified: hold the streak at the threshold so every further counted
+				// crash asks the self-check again, and remember it for the admin notice.
+				$state['streaks'][ $request_class ]['count'] = self::STREAK_THRESHOLD;
+				$state['unverified']                         = [
+					'count'   => (int) $state['unverified']['count'] + 1,
+					'last_at' => $now,
+					'reason'  => $reason,
+				];
+				$decision                                    = self::DECISION_UNVERIFIED;
+			}
 		}
 
 		$state['last_crash_at'] = $now;
@@ -344,18 +379,19 @@ final class CrashGuardState {
 	 *
 	 * @since 3.7.9
 	 *
-	 * @param string   $request_class one of the REQUEST_CLASS_* constants.
-	 * @param int|null $now           current Unix timestamp, defaults to time().
+	 * @param string|null $request_class one of the REQUEST_CLASS_* constants; null resolves it, after
+	 *                                   the cheap checks, with get_request_class().
+	 * @param int|null    $now           current Unix timestamp, defaults to time().
 	 * @return bool whether a streak was reset and persisted.
 	 */
-	public static function record_healthy_request( $request_class, $now = null ) {
+	public static function record_healthy_request( $request_class = null, $now = null ) {
 		$path = self::get_flag_file_path();
 		if ( ! file_exists( $path ) && null === self::read_transient() ) {
 			return false;
 		}
 
 		$now   = self::resolve_now( $now );
-		$class = self::normalize_request_class( $request_class );
+		$class = self::normalize_request_class( null === $request_class ? self::get_request_class() : $request_class );
 
 		// Unlocked peek: most requests find nothing to do and stop here.
 		$peek = self::read( $now );
@@ -436,7 +472,7 @@ final class CrashGuardState {
 	 */
 	public static function describe_decision( array $result ) {
 		$state    = isset( $result['state'] ) && is_array( $result['state'] ) ? $result['state'] : null;
-		$class    = isset( $result['request_class'] ) ? (string) $result['request_class'] : self::REQUEST_CLASS_FRONTEND;
+		$class    = isset( $result['request_class'] ) ? (string) $result['request_class'] : self::REQUEST_CLASS_UNTRUSTED;
 		$decision = isset( $result['decision'] ) ? (string) $result['decision'] : '';
 		$suffix   = empty( $result['stored'] ) ? ' (state could not be stored)' : '';
 
@@ -452,6 +488,8 @@ final class CrashGuardState {
 				return sprintf( 'Crash %d of %d for %s requests: plugin paused for %s (level %d of %d), resumes at %s.', self::STREAK_THRESHOLD, self::STREAK_THRESHOLD, $class, $pause, $state['level'], self::MAX_LEVEL, $until ) . $suffix;
 			case self::DECISION_ALREADY_DISABLED:
 				return sprintf( 'Plugin is already paused until %s; crash not counted.', $until ) . $suffix;
+			case self::DECISION_UNVERIFIED:
+				return sprintf( 'Crash %d of %d for %s requests could not be verified (%s); plugin stays enabled, %d unverified crash(es) since %s.', self::STREAK_THRESHOLD, self::STREAK_THRESHOLD, $class, $state['unverified']['reason'], $state['unverified']['count'], gmdate( 'Y-m-d H:i:s', (int) $state['unverified']['last_at'] ) . ' UTC' ) . $suffix;
 			case self::DECISION_IGNORED_SPACING:
 				return sprintf( 'Within %d seconds of the previous counted crash; not counted (streak %d of %d for %s requests).', self::CRASH_SPACING_SECONDS, $state['streaks'][ $class ]['count'], self::STREAK_THRESHOLD, $class ) . $suffix;
 			case self::DECISION_COUNTED:
@@ -497,6 +535,13 @@ final class CrashGuardState {
 				'last_counted_at' => max( 0, (int) ( $streak['last_counted_at'] ?? 0 ) ),
 			];
 		}
+
+		$unverified          = isset( $raw['unverified'] ) && is_array( $raw['unverified'] ) ? $raw['unverified'] : [];
+		$state['unverified'] = [
+			'count'   => max( 0, (int) ( $unverified['count'] ?? 0 ) ),
+			'last_at' => max( 0, (int) ( $unverified['last_at'] ?? 0 ) ),
+			'reason'  => isset( $unverified['reason'] ) ? (string) $unverified['reason'] : '',
+		];
 
 		return self::apply_decay( $state, $now );
 	}
@@ -567,6 +612,10 @@ final class CrashGuardState {
 			}
 		}
 
+		if ( $state['unverified']['count'] > 0 && $now - $state['unverified']['last_at'] >= self::DECAY_SECONDS ) {
+			$state['unverified'] = self::empty_unverified();
+		}
+
 		return $state;
 	}
 
@@ -587,6 +636,8 @@ final class CrashGuardState {
 		foreach ( array_keys( $state['streaks'] ) as $class ) {
 			$state['streaks'][ $class ] = self::empty_streak();
 		}
+
+		$state['unverified'] = self::empty_unverified();
 
 		return $state;
 	}
@@ -1053,6 +1104,21 @@ final class CrashGuardState {
 	}
 
 	/**
+	 * Returns an empty record of crashes that reached the threshold without a verdict.
+	 *
+	 * @since 3.7.9
+	 *
+	 * @return array
+	 */
+	private static function empty_unverified() {
+		return [
+			'count'   => 0,
+			'last_at' => 0,
+			'reason'  => '',
+		];
+	}
+
+	/**
 	 * Coerces an arbitrary request class value to a known one.
 	 *
 	 * @since 3.7.9
@@ -1061,7 +1127,7 @@ final class CrashGuardState {
 	 * @return string
 	 */
 	private static function normalize_request_class( $request_class ) {
-		return self::REQUEST_CLASS_BACKEND === $request_class ? self::REQUEST_CLASS_BACKEND : self::REQUEST_CLASS_FRONTEND;
+		return self::REQUEST_CLASS_TRUSTED === $request_class ? self::REQUEST_CLASS_TRUSTED : self::REQUEST_CLASS_UNTRUSTED;
 	}
 
 	/**

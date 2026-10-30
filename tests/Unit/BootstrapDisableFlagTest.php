@@ -152,11 +152,25 @@ class BootstrapDisableFlagTest extends AbstractWPUnitTestWithOptionIsolationAndS
 			$this->assert_init_not_skipped();
 
 			// A healthy shutdown afterwards must not bring the pause back.
-			\WooCommerce\Facebook\Framework\CrashGuardState::record_healthy_request( \WooCommerce\Facebook\Framework\CrashGuardState::REQUEST_CLASS_FRONTEND );
+			\WooCommerce\Facebook\Framework\CrashGuardState::record_healthy_request( \WooCommerce\Facebook\Framework\CrashGuardState::REQUEST_CLASS_UNTRUSTED );
 			$this->assertFalse( $this->has_valid_disable_flag(), 'The loader must stay enabled after healthy shutdowns while the stale file lingers.' );
 		} finally {
 			chmod( $dir, 0755 );
 		}
+	}
+
+	public function test_unverified_crashes_show_a_notice_but_do_not_pause(): void {
+		\WooCommerce\Facebook\Framework\CrashGuardState::record_crash( \WooCommerce\Facebook\Framework\CrashGuardState::REQUEST_CLASS_UNTRUSTED, time() - 60 );
+		\WooCommerce\Facebook\Framework\CrashGuardState::record_crash( \WooCommerce\Facebook\Framework\CrashGuardState::REQUEST_CLASS_UNTRUSTED, time() - 30 );
+		\WooCommerce\Facebook\Framework\CrashGuardState::record_crash( \WooCommerce\Facebook\Framework\CrashGuardState::REQUEST_CLASS_UNTRUSTED, time(), false, 'inconclusive: loopback blocked' );
+
+		$this->assertFalse( $this->has_valid_disable_flag(), 'Unverified crashes never pause.' );
+
+		$has_unverified = $this->reflection->getMethod( 'has_unverified_crashes' );
+		$has_unverified->setAccessible( true );
+		$this->assertTrue( (bool) $has_unverified->invoke( $this->loader ), 'The admin is told instead.' );
+
+		$this->assert_init_not_skipped();
 	}
 
 	/**

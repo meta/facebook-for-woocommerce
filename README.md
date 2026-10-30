@@ -32,20 +32,26 @@ you can enable the headers in the logs by setting `wc_facebook_request_headers_i
 ### Crash recovery
 
 A shutdown handler watches for fatal errors and uncaught exceptions raised in plugin files (including `vendor/`).
-Each one increments a consecutive-crash streak for its request class (storefront or backend); crashes within
-30 seconds of each other count once, and any request that runs the plugin and finishes cleanly resets the streak.
-Three counted crashes in a row would pause the plugin. Before that happens, for a storefront crash, the guard runs a
-self-check: a plain loopback request to the crashing page that carries nothing the client sent (no cookies, query
-string or body), marked with a one-time token so the events tracker sends nothing to Meta for it. If that request
+Each one increments a consecutive-crash streak for its request class. Requests are classed by who could have shaped
+their input: trusted (WP-CLI, cron, and logged-in users who can manage WooCommerce or the site) or untrusted
+(everyone else, logged-in customers included). Crashes within 30 seconds of each other count once, and any request
+that runs the plugin and finishes cleanly resets the streak of its class.
+
+Three counted crashes in a row would pause the plugin. Trusted crashes do so on the streak alone. For an untrusted
+crash the guard first runs a self-check: a plain loopback request that carries nothing the client sent (no cookies,
+query string or body), marked with a one-time token so the events tracker sends nothing to Meta for it. It targets
+the crashing page for a storefront GET and the home page otherwise, admin-ajax and REST included. If that request
 runs the plugin cleanly, the crash depends on client input, the streak resets and the plugin stays on. If it crashes
-too, or no verdict can be obtained (loopback blocked, a cached page, an auth wall), the plugin pauses for 10 minutes.
-Backend crashes (wp-admin, admin-ajax, REST, cron, CLI) are not self-checked, since a storefront request cannot vouch
-for them; they pause on their own streak, which only clean backend requests reset. A full
-streak again within a day grows the pause to 1 hour, 6 hours and then 24 hours; it never becomes permanent, a single
-crash after a pause never escalates on its own, and the level decays after a day without crashes. The state lives in
-`wp-content/uploads/facebook-for-woocommerce/.disabled`; the plugins screen shows a notice with a "Resume now"
-button, and every crash writes one `Meta for WooCommerce crash guard:` line to the PHP error log with the self-check
-result and the decision taken. See `includes/Framework/CrashGuardState.php` and `PluginCrashHandler::run_self_check()`.
+too, the plugin pauses for 10 minutes. If no verdict can be obtained (loopback blocked, a cached page, an auth wall,
+a request that never bootstrapped the plugin), the crash is counted as unverified and the plugin stays on rather
+than let outside requests switch it off; the plugins screen shows a notice until the record decays after a day.
+
+A full streak again within a day grows the pause to 1 hour, 6 hours and then 24 hours; it never becomes permanent,
+a single crash after a pause never escalates on its own, and the level decays after a day without crashes. The
+state lives in `wp-content/uploads/facebook-for-woocommerce/.disabled`; the plugins screen shows a notice with a
+"Resume now" button while paused, and every crash writes one `Meta for WooCommerce crash guard:` line to the PHP
+error log with the self-check result and the decision taken. See `includes/Framework/CrashGuardState.php` and
+`PluginCrashHandler::run_self_check()`.
 
 ### Crash recovery limitation (known gap)
 

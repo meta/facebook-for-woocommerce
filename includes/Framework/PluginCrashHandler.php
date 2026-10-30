@@ -1174,13 +1174,15 @@ class PluginCrashHandler {
 		$request_class = CrashGuardState::get_request_class();
 		$now           = $this->get_current_time();
 
-		$may_pause = true;
-		$reason    = '';
+		// Trusted requests (WP-CLI, cron, managers) pause on the streak alone. An untrusted request
+		// may pause only when its own self-check saw a plain request crash too. The default is
+		// therefore "cannot pause": the preview below is unlocked, and if another request pushes
+		// the streak to the threshold between the preview and the locked write, this crash is
+		// counted as unverified rather than pausing without a verdict of its own.
+		$may_pause = CrashGuardState::REQUEST_CLASS_TRUSTED === $request_class;
+		$reason    = 'no self-check verdict for this request (the streak reached the threshold concurrently)';
 
 		try {
-			// Trusted requests (WP-CLI, cron, managers) pause on the streak alone. Untrusted ones
-			// pause only when a plain request crashes too; otherwise the crash is counted but the
-			// plugin stays on, so that nobody can switch the integration off from outside.
 			if ( CrashGuardState::REQUEST_CLASS_UNTRUSTED === $request_class && CrashGuardState::would_pause( $request_class, $now ) ) {
 				$self_check = $this->run_self_check();
 
@@ -1188,13 +1190,14 @@ class PluginCrashHandler {
 					// A plain request ran the plugin cleanly, so this crash depends on something the
 					// client sent. The self-check is the healthy request the store did not have.
 					CrashGuardState::record_healthy_request( $request_class, $now );
-				} elseif ( self::SELF_CHECK_CRASHED !== $self_check['outcome'] ) {
-					$may_pause = false;
-					$reason    = $self_check['outcome'] . ': ' . $self_check['detail'];
+				} elseif ( self::SELF_CHECK_CRASHED === $self_check['outcome'] ) {
+					$may_pause = true;
+				} else {
+					$reason = $self_check['outcome'] . ': ' . $self_check['detail'];
 				}
 			}
 
-			$result = CrashGuardState::record_crash( $request_class, $now, $may_pause, $reason );
+			$result = CrashGuardState::record_crash( $request_class, $now, $may_pause, $may_pause ? '' : $reason );
 		} catch ( Throwable $e ) {
 			unset( $e );
 		}

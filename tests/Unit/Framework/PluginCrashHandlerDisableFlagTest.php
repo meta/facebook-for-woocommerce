@@ -456,6 +456,91 @@ class PluginCrashHandlerDisableFlagTest extends AbstractWPUnitTestWithOptionIsol
 		$this->assertSame( 0, $state['streaks'][ CrashGuardState::REQUEST_CLASS_UNTRUSTED ]['count'] );
 	}
 
+	public function test_a_stale_preview_cannot_pause_without_a_verdict_of_its_own(): void {
+		// Request A sees a streak of one in its unlocked preview, so it runs no self-check...
+		CrashGuardState::record_crash( CrashGuardState::REQUEST_CLASS_UNTRUSTED, self::T0 );
+		$this->handler->self_check_behaviour = $this->self_check_recording( PluginCrashHandler::SELF_CHECK_CRASHED );
+
+		// ...while request B, holding the writer lock, lands an unverified third crash before A can write.
+		$state_from_b                  = CrashGuardState::read( self::T0 + 60 );
+		$state_from_b['revision']      = 9;
+		$state_from_b['updated_at']    = self::T0 + 60;
+		$state_from_b['last_crash_at'] = self::T0 + 60;
+		$state_from_b['streaks'][ CrashGuardState::REQUEST_CLASS_UNTRUSTED ] = [
+			'count'           => 3,
+			'last_counted_at' => self::T0 + 30,
+		];
+		$state_from_b['unverified']    = [
+			'count'   => 1,
+			'last_at' => self::T0 + 60,
+			'reason'  => 'inconclusive: loopback blocked',
+		];
+		$holder = $this->start_lock_holder( 700, sprintf( 'ftruncate($h, 0); rewind($h); fwrite($h, %s);', var_export( wp_json_encode( $state_from_b ), true ) ) );
+
+		try {
+			$this->simulate_plugin_crash( self::T0 + 90 );
+		} finally {
+			$this->finish_lock_holder( $holder );
+		}
+
+		$this->assertCount( 0, $this->handler->self_check_urls, 'Precondition: A previewed a streak of one and ran no self-check.' );
+
+		$state = CrashGuardState::read( self::T0 + 90 );
+		$this->assertFalse( CrashGuardState::is_disabled( $state, self::T0 + 91 ), 'A crash with no verdict of its own must never pause, however the state changed meanwhile.' );
+		$this->assertSame( 2, $state['unverified']['count'] );
+		$this->assertStringContainsString( 'concurrently', $state['unverified']['reason'] );
+		$this->assertSame( 3, $state['streaks'][ CrashGuardState::REQUEST_CLASS_UNTRUSTED ]['count'], 'The streak stays at the threshold so the next crash asks the self-check.' );
+	}
+
+	/**
+	 * Starts a PHP subprocess that takes the writer lock on the flag file, signals that it holds
+	 * it, keeps it for $hold_ms, runs $body_php (with $h as the locked handle), then releases it.
+	 *
+	 * @param int    $hold_ms  how long to hold the lock before running the body.
+	 * @param string $body_php PHP statements to run while holding the lock.
+	 * @return array{0: resource, 1: array, 2: string} process handle, pipes, script path.
+	 */
+	private function start_lock_holder( int $hold_ms, string $body_php ): array {
+		$script_path = tempnam( sys_get_temp_dir(), 'fbwc-lock-holder-' );
+		$marker_path = $script_path . '.locked';
+
+		$script = sprintf(
+			'<?php $h = fopen(%s, "c+"); flock($h, LOCK_EX); touch(%s); usleep(%d); %s fflush($h); flock($h, LOCK_UN); fclose($h);',
+			var_export( CrashGuardState::get_flag_file_path(), true ),
+			var_export( $marker_path, true ),
+			$hold_ms * 1000,
+			$body_php
+		);
+		file_put_contents( $script_path, $script ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents
+
+		$pipes   = [];
+		$process = proc_open( escapeshellarg( PHP_BINARY ) . ' -n ' . escapeshellarg( $script_path ), [ 1 => [ 'pipe', 'w' ], 2 => [ 'pipe', 'w' ] ], $pipes );
+		$this->assertIsResource( $process );
+
+		$deadline = microtime( true ) + 5;
+		while ( ! file_exists( $marker_path ) && microtime( true ) < $deadline ) {
+			usleep( 20000 );
+			clearstatcache( true, $marker_path );
+		}
+		$this->assertFileExists( $marker_path, 'Lock holder subprocess did not take the lock in time.' );
+
+		return [ $process, $pipes, $script_path ];
+	}
+
+	private function finish_lock_holder( array $holder ): void {
+		list( $process, $pipes, $script_path ) = $holder;
+
+		$stderr = stream_get_contents( $pipes[2] );
+		fclose( $pipes[1] );
+		fclose( $pipes[2] );
+		$exit_code = proc_close( $process );
+
+		@unlink( $script_path ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged,WordPress.WP.AlternativeFunctions.unlink_unlink
+		@unlink( $script_path . '.locked' ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged,WordPress.WP.AlternativeFunctions.unlink_unlink
+
+		$this->assertSame( 0, $exit_code, 'Lock holder subprocess failed: ' . $stderr );
+	}
+
 	public function test_self_check_request_records_a_verdict_instead_of_counting(): void {
 		$token = 'abc123def456';
 		set_transient( PluginCrashHandler::SELF_CHECK_PENDING_PREFIX . $token, 1, MINUTE_IN_SECONDS );

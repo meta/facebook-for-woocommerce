@@ -87,7 +87,7 @@ function wc_facebook_handle_bootstrap_crash( $error, $plugin_dir ) {
 	$trusted = defined( 'WP_CLI' ) && WP_CLI;
 	if ( ! $trusted && ( function_exists( 'wp_doing_cron' ) ? wp_doing_cron() : ( defined( 'DOING_CRON' ) && DOING_CRON ) ) ) {
 		// phpcs:ignore WordPress.Security.NonceVerification, WordPress.Security.ValidatedSanitizedInput -- Only the presence of input is inspected, no value is used.
-		$trusted = empty( $_COOKIE ) && empty( $_POST ) && empty( $_FILES ) && empty( $_SERVER['HTTP_COOKIE'] ) && empty( $_SERVER['HTTP_REFERER'] ) && [] === array_diff( array_keys( (array) $_GET ), [ 'doing_wp_cron' ] );
+		$trusted = empty( $_COOKIE ) && empty( $_POST ) && empty( $_FILES ) && empty( $_SERVER['HTTP_COOKIE'] ) && empty( $_SERVER['HTTP_REFERER'] ) && (int) ( $_SERVER['CONTENT_LENGTH'] ?? 0 ) <= 0 && [] === array_diff( array_keys( (array) $_GET ), [ 'doing_wp_cron' ] );
 	}
 	if ( ! $trusted && function_exists( 'current_user_can' ) && function_exists( 'wp_get_current_user' ) ) {
 		try {

@@ -495,22 +495,160 @@ class PluginCrashHandlerDisableFlagTest extends AbstractWPUnitTestWithOptionIsol
 		}
 	}
 
-	public function test_trusted_crashes_pause_on_their_streak_without_a_self_check(): void {
+	public function test_manager_crash_is_self_checked_and_a_clean_probe_prevents_the_pause(): void {
 		$this->handler->self_check_behaviour = $this->self_check_recording( PluginCrashHandler::SELF_CHECK_CLEAN );
-		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
-
-		$this->assertSame( CrashGuardState::REQUEST_CLASS_TRUSTED, CrashGuardState::get_request_class(), 'Precondition: a manager is logged in.' );
+		$this->log_in_a_manager();
 
 		$this->simulate_plugin_crash( self::T0 );
 		$this->simulate_plugin_crash( self::T0 + 30 );
 		$this->simulate_plugin_crash( self::T0 + 60 );
 
-		$this->assertCount( 0, $this->handler->self_check_urls, 'Trusted input needs no self-check.' );
+		$this->assertCount( 1, $this->handler->self_check_urls, 'A link can hand a manager\'s browser a crashing query string, so the self-check decides first.' );
 
 		$state = CrashGuardState::read( self::T0 + 60 );
-		$this->assertTrue( CrashGuardState::is_disabled( $state, self::T0 + 61 ), 'A crash under a manager still reaches recovery.' );
-		$this->assertSame( 1, $state['level'] );
+		$this->assertFalse( CrashGuardState::is_disabled( $state, self::T0 + 61 ), 'Crashes a plain request does not reproduce never pause the plugin, whoever sent them.' );
+		$this->assertSame( 1, $state['streaks'][ CrashGuardState::REQUEST_CLASS_TRUSTED ]['count'], 'The clean probe reset the trusted streak; this crash starts a new one.' );
 		$this->assertSame( 0, $state['streaks'][ CrashGuardState::REQUEST_CLASS_UNTRUSTED ]['count'] );
+	}
+
+	public function test_manager_crash_confirmed_by_the_self_check_pauses(): void {
+		$this->handler->self_check_behaviour = $this->self_check_recording( PluginCrashHandler::SELF_CHECK_CRASHED );
+		$this->log_in_a_manager();
+
+		$this->simulate_plugin_crash( self::T0 );
+		$this->simulate_plugin_crash( self::T0 + 30 );
+		$this->simulate_plugin_crash( self::T0 + 60 );
+
+		$this->assertCount( 1, $this->handler->self_check_urls );
+		$state = CrashGuardState::read( self::T0 + 60 );
+		$this->assertTrue( CrashGuardState::is_disabled( $state, self::T0 + 61 ) );
+		$this->assertSame( 1, $state['level'] );
+	}
+
+	public function test_manager_crash_pauses_on_its_streak_only_when_the_self_check_has_no_verdict(): void {
+		$this->handler->self_check_behaviour = static function () {
+			return new \WP_Error( 'http_request_failed', 'cURL error 7: Failed to connect' );
+		};
+		$this->log_in_a_manager();
+
+		$this->simulate_plugin_crash( self::T0 );
+		$this->simulate_plugin_crash( self::T0 + 30 );
+		$this->simulate_plugin_crash( self::T0 + 60 );
+
+		$this->assertCount( 1, $this->handler->self_check_urls, 'The self-check is still attempted.' );
+
+		$state = CrashGuardState::read( self::T0 + 60 );
+		$this->assertTrue( CrashGuardState::is_disabled( $state, self::T0 + 61 ), 'Where the loopback cannot run, a manager\'s streak still catches a plugin broken everywhere.' );
+		$this->assertSame( 1, $state['level'] );
+		$this->assertSame( 0, $state['unverified']['count'] );
+	}
+
+	public function test_crash_on_a_path_wordpress_resolved_pauses_after_one_probe(): void {
+		$this->handler->self_check_behaviour = $this->self_check_recording( PluginCrashHandler::SELF_CHECK_CRASHED, true );
+		$_SERVER['REQUEST_METHOD']           = 'GET';
+		$_SERVER['REQUEST_URI']              = '/product/beanie/?utm_source=x';
+
+		$this->simulate_plugin_crash( self::T0 );
+		$this->simulate_plugin_crash( self::T0 + 30 );
+		$this->simulate_plugin_crash( self::T0 + 60 );
+
+		$this->assertCount( 1, $this->handler->self_check_urls, 'A crash on a real page is a crash visitors see; no second opinion needed.' );
+		$this->assertStringStartsWith( home_url( '/product/beanie/' ), $this->handler->self_check_urls[0] );
+		$this->assertTrue( CrashGuardState::is_disabled( CrashGuardState::read( self::T0 + 60 ), self::T0 + 61 ) );
+	}
+
+	public function test_crash_on_a_path_wordpress_did_not_resolve_is_decided_by_the_home_page(): void {
+		// The crafted path crashes on a 404; the home page runs cleanly.
+		$this->handler->self_check_behaviour = $this->self_check_by_target(
+			$this->self_check_recording( PluginCrashHandler::SELF_CHECK_CRASHED, false ),
+			$this->self_check_recording( PluginCrashHandler::SELF_CHECK_CLEAN, true )
+		);
+		$_SERVER['REQUEST_METHOD'] = 'GET';
+		$_SERVER['REQUEST_URI']    = '/no-such-page/?x=1';
+
+		$this->simulate_plugin_crash( self::T0 );
+		$this->simulate_plugin_crash( self::T0 + 30 );
+		$this->simulate_plugin_crash( self::T0 + 60 );
+
+		$this->assertCount( 2, $this->handler->self_check_urls, 'A crash on a URL WordPress did not resolve asks the home page as well.' );
+		$this->assertStringStartsWith( home_url( '/no-such-page/' ), $this->handler->self_check_urls[0] );
+		$this->assertStringStartsWith( home_url( '/' ) . '?', $this->handler->self_check_urls[1] );
+
+		$state = CrashGuardState::read( self::T0 + 60 );
+		$this->assertFalse( CrashGuardState::is_disabled( $state, self::T0 + 61 ), 'A crafted URL nobody links to must not pause the plugin on its own.' );
+		$this->assertSame( 1, $state['unverified']['count'], 'The merchant is told instead.' );
+		$this->assertStringContainsString( 'did not resolve to a page', $state['unverified']['reason'] );
+		$this->assertStringContainsString( '/no-such-page/', $state['unverified']['reason'] );
+		$this->assertSame( 3, $state['streaks'][ CrashGuardState::REQUEST_CLASS_UNTRUSTED ]['count'], 'The streak is held so the next crash asks again.' );
+	}
+
+	public function test_crash_on_an_unresolved_path_pauses_when_the_home_page_crashes_too(): void {
+		$this->handler->self_check_behaviour = $this->self_check_by_target(
+			$this->self_check_recording( PluginCrashHandler::SELF_CHECK_CRASHED, false ),
+			$this->self_check_recording( PluginCrashHandler::SELF_CHECK_CRASHED, true )
+		);
+		$_SERVER['REQUEST_METHOD'] = 'GET';
+		$_SERVER['REQUEST_URI']    = '/no-such-page/';
+
+		$this->simulate_plugin_crash( self::T0 );
+		$this->simulate_plugin_crash( self::T0 + 30 );
+		$this->simulate_plugin_crash( self::T0 + 60 );
+
+		$this->assertCount( 2, $this->handler->self_check_urls );
+		$this->assertTrue( CrashGuardState::is_disabled( CrashGuardState::read( self::T0 + 60 ), self::T0 + 61 ), 'The home page crashing too means the plugin is broken for everyone.' );
+	}
+
+	public function test_crash_on_an_unresolved_path_with_an_inconclusive_home_probe_stays_unverified(): void {
+		$this->handler->self_check_behaviour = $this->self_check_by_target(
+			$this->self_check_recording( PluginCrashHandler::SELF_CHECK_CRASHED, false ),
+			static function () {
+				return [ 'response' => [ 'code' => 200 ], 'body' => '<html>cached</html>' ];
+			}
+		);
+		$_SERVER['REQUEST_METHOD'] = 'GET';
+		$_SERVER['REQUEST_URI']    = '/no-such-page/';
+
+		$this->simulate_plugin_crash( self::T0 );
+		$this->simulate_plugin_crash( self::T0 + 30 );
+		$this->simulate_plugin_crash( self::T0 + 60 );
+
+		$this->assertCount( 2, $this->handler->self_check_urls );
+		$state = CrashGuardState::read( self::T0 + 60 );
+		$this->assertFalse( CrashGuardState::is_disabled( $state, self::T0 + 61 ) );
+		$this->assertSame( 1, $state['unverified']['count'] );
+		$this->assertStringContainsString( 'inconclusive', $state['unverified']['reason'] );
+	}
+
+	public function test_self_check_keeps_the_percent_encoding_of_the_crashing_path(): void {
+		$this->handler->self_check_behaviour = $this->self_check_recording( PluginCrashHandler::SELF_CHECK_CLEAN );
+		$_SERVER['REQUEST_METHOD']           = 'GET';
+		$_SERVER['REQUEST_URI']              = '/produit/caf%C3%A9/?fbclid=1';
+
+		$this->simulate_plugin_crash( self::T0 );
+		$this->simulate_plugin_crash( self::T0 + 30 );
+		$this->simulate_plugin_crash( self::T0 + 60 );
+
+		$this->assertStringStartsWith( home_url( '/produit/caf%C3%A9/' ), $this->handler->self_check_urls[0], 'A non-ASCII slug is probed as the visitor requested it, not stripped to a 404 that looks clean.' );
+
+		CrashGuardState::clear();
+		$this->handler->self_check_urls = [];
+		$_SERVER['REQUEST_URI']         = '/a b/<x>/';
+
+		$this->simulate_plugin_crash( self::T0 + 1000 );
+		$this->simulate_plugin_crash( self::T0 + 1030 );
+		$this->simulate_plugin_crash( self::T0 + 1060 );
+
+		$this->assertStringStartsWith( home_url( '/a%20b/%3Cx%3E/' ), $this->handler->self_check_urls[0], 'Bytes a URL path may not carry are encoded rather than dropped.' );
+
+		CrashGuardState::clear();
+		$this->handler->self_check_urls = [];
+		$_SERVER['REQUEST_URI']         = '/bad%zz/';
+
+		$this->simulate_plugin_crash( self::T0 + 2000 );
+		$this->simulate_plugin_crash( self::T0 + 2030 );
+		$this->simulate_plugin_crash( self::T0 + 2060 );
+
+		$this->assertStringStartsWith( home_url( '/' ) . '?', $this->handler->self_check_urls[0], 'A malformed percent sequence falls back to the home page.' );
 	}
 
 	public function test_a_stale_preview_cannot_pause_without_a_verdict_of_its_own(): void {
@@ -611,11 +749,25 @@ class PluginCrashHandlerDisableFlagTest extends AbstractWPUnitTestWithOptionIsol
 		CrashGuardState::record_crash( CrashGuardState::REQUEST_CLASS_UNTRUSTED, self::T0 + 30 );
 
 		$this->simulate_healthy_shutdown( self::T0 + 40 );
-		$this->assertSame( PluginCrashHandler::SELF_CHECK_CLEAN, get_transient( PluginCrashHandler::SELF_CHECK_OUTCOME_PREFIX . $token ) );
+		$this->assertSame(
+			[
+				'outcome'  => PluginCrashHandler::SELF_CHECK_CLEAN,
+				'resolved' => null,
+			],
+			get_transient( PluginCrashHandler::SELF_CHECK_OUTCOME_PREFIX . $token )
+		);
 		$this->assertSame( 2, CrashGuardState::read( self::T0 + 40 )['streaks'][ CrashGuardState::REQUEST_CLASS_UNTRUSTED ]['count'], 'A self-check is not a visitor and resets nothing itself.' );
 
+		$this->go_to( home_url( '/' ) );
 		$this->simulate_plugin_crash( self::T0 + 70 );
-		$this->assertSame( PluginCrashHandler::SELF_CHECK_CRASHED, get_transient( PluginCrashHandler::SELF_CHECK_OUTCOME_PREFIX . $token ) );
+		$this->assertSame(
+			[
+				'outcome'  => PluginCrashHandler::SELF_CHECK_CRASHED,
+				'resolved' => true,
+			],
+			get_transient( PluginCrashHandler::SELF_CHECK_OUTCOME_PREFIX . $token ),
+			'The verdict carries whether WordPress resolved the probed URL to a page.'
+		);
 		$this->assertSame( 2, CrashGuardState::read( self::T0 + 70 )['streaks'][ CrashGuardState::REQUEST_CLASS_UNTRUSTED ]['count'], 'A crash inside the self-check is reported through the verdict, not the streak.' );
 		$this->assertFalse( CrashGuardState::is_disabled( CrashGuardState::read( self::T0 + 70 ), self::T0 + 71 ) );
 	}
@@ -631,9 +783,35 @@ class PluginCrashHandlerDisableFlagTest extends AbstractWPUnitTestWithOptionIsol
 		$this->simulate_healthy_shutdown( self::T0 + 40 );
 
 		$this->assertSame(
-			PluginCrashHandler::SELF_CHECK_INCONCLUSIVE,
+			[
+				'outcome'  => PluginCrashHandler::SELF_CHECK_INCONCLUSIVE,
+				'resolved' => null,
+			],
 			get_transient( PluginCrashHandler::SELF_CHECK_OUTCOME_PREFIX . $token ),
 			'A request that never ran the plugin cannot vouch for it.'
+		);
+	}
+
+	public function test_self_check_request_reports_a_crash_on_a_404_as_unresolved(): void {
+		$token = 'abc123def456';
+		set_transient( PluginCrashHandler::SELF_CHECK_PENDING_PREFIX . $token, 1, MINUTE_IN_SECONDS );
+		$_GET[ PluginCrashHandler::SELF_CHECK_QUERY_ARG ] = $token;
+		$this->assertTrue( PluginCrashHandler::detect_self_check_request() );
+
+		// A query-based URL, because the test site has no pretty permalinks and a bare path would
+		// resolve to the home page.
+		$this->go_to( home_url( '/?p=' . PHP_INT_MAX ) );
+		$this->assertTrue( is_404(), 'Precondition: the probed URL is a 404.' );
+
+		$this->simulate_plugin_crash( self::T0 + 70 );
+
+		$this->assertSame(
+			[
+				'outcome'  => PluginCrashHandler::SELF_CHECK_CRASHED,
+				'resolved' => false,
+			],
+			get_transient( PluginCrashHandler::SELF_CHECK_OUTCOME_PREFIX . $token ),
+			'A crash on a URL WordPress did not resolve is reported as such, so a crafted path cannot pass for a broken page.'
 		);
 	}
 
@@ -650,6 +828,29 @@ class PluginCrashHandlerDisableFlagTest extends AbstractWPUnitTestWithOptionIsol
 	 * @param string $verdict one of the SELF_CHECK_* constants.
 	 * @return callable
 	 */
+	/**
+	 * Logs in an administrator and gives the request the login cookie a browser would carry, so
+	 * the request is trusted but not input-free.
+	 */
+	private function log_in_a_manager(): void {
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
+		$_COOKIE = [ 'wordpress_logged_in_test' => 'cookie' ];
+
+		$this->assertSame( CrashGuardState::REQUEST_CLASS_TRUSTED, CrashGuardState::get_request_class(), 'Precondition: a manager is logged in.' );
+		$this->assertFalse( CrashGuardState::is_input_free_request(), 'Precondition: a browser request carries its login cookie.' );
+	}
+
+	/**
+	 * Stands in for the loopback with one behaviour for the home page and another for any other path.
+	 */
+	private function self_check_by_target( callable $for_path, callable $for_home ): callable {
+		return static function ( string $url ) use ( $for_path, $for_home ) {
+			$is_home = 0 === strpos( $url, home_url( '/' ) . '?' );
+
+			return call_user_func( $is_home ? $for_home : $for_path, $url );
+		};
+	}
+
 	private function set_request_headers( ?string $cookie_header, ?string $referer ): void {
 		unset( $_SERVER['HTTP_COOKIE'], $_SERVER['HTTP_REFERER'] );
 
@@ -662,9 +863,16 @@ class PluginCrashHandlerDisableFlagTest extends AbstractWPUnitTestWithOptionIsol
 		}
 	}
 
-	private function self_check_recording( string $verdict ): callable {
-		return function ( string $url ) use ( $verdict ) {
-			set_transient( PluginCrashHandler::SELF_CHECK_OUTCOME_PREFIX . $this->token_from_url( $url ), $verdict, MINUTE_IN_SECONDS );
+	private function self_check_recording( string $verdict, ?bool $resolved = null ): callable {
+		return function ( string $url ) use ( $verdict, $resolved ) {
+			set_transient(
+				PluginCrashHandler::SELF_CHECK_OUTCOME_PREFIX . $this->token_from_url( $url ),
+				[
+					'outcome'  => $verdict,
+					'resolved' => $resolved,
+				],
+				MINUTE_IN_SECONDS
+			);
 
 			return [ 'response' => [ 'code' => PluginCrashHandler::SELF_CHECK_CRASHED === $verdict ? 500 : 200 ], 'body' => '' ];
 		};

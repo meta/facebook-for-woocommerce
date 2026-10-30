@@ -817,6 +817,10 @@ class CrashGuardStateTest extends AbstractWPUnitTestWithSafeFiltering {
 			unset( $_SERVER['HTTP_REFERER'] );
 			$_POST = [ 'x' => '1' ];
 			$this->assertSame( CrashGuardState::REQUEST_CLASS_UNTRUSTED, CrashGuardState::get_request_class(), 'A request body is client input.' );
+
+			$_POST                     = [];
+			$_SERVER['CONTENT_LENGTH'] = '12';
+			$this->assertSame( CrashGuardState::REQUEST_CLASS_UNTRUSTED, CrashGuardState::get_request_class(), 'A raw body PHP did not parse into $_POST is client input too.' );
 		} finally {
 			list( $_GET, $_COOKIE, $_POST, $_SERVER ) = $saved;
 		}

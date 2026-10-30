@@ -37,11 +37,14 @@ defined( 'ABSPATH' ) || exit;
  *   pauses for the next longer window; after DECAY_SECONDS without a crash the level resets.
  *   A single crash after a pause never escalates on its own: that would let one request
  *   renew a pause indefinitely.
- * - Trusted crashes pause on the streak alone: their input is not an outsider's. Untrusted
+ * - Trusted crashes may pause on the streak alone: their input is not an outsider's. Untrusted
  *   crashes pause only when PluginCrashHandler's self-check (a plain loopback request carrying
- *   nothing from the client) confirms that a plain request crashes too. would_pause() tells the
- *   handler when that decision is due; when the self-check cannot run, record_crash() is asked
- *   to count the crash as unverified instead of pausing, which the admin notice reports.
+ *   nothing from the client) confirms that a plain request crashes too. The handler asks that
+ *   self-check first for every request that carries client input, a manager's browser included,
+ *   and lets a trusted request fall back to its streak only when no verdict can be obtained.
+ *   would_pause() tells the handler when that decision is due; when the self-check cannot
+ *   confirm the crash, record_crash() is asked to count it as unverified instead of pausing,
+ *   which the admin notice reports.
  *
  * State is stored as JSON in uploads/facebook-for-woocommerce/.disabled, updated under an
  * exclusive file lock. A transient is the fallback when the file cannot be written. Reads
@@ -139,12 +142,14 @@ final class CrashGuardState {
 	 * Classifies the current request by who could have shaped its input.
 	 *
 	 * Trusted: WP-CLI, cron requests that carry no client input, and logged-in users who can
-	 * manage WooCommerce or the site. Their input is not an outsider's, so their crashes pause the
-	 * plugin on the streak alone, and a plugin broken on every request is still caught through
-	 * cron and wp-admin even where the self-check cannot run. Untrusted: everyone else, logged-in
-	 * customers included, because open registration makes a login prove nothing. Streaks are
-	 * tracked per class so that trusted traffic cannot mask a storefront that crashes for
-	 * visitors, and vice versa.
+	 * manage WooCommerce or the site. Their input is not an outsider's, so their crashes may pause
+	 * the plugin on the streak alone, which is how a plugin broken on every request is still caught
+	 * through cron and wp-admin where the self-check cannot run. A manager's browser request is the
+	 * exception PluginCrashHandler makes: a link can hand it a crashing query string, so it is
+	 * self-checked like any other and uses its streak only when no verdict comes back. Untrusted:
+	 * everyone else, logged-in customers included, because open registration makes a login prove
+	 * nothing. Streaks are tracked per class so that trusted traffic cannot mask a storefront that
+	 * crashes for visitors, and vice versa.
 	 *
 	 * Cron is not trusted by itself. wp-cron.php defines DOING_CRON for any GET request it receives,
 	 * and that request keeps the client's cookies, query string and headers, which the plugin reads
@@ -204,10 +209,10 @@ final class CrashGuardState {
 	/**
 	 * Whether the current request carries nothing a client could have shaped.
 	 *
-	 * True for a bare request: no cookies, no body, no referrer and no query argument other than
-	 * `doing_wp_cron`. That is what spawn_cron() sends to wp-cron.php and what a system-cron ping
-	 * looks like. Remaining request headers such as the user agent are not considered: the plugin
-	 * only ever reads them as sanitized strings.
+	 * True for a bare request: no cookies, no body (neither form fields nor a raw one), no referrer
+	 * and no query argument other than `doing_wp_cron`. That is what spawn_cron() sends to
+	 * wp-cron.php and what a system-cron ping looks like. Remaining request headers such as the
+	 * user agent are not considered: the plugin only ever reads them as sanitized strings.
 	 *
 	 * @since 3.7.9
 	 *
@@ -219,7 +224,7 @@ final class CrashGuardState {
 			return false;
 		}
 
-		if ( ! empty( $_SERVER['HTTP_COOKIE'] ) || ! empty( $_SERVER['HTTP_REFERER'] ) ) {
+		if ( ! empty( $_SERVER['HTTP_COOKIE'] ) || ! empty( $_SERVER['HTTP_REFERER'] ) || (int) ( $_SERVER['CONTENT_LENGTH'] ?? 0 ) > 0 ) {
 			return false;
 		}
 

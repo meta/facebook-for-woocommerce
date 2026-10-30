@@ -147,6 +147,16 @@ class PluginCrashHandler {
 	const SELF_CHECK_SKIPPED      = 'skipped';
 
 	/**
+	 * What the self-check verification allows for a crash: pause the plugin, reset the streak
+	 * because a plain request runs cleanly, or neither, leaving the crash unverified.
+	 *
+	 * @since 3.7.9
+	 */
+	const VERIFICATION_PAUSE      = 'pause';
+	const VERIFICATION_RESET      = 'reset';
+	const VERIFICATION_UNVERIFIED = 'unverified';
+
+	/**
 	 * Token carried by this request when it is the crash guard's own self-check; empty otherwise.
 	 *
 	 * @var string
@@ -318,9 +328,11 @@ class PluginCrashHandler {
 		}
 
 		if ( self::is_self_check_request() ) {
-			// The plugin crashed on a plain request. The request that asked for this check will
-			// pause the plugin; it already reported the crash, so this one is not counted again.
-			$this->record_self_check_outcome( self::SELF_CHECK_CRASHED );
+			// The plugin crashed on a plain request. The request that asked for this check decides
+			// what follows; it already reported the crash, so this one is not counted again. Whether
+			// WordPress resolved the probed URL to a page travels with the verdict: a crash on a URL
+			// nobody links to is not the same as a crash on a page visitors see.
+			$this->record_self_check_outcome( self::SELF_CHECK_CRASHED, $this->did_request_resolve_to_a_page() );
 			return;
 		}
 
@@ -1170,30 +1182,37 @@ class PluginCrashHandler {
 	 */
 	private function record_plugin_crash( array $error ) {
 		$result        = null;
-		$self_check    = null;
+		$verification  = null;
 		$request_class = CrashGuardState::get_request_class();
 		$now           = $this->get_current_time();
+		$is_trusted    = CrashGuardState::REQUEST_CLASS_TRUSTED === $request_class;
 
-		// Trusted requests (WP-CLI, input-free cron, managers) pause on the streak alone. An untrusted request
-		// may pause only when its own self-check saw a plain request crash too. The default is
-		// therefore "cannot pause": the preview below is unlocked, and if another request pushes
-		// the streak to the threshold between the preview and the locked write, this crash is
-		// counted as unverified rather than pausing without a verdict of its own.
-		$may_pause = CrashGuardState::REQUEST_CLASS_TRUSTED === $request_class;
-		$reason    = 'no self-check verdict for this request (the streak reached the threshold concurrently)';
+		// Only a request that carries nothing a client could have shaped (WP-CLI, a bare cron run)
+		// pauses on its streak alone. Every other request asks the self-check first, a manager's
+		// browser included: a link can hand it a crashing query string, and a hostile page can
+		// drive three such navigations from one click, since the login cookie travels on every
+		// top-level GET. A manager's request still pauses on its streak when the self-check yields
+		// no verdict at all, so a plugin broken everywhere is caught through wp-admin even where
+		// the loopback is blocked; an untrusted request never does. The default is therefore
+		// "cannot pause": the preview below is unlocked, and if another request pushes the streak
+		// to the threshold between the preview and the locked write, this crash is counted as
+		// unverified rather than pausing without a verdict of its own.
+		$streak_alone = $is_trusted && CrashGuardState::is_input_free_request();
+		$may_pause    = $streak_alone;
+		$reason       = 'no self-check verdict for this request (the streak reached the threshold concurrently)';
 
 		try {
-			if ( CrashGuardState::REQUEST_CLASS_UNTRUSTED === $request_class && CrashGuardState::would_pause( $request_class, $now ) ) {
-				$self_check = $this->run_self_check();
+			if ( ! $streak_alone && CrashGuardState::would_pause( $request_class, $now ) ) {
+				$verification = $this->verify_crash_with_self_check();
 
-				if ( self::SELF_CHECK_CLEAN === $self_check['outcome'] ) {
+				if ( self::VERIFICATION_RESET === $verification['decision'] ) {
 					// A plain request ran the plugin cleanly, so this crash depends on something the
 					// client sent. The self-check is the healthy request the store did not have.
 					CrashGuardState::record_healthy_request( $request_class, $now );
-				} elseif ( self::SELF_CHECK_CRASHED === $self_check['outcome'] ) {
+				} elseif ( self::VERIFICATION_PAUSE === $verification['decision'] || ( $is_trusted && $verification['no_verdict'] ) ) {
 					$may_pause = true;
 				} else {
-					$reason = $self_check['outcome'] . ': ' . $self_check['detail'];
+					$reason = $verification['reason'];
 				}
 			}
 
@@ -1203,54 +1222,136 @@ class PluginCrashHandler {
 		}
 
 		$this->remember_last_crash( $error );
-		$this->log_crash_decision( $error, $result, $self_check );
+		$this->log_crash_decision( $error, $result, $verification, $is_trusted );
 
 		return $result;
 	}
 
 	/**
-	 * Runs the self-check: a plain loopback request that carries nothing from the client.
+	 * Runs the self-check and turns its verdict into a decision about this crash.
 	 *
-	 * Only untrusted crashes are checked; trusted ones pause on their streak alone. The question
-	 * the check answers is whether the plugin runs cleanly for a visitor who sends nothing, so it
-	 * applies to admin-ajax, REST and cron crashes as much as to page views.
-	 *
-	 * The target is the path of the crashing request without its query string for a storefront
-	 * GET, and the home page for everything else. The request carries a one-time token; the
-	 * request it spawns recognizes the token, runs the plugin as any visitor would, and records
-	 * clean, crashed or inconclusive at its own shutdown. The verdict comes from that record,
-	 * never from the HTTP status, so a page cache answering 200 counts as inconclusive.
+	 * A clean plain request means the crash depends on client input: the streak resets. A crash
+	 * on the home page, or on a path WordPress resolved to a real page, means visitors hit it
+	 * too: the plugin may pause. A crash on a path WordPress did not resolve (a 404, or a crash
+	 * before the main query ran) is different: that path is the requester's own input, and a
+	 * crafted URL nobody links to must not pause the plugin by itself, so the home page is probed
+	 * as well and decides. Anything without a verdict leaves the crash unverified.
 	 *
 	 * @since 3.7.9
 	 *
 	 * @return array {
-	 *     @type string $outcome one of the SELF_CHECK_* constants.
-	 *     @type string $target  path that was requested.
-	 *     @type string $detail  transport detail for the log line.
+	 *     @type string $decision   one of the VERIFICATION_* constants.
+	 *     @type string $reason     why the crash stays unverified, for the admin notice.
+	 *     @type bool   $no_verdict whether the self-check produced no verdict at all.
+	 *     @type array  $checks     run_self_check() results, in the order they ran.
 	 * }
 	 */
-	private function run_self_check() {
-		if ( ! function_exists( 'wp_safe_remote_get' ) || ! function_exists( 'home_url' ) || ! function_exists( 'add_query_arg' ) ) {
-			return $this->self_check_result( self::SELF_CHECK_SKIPPED, '', 'HTTP API unavailable' );
+	private function verify_crash_with_self_check() {
+		$first  = $this->run_self_check( $this->get_self_check_target() );
+		$checks = [ $first ];
+
+		if ( self::SELF_CHECK_CLEAN === $first['outcome'] ) {
+			return $this->verification( self::VERIFICATION_RESET, '', false, $checks );
 		}
 
-		$token  = $this->generate_self_check_token();
-		$target = $this->get_self_check_target();
+		if ( self::SELF_CHECK_CRASHED !== $first['outcome'] ) {
+			return $this->verification( self::VERIFICATION_UNVERIFIED, $first['outcome'] . ': ' . $first['detail'], true, $checks );
+		}
+
+		if ( '/' === $first['target'] || true === $first['resolved'] ) {
+			return $this->verification( self::VERIFICATION_PAUSE, '', false, $checks );
+		}
+
+		$second   = $this->run_self_check( '/' );
+		$checks[] = $second;
+
+		if ( self::SELF_CHECK_CRASHED === $second['outcome'] ) {
+			return $this->verification( self::VERIFICATION_PAUSE, '', false, $checks );
+		}
+
+		if ( self::SELF_CHECK_CLEAN === $second['outcome'] ) {
+			return $this->verification(
+				self::VERIFICATION_UNVERIFIED,
+				sprintf( 'crashed on %s, a path WordPress did not resolve to a page, while / ran cleanly', $first['target'] ),
+				false,
+				$checks
+			);
+		}
+
+		return $this->verification(
+			self::VERIFICATION_UNVERIFIED,
+			sprintf( 'crashed on %s, a path WordPress did not resolve to a page; / %s: %s', $first['target'], $second['outcome'], $second['detail'] ),
+			false,
+			$checks
+		);
+	}
+
+	/**
+	 * Builds a verify_crash_with_self_check() result.
+	 *
+	 * @since 3.7.9
+	 *
+	 * @param string $decision   one of the VERIFICATION_* constants.
+	 * @param string $reason     why the crash stays unverified.
+	 * @param bool   $no_verdict whether no verdict was produced at all.
+	 * @param array  $checks     self-check results.
+	 * @return array
+	 */
+	private function verification( $decision, $reason, $no_verdict, array $checks ) {
+		return [
+			'decision'   => $decision,
+			'reason'     => (string) $reason,
+			'no_verdict' => (bool) $no_verdict,
+			'checks'     => $checks,
+		];
+	}
+
+	/**
+	 * Runs the self-check: a plain loopback request that carries nothing from the client.
+	 *
+	 * Every crash that could carry client input is checked; only WP-CLI and bare cron pause on
+	 * their streak alone. The question the check answers is whether the plugin runs cleanly for a
+	 * visitor who sends nothing, so it applies to admin-ajax, REST and cron crashes as much as to
+	 * page views.
+	 *
+	 * The target is the path of the crashing request without its query string for a storefront
+	 * GET, and the home page for everything else (see get_self_check_target()). The request
+	 * carries a one-time token; the request it spawns recognizes the token, runs the plugin as
+	 * any visitor would, and records clean, crashed or inconclusive at its own shutdown, together
+	 * with whether WordPress resolved the URL to a page. The verdict comes from that record, never
+	 * from the HTTP status, so a page cache answering 200 counts as inconclusive.
+	 *
+	 * @since 3.7.9
+	 *
+	 * @param string $target path to request, relative to the home URL.
+	 * @return array {
+	 *     @type string    $outcome  one of the SELF_CHECK_* constants.
+	 *     @type string    $target   path that was requested.
+	 *     @type string    $detail   transport detail for the log line.
+	 *     @type bool|null $resolved whether WordPress resolved the URL to a page; null when unknown.
+	 * }
+	 */
+	private function run_self_check( $target ) {
+		if ( ! function_exists( 'wp_safe_remote_get' ) || ! function_exists( 'home_url' ) || ! function_exists( 'add_query_arg' ) ) {
+			return $this->self_check_result( self::SELF_CHECK_SKIPPED, $target, 'HTTP API unavailable' );
+		}
+
+		$token = $this->generate_self_check_token();
 
 		if ( ! $this->safe_set_transient( self::SELF_CHECK_PENDING_PREFIX . $token, 1, MINUTE_IN_SECONDS ) ) {
 			return $this->self_check_result( self::SELF_CHECK_SKIPPED, $target, 'could not register the token' );
 		}
 
 		$response = $this->perform_self_check_request( add_query_arg( self::SELF_CHECK_QUERY_ARG, $token, home_url( $target ) ) );
-		$outcome  = $this->read_self_check_outcome( $token );
+		$verdict  = $this->read_self_check_outcome( $token );
 
 		$this->safe_delete_transient( self::SELF_CHECK_PENDING_PREFIX . $token );
 		$this->safe_delete_transient( self::SELF_CHECK_OUTCOME_PREFIX . $token );
 
 		$detail = is_wp_error( $response ) ? $response->get_error_message() : 'HTTP ' . (int) wp_remote_retrieve_response_code( $response );
 
-		if ( in_array( $outcome, [ self::SELF_CHECK_CLEAN, self::SELF_CHECK_CRASHED, self::SELF_CHECK_INCONCLUSIVE ], true ) ) {
-			return $this->self_check_result( $outcome, $target, $detail );
+		if ( is_array( $verdict ) && in_array( $verdict['outcome'], [ self::SELF_CHECK_CLEAN, self::SELF_CHECK_CRASHED, self::SELF_CHECK_INCONCLUSIVE ], true ) ) {
+			return $this->self_check_result( $verdict['outcome'], $target, $detail, $verdict['resolved'] );
 		}
 
 		return $this->self_check_result( self::SELF_CHECK_INCONCLUSIVE, $target, 'no verdict recorded, ' . $detail );
@@ -1288,7 +1389,10 @@ class PluginCrashHandler {
 	 * @since 3.7.9
 	 *
 	 * @param string $token self-check token.
-	 * @return string|null
+	 * @return array|null {
+	 *     @type string    $outcome  one of the SELF_CHECK_* constants.
+	 *     @type bool|null $resolved whether WordPress resolved the URL to a page; null when unknown.
+	 * } Null when no verdict was recorded.
 	 */
 	private function read_self_check_outcome( $token ) {
 		$key = self::SELF_CHECK_OUTCOME_PREFIX . $token;
@@ -1298,10 +1402,37 @@ class PluginCrashHandler {
 				usleep( 150000 );
 			}
 
-			$outcome = 0 === $attempt ? $this->safe_get_transient( $key ) : $this->reread_transient( $key );
-			if ( is_string( $outcome ) && '' !== $outcome ) {
-				return $outcome;
+			$verdict = $this->normalize_self_check_outcome( 0 === $attempt ? $this->safe_get_transient( $key ) : $this->reread_transient( $key ) );
+			if ( null !== $verdict ) {
+				return $verdict;
 			}
+		}
+
+		return null;
+	}
+
+	/**
+	 * Normalizes a stored self-check verdict: either the outcome alone, or the outcome with
+	 * whether WordPress resolved the probed URL to a page.
+	 *
+	 * @since 3.7.9
+	 *
+	 * @param mixed $value transient value.
+	 * @return array|null
+	 */
+	private function normalize_self_check_outcome( $value ) {
+		if ( is_string( $value ) && '' !== $value ) {
+			return [
+				'outcome'  => $value,
+				'resolved' => null,
+			];
+		}
+
+		if ( is_array( $value ) && isset( $value['outcome'] ) && is_string( $value['outcome'] ) && '' !== $value['outcome'] ) {
+			return [
+				'outcome'  => $value['outcome'],
+				'resolved' => isset( $value['resolved'] ) && is_bool( $value['resolved'] ) ? $value['resolved'] : null,
+			];
 		}
 
 		return null;
@@ -1354,10 +1485,38 @@ class PluginCrashHandler {
 	 *
 	 * @since 3.7.9
 	 *
-	 * @param string $outcome one of the SELF_CHECK_* constants.
+	 * @param string    $outcome  one of the SELF_CHECK_* constants.
+	 * @param bool|null $resolved whether WordPress resolved this request's URL to a page; null when unknown.
 	 */
-	private function record_self_check_outcome( $outcome ) {
-		$this->safe_set_transient( self::SELF_CHECK_OUTCOME_PREFIX . self::$self_check_token, $outcome, MINUTE_IN_SECONDS );
+	private function record_self_check_outcome( $outcome, $resolved = null ) {
+		$this->safe_set_transient(
+			self::SELF_CHECK_OUTCOME_PREFIX . self::$self_check_token,
+			[
+				'outcome'  => $outcome,
+				'resolved' => is_bool( $resolved ) ? $resolved : null,
+			],
+			MINUTE_IN_SECONDS
+		);
+	}
+
+	/**
+	 * Whether WordPress resolved this request's URL to a page.
+	 *
+	 * True once the main query ran and found something, false for a 404, and null when the
+	 * request ended before the main query ran, so nothing is known about the URL.
+	 *
+	 * @since 3.7.9
+	 *
+	 * @return bool|null
+	 */
+	private function did_request_resolve_to_a_page() {
+		global $wp_query;
+
+		if ( ! function_exists( 'did_action' ) || ! did_action( 'wp' ) || ! ( $wp_query instanceof \WP_Query ) ) {
+			return null;
+		}
+
+		return ! $wp_query->is_404();
 	}
 
 	/**
@@ -1384,10 +1543,26 @@ class PluginCrashHandler {
 			return '/';
 		}
 
-		$uri  = isset( $_SERVER['REQUEST_URI'] ) ? sanitize_text_field( wp_unslash( $_SERVER['REQUEST_URI'] ) ) : '/';
+		// The path is kept as the visitor sent it, percent-encoding included, so a non-ASCII slug is
+		// probed as the real page rather than stripped to a 404 that then looks clean. Bytes a URL
+		// path may not carry are encoded, and a malformed percent sequence falls back to the home page.
+		// phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- Validated against an allow-list below.
+		$uri  = isset( $_SERVER['REQUEST_URI'] ) ? (string) wp_unslash( $_SERVER['REQUEST_URI'] ) : '/';
 		$path = (string) wp_parse_url( $uri, PHP_URL_PATH );
 
 		if ( '' === $path || '/' !== $path[0] || false !== strpos( $path, '..' ) || strlen( $path ) > 2000 ) {
+			return '/';
+		}
+
+		$path = preg_replace_callback(
+			'#[^A-Za-z0-9\-._~!$&\'()*+,;=:@/%]#',
+			static function ( array $matches ) {
+				return rawurlencode( $matches[0] );
+			},
+			$path
+		);
+
+		if ( ! is_string( $path ) || preg_match( '/%(?![0-9A-Fa-f]{2})/', $path ) ) {
 			return '/';
 		}
 
@@ -1421,44 +1596,75 @@ class PluginCrashHandler {
 	 *
 	 * @since 3.7.9
 	 *
-	 * @param string $outcome one of the SELF_CHECK_* constants.
-	 * @param string $target  requested path.
-	 * @param string $detail  transport detail.
+	 * @param string    $outcome  one of the SELF_CHECK_* constants.
+	 * @param string    $target   requested path.
+	 * @param string    $detail   transport detail.
+	 * @param bool|null $resolved whether WordPress resolved the URL to a page; null when unknown.
 	 * @return array
 	 */
-	private function self_check_result( $outcome, $target, $detail ) {
+	private function self_check_result( $outcome, $target, $detail, $resolved = null ) {
 		return [
-			'outcome' => $outcome,
-			'target'  => (string) $target,
-			'detail'  => (string) $detail,
+			'outcome'  => $outcome,
+			'target'   => (string) $target,
+			'detail'   => (string) $detail,
+			'resolved' => is_bool( $resolved ) ? $resolved : null,
 		];
 	}
 
 	/**
-	 * Describes a self-check result for the log line.
+	 * Describes the self-check verification for the log line.
 	 *
 	 * @since 3.7.9
 	 *
-	 * @param array|null $self_check result of run_self_check(), or null when none ran.
+	 * @param array|null $verification result of verify_crash_with_self_check(), or null when none ran.
+	 * @param bool       $is_trusted   whether the crashing request was trusted; such a request pauses on
+	 *                                 its streak when no verdict exists.
 	 * @return string
 	 */
-	private function describe_self_check( $self_check ) {
-		if ( ! is_array( $self_check ) ) {
+	private function describe_verification( $verification, $is_trusted ) {
+		if ( ! is_array( $verification ) ) {
 			return '';
 		}
 
-		$target = '' !== $self_check['target'] ? $self_check['target'] : '/';
+		$sentences = [];
 
-		switch ( $self_check['outcome'] ) {
-			case self::SELF_CHECK_CLEAN:
-				return sprintf( ' Self-check: a plain request to %s ran cleanly, so this crash needs input the client sent; streak reset.', $target );
-			case self::SELF_CHECK_CRASHED:
-				return sprintf( ' Self-check: a plain request to %s crashed too.', $target );
-			case self::SELF_CHECK_SKIPPED:
-				return sprintf( ' Self-check skipped (%s); not pausing on an unverified crash.', $self_check['detail'] );
-			default:
-				return sprintf( ' Self-check of %s inconclusive (%s); not pausing on an unverified crash.', $target, $self_check['detail'] );
+		foreach ( $verification['checks'] as $index => $check ) {
+			$label  = 0 === $index ? 'Self-check' : 'Second self-check';
+			$target = '' !== $check['target'] ? $check['target'] : '/';
+
+			switch ( $check['outcome'] ) {
+				case self::SELF_CHECK_CLEAN:
+					$sentences[] = 0 === $index
+						? sprintf( '%s: a plain request to %s ran cleanly, so this crash needs input the client sent; streak reset.', $label, $target )
+						: sprintf( '%s: a plain request to %s ran cleanly, so the crashing path is only its requester\'s input.', $label, $target );
+					break;
+				case self::SELF_CHECK_CRASHED:
+					if ( 0 === $index && '/' !== $target && true !== $check['resolved'] ) {
+						$sentences[] = sprintf(
+							'%s: a plain request to %s crashed too, but %s, so the home page decides.',
+							$label,
+							$target,
+							false === $check['resolved'] ? 'WordPress did not resolve that path to a page' : 'the crash came before WordPress resolved the path'
+						);
+					} else {
+						$sentences[] = sprintf( '%s: a plain request to %s crashed too.', $label, $target );
+					}
+					break;
+				case self::SELF_CHECK_SKIPPED:
+					$sentences[] = sprintf( '%s skipped (%s).', $label, $check['detail'] );
+					break;
+				default:
+					$sentences[] = sprintf( '%s of %s inconclusive (%s).', $label, $target, $check['detail'] );
+			}
 		}
+
+		if ( self::VERIFICATION_UNVERIFIED === $verification['decision'] ) {
+			$sentences[] = $is_trusted && $verification['no_verdict']
+				? 'A trusted request pauses on its streak when no verdict can be obtained.'
+				: 'Not pausing on an unverified crash.';
+		}
+
+		return ' ' . implode( ' ', $sentences );
 	}
 
 	/**
@@ -1493,11 +1699,12 @@ class PluginCrashHandler {
 	 *
 	 * @since 3.7.9
 	 *
-	 * @param array      $error      normalized error payload.
-	 * @param array|null $result     crash guard result.
-	 * @param array|null $self_check self-check result, when one ran.
+	 * @param array      $error        normalized error payload.
+	 * @param array|null $result       crash guard result.
+	 * @param array|null $verification self-check verification, when one ran.
+	 * @param bool       $is_trusted   whether the crashing request was trusted.
 	 */
-	private function log_crash_decision( array $error, $result, $self_check = null ) {
+	private function log_crash_decision( array $error, $result, $verification = null, $is_trusted = false ) {
 		$class    = isset( $error['exception_class'] ) && '' !== $error['exception_class'] ? $error['exception_class'] : $this->get_php_error_type_label( isset( $error['type'] ) ? (int) $error['type'] : 0 );
 		$decision = is_array( $result ) ? CrashGuardState::describe_decision( $result ) : 'Crash guard state could not be updated.';
 
@@ -1509,7 +1716,7 @@ class PluginCrashHandler {
 				$this->sanitize_file_path( isset( $error['file'] ) ? (string) $error['file'] : '' ),
 				isset( $error['line'] ) ? (int) $error['line'] : 0,
 				$this->get_request_context(),
-				$this->describe_self_check( $self_check ),
+				$this->describe_verification( $verification, $is_trusted ),
 				$decision
 			)
 		);

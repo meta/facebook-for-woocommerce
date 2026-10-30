@@ -40,14 +40,18 @@ when it looks like the one WordPress spawns itself: no cookies, no body, no refe
 cron request that carries them is an outsider's request like any other. Crashes within 30 seconds of each other
 count once, and any request that runs the plugin and finishes cleanly resets the streak of its class.
 
-Three counted crashes in a row would pause the plugin. Trusted crashes do so on the streak alone. For an untrusted
-crash the guard first runs a self-check: a plain loopback request that carries nothing the client sent (no cookies,
-query string or body), marked with a one-time token so the events tracker sends nothing to Meta for it. It targets
-the crashing page for a storefront GET and the home page otherwise, admin-ajax, REST and cron included. If that request
-runs the plugin cleanly, the crash depends on client input, the streak resets and the plugin stays on. If it crashes
-too, the plugin pauses for 10 minutes. If no verdict can be obtained (loopback blocked, a cached page, an auth wall,
-a request that never bootstrapped the plugin), the crash is counted as unverified and the plugin stays on rather
-than let outside requests switch it off; the plugins screen shows a notice until the record decays after a day.
+Three counted crashes in a row would pause the plugin. WP-CLI and bare cron crashes do so on the streak alone. For
+every other crash, a manager's browser included, the guard first runs a self-check: a plain loopback request that
+carries nothing the client sent (no cookies, query string or body), marked with a one-time token so the events
+tracker sends nothing to Meta for it. It targets the crashing page for a storefront GET, percent-encoding kept as
+sent, and the home page otherwise, admin-ajax, REST and cron included. If that request runs the plugin cleanly, the
+crash depends on client input, the streak resets and the plugin stays on. If it crashes too, the plugin pauses for
+10 minutes, unless the crashing path was one WordPress did not resolve to a page: such a path is the requester's own
+input, so the home page is probed as well and decides. If no verdict can be obtained (loopback blocked, a cached
+page, an auth wall, a request that never bootstrapped the plugin), the crash is counted as unverified and the plugin
+stays on rather than let outside requests switch it off; the plugins screen shows a notice until the record decays
+after a day. A manager's request is the one exception: with no verdict at all it pauses on its streak, so a plugin
+broken everywhere is still caught through wp-admin where the loopback cannot run.
 
 A full streak again within a day grows the pause to 1 hour, 6 hours and then 24 hours; it never becomes permanent,
 a single crash after a pause never escalates on its own, and the level decays after a day without crashes. The

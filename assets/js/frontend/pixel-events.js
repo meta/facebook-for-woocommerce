@@ -82,6 +82,18 @@
     }
 
     /**
+     * Whether the FacebookSignals wrapper from the Pixel base code is present.
+     *
+     * The wrapper queues events until the Pixel can be initialised and flushes
+     * them itself, including when a consent manager delays the Pixel library.
+     *
+     * @return {boolean}
+     */
+    function hasSignalsWrapper() {
+        return !!(window.FacebookSignals && typeof window.FacebookSignals.trackEvent === 'function');
+    }
+
+    /**
      * Fire a single event using fbq()
      *
      * @param {Object} event Event object with name, params, method, eventId
@@ -97,7 +109,7 @@
         try {
             var params = eventData.params;
 
-            if (window.FacebookSignals && typeof window.FacebookSignals.trackEvent === 'function') {
+            if (hasSignalsWrapper()) {
                 window.FacebookSignals.trackEvent(eventData.name, params, null, eventData.method, eventData.eventId);
             } else {
                 if (typeof fbq !== 'function') {
@@ -269,10 +281,13 @@
     /**
      * Initialize pixel event handling.
      *
-     * If fbq() is already available, fires queued events immediately.
-     * If not (e.g. consent manager blocking the SDK), uses Object.defineProperty
-     * to set a trap on window.fbq — our handler fires automatically the moment
-     * fbq is assigned, with zero overhead in between. No polling, no timers.
+     * When the FacebookSignals wrapper is present, queued events are handed to
+     * it right away: it queues them until the Pixel can be initialised and
+     * flushes them itself. Otherwise, if fbq() is already available, fires
+     * queued events immediately. If not (e.g. consent manager blocking the
+     * SDK), uses Object.defineProperty to set a trap on window.fbq — our
+     * handler fires automatically the moment fbq is assigned, with zero
+     * overhead in between. No polling, no timers.
      *
      * Also sets up Store API interceptor for WooCommerce Blocks AJAX AddToCart.
      */
@@ -280,7 +295,7 @@
         // Set up fetch interceptor for WooCommerce Blocks Store API
         setupFetchInterceptor();
 
-        if (typeof fbq === 'function') {
+        if (hasSignalsWrapper() || typeof fbq === 'function') {
             fireQueuedEvents();
             return;
         }

@@ -48,6 +48,8 @@ Complianz can detect Facebook for WooCommerce and separately block matching brow
 
 For this setup, go to **Complianz > Integrations > Plugins** and disable the automatic **Facebook for WooCommerce** integration. Also check the Complianz Script Center for a custom rule that blocks `wc-facebook-signals`, `FacebookSignals` or the Meta for WooCommerce event scripts.
 
+Complianz also ships a generic **Facebook** service rule that blocks `connect.facebook.net` whenever Facebook is selected as a social media service in its wizard, and the plugin integration pre-selects it. If the Meta Pixel loader still renders as `type="text/plain"` with `data-service="facebook"` after the plugin integration is disabled, deselect Facebook under the wizard's social media services or whitelist `connect.facebook.net/en_US/fbevents.js` in the Script Center.
+
 This does not make signal delivery active before permission. The must-use plugin below establishes the held state before Meta for WooCommerce processes the page. The Meta Pixel library itself may still load while signals are held; the important check is whether event delivery remains held.
 
 ## How Complianz controls Hold/Release Signals

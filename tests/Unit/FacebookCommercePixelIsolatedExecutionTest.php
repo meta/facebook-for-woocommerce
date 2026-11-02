@@ -480,6 +480,39 @@ class FacebookCommercePixelIsolatedExecutionTest extends AbstractWPUnitTestWithO
 		$this->assertStringContainsString( 'fbq(\'track\', \'ViewContent\'', $event );
 	}
 
+	/**
+	 * A consent manager or script optimiser can run the Pixel base code after
+	 * the event code, so the event code must never call fbq() without checking
+	 * that it exists, and must hand the agent to FacebookSignals so it can be
+	 * applied once the Pixel initialises.
+	 *
+	 * @dataProvider provider_build_event_params
+	 */
+	public function test_build_event_never_calls_fbq_unguarded( array $params ): void {
+		$event = WC_Facebookcommerce_Pixel::build_event( 'ViewContent', $params, 'track' );
+
+		$this->assertSame( 0, preg_match( '/^fbq\\(/m', $event ), 'The event code calls fbq() at the top level.' );
+		$this->assertStringContainsString( 'window.FacebookSignals.setAgent(agent)', $event );
+		$this->assertStringContainsString( "typeof window.FacebookSignals.trackEvent === 'function'", $event );
+
+		$guard = strpos( $event, "typeof fbq === 'function'" );
+		$this->assertNotFalse( $guard );
+		$this->assertGreaterThan( $guard, strpos( $event, "fbq('set', 'agent', agent," ) );
+		$this->assertGreaterThan( $guard, strpos( $event, "fbq('track', 'ViewContent'" ) );
+	}
+
+	public function provider_build_event_params(): array {
+		return array(
+			'with event id'    => array(
+				array(
+					'content_ids' => array( 'PROD123' ),
+					'event_id'    => 'view-content-123',
+				),
+			),
+			'without event id' => array( array( 'content_ids' => array( 'PROD123' ) ) ),
+		);
+	}
+
 	public function test_inject_event_uses_isolated_execution_when_switch_enabled(): void {
 		$this->reset_static_properties();
 		$this->enable_isolated_pixel_execution_switch();

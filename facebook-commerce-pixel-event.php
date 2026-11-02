@@ -434,6 +434,8 @@ window.FacebookSignals = window.FacebookSignals || {
 	_pixelUserInfo: {},
 	_pixelOptions: {},
 	_pendingPixelEvents: [],
+	_agent: null,
+	_fbqWatcherInstalled: false,
 	_queue: [],
 	_config: {},
 	_attribution: {},
@@ -455,9 +457,7 @@ window.FacebookSignals = window.FacebookSignals || {
 
 		this._fbclid = this._fbclid || null;
 
-		if (typeof fbq === 'function') {
-			fbq('consent', this._held ? 'revoke' : 'grant');
-		}
+		this._applyConsentState();
 
 		try {
 			var raw = window.sessionStorage.getItem('wc_facebook_signals_seen_event_ids');
@@ -474,13 +474,93 @@ window.FacebookSignals = window.FacebookSignals || {
 		if (!this._held) {
 			this._runPixelInit();
 		}
+		if (typeof fbq !== 'function') {
+			this._watchForFbq();
+		}
+	},
+
+	// Applies the hold state to the Pixel library. Safe to call before the
+	// library exists: the state is applied again once it arrives.
+	_applyConsentState: function() {
+		if (typeof fbq === 'function') {
+			fbq('consent', this._held ? 'revoke' : 'grant');
+		}
+	},
+
+	// Records the agent string the event code wants reported and applies it
+	// once the Pixel is initialised.
+	setAgent: function(agent) {
+		if (!agent) return;
+		this._agent = agent;
+		if (this._pixelInitialized && typeof fbq === 'function') {
+			fbq('set', 'agent', agent, this._pixelId);
+		}
 	},
 
 	_runPixelInit: function() {
 		if (this._pixelInitialized || !this._pixelId || typeof fbq !== 'function') return;
 		fbq('init', this._pixelId, this._pixelUserInfo, this._pixelOptions);
 		this._pixelInitialized = true;
+		if (this._agent) {
+			fbq('set', 'agent', this._agent, this._pixelId);
+		}
 		this._flushPendingPixelEvents();
+	},
+
+	// A consent manager or script optimiser can run the Pixel base code only
+	// after this object initialised, so window.fbq does not exist yet. Watch
+	// for the assignment and initialise the Pixel the moment the library
+	// arrives, so events queued meanwhile are sent without waiting for another
+	// event on the page.
+	_watchForFbq: function() {
+		if (this._fbqWatcherInstalled) return;
+		var self = this;
+		var descriptor = null;
+		try {
+			descriptor = Object.getOwnPropertyDescriptor(window, 'fbq') || null;
+		} catch (e) {
+			return;
+		}
+		if (descriptor && !descriptor.configurable) return;
+		var previousGet = descriptor ? descriptor.get : undefined;
+		var previousSet = descriptor ? descriptor.set : undefined;
+		var current = descriptor && Object.prototype.hasOwnProperty.call(descriptor, 'value') ? descriptor.value : undefined;
+		try {
+			Object.defineProperty(window, 'fbq', {
+				configurable: true,
+				enumerable: true,
+				get: function() {
+					return previousGet ? previousGet.call(window) : current;
+				},
+				set: function(value) {
+					current = value;
+					if (previousSet) {
+						previousSet.call(window, value);
+					} else {
+						Object.defineProperty(window, 'fbq', {
+							configurable: true,
+							enumerable: true,
+							writable: true,
+							value: value
+						});
+					}
+					if (typeof value === 'function') {
+						// The Pixel snippet assigns window.fbq before it attaches the
+						// call queue to it, so let the snippet finish first.
+						setTimeout(function() { self._onFbqAvailable(); }, 0);
+					}
+				}
+			});
+			this._fbqWatcherInstalled = true;
+		} catch (e) {}
+	},
+
+	_onFbqAvailable: function() {
+		if (typeof fbq !== 'function') return;
+		this._applyConsentState();
+		if (!this._held) {
+			this._runPixelInit();
+		}
 	},
 
 	_flushPendingPixelEvents: function() {
@@ -493,6 +573,11 @@ window.FacebookSignals = window.FacebookSignals || {
 	},
 
 	_fireOrQueuePixelEvent: function(name, params, method, eventId) {
+		// The library may have arrived after initPixel() ran; initialising here
+		// covers the case where _watchForFbq() could not install its watcher.
+		if (!this._pixelInitialized && !this._held) {
+			this._runPixelInit();
+		}
 		if (!this._pixelInitialized) {
 			this._pendingPixelEvents.push({
 				name: name, params: params || {}, method: method || 'track', eventId: eventId || null
@@ -610,7 +695,7 @@ window.FacebookSignals = window.FacebookSignals || {
 		this._held = false;
 		this._releasing = false;
 
-		fbq('consent', 'grant');
+		this._applyConsentState();
 		this._runPixelInit();
 
 		var queue = this._queue;
@@ -1064,6 +1149,21 @@ JS;
 			$cache_threshold
 		);
 
+		// A consent manager or script optimiser can run the Pixel base code after
+		// this event code, so fbq may not exist yet. Never call it unguarded: hand
+		// the agent and the event to FacebookSignals, which initialises the Pixel
+		// and flushes what it queued once the library arrives.
+		$agent_code = sprintf(
+			"var agent = %s;\n" .
+			"if (window.FacebookSignals && typeof window.FacebookSignals.setAgent === 'function') {\n" .
+			"\twindow.FacebookSignals.setAgent(agent);\n" .
+			"} else if (typeof fbq === 'function') {\n" .
+			"\tfbq('set', 'agent', agent, '%s');\n" .
+			"}\n",
+			$agent_js,
+			esc_js( $pixel_id )
+		);
+
 		if ( ! empty( $event_id ) ) {
 			// Guard against duplicate fires of the same event_id within a single page
 			// load (e.g. AJAX fragment re-execution). Inside the guard, if the page is
@@ -1073,22 +1173,25 @@ JS;
 			$encoded_event_id = wp_json_encode( $event_id );
 			$event            = sprintf(
 				"/* %s Facebook Integration Event Tracking */\n" .
-				"fbq('set', 'agent', %s, '%s');\n" .
+				"(function() {\n" .
+				'%s' .
 				"window.wcFacebookPixelFiredEvents = window.wcFacebookPixelFiredEvents || {};\n" .
 				"if (!window.wcFacebookPixelFiredEvents[%s]) {\n" .
 				"window.wcFacebookPixelFiredEvents[%s] = true;\n" .
 				"var isStale = window.__wc_fb_page_generated && (Math.floor(Date.now()/1000) - window.__wc_fb_page_generated) > %d;\n" .
 				"if (window.FacebookSignals && typeof window.FacebookSignals.trackEvent === 'function') {\n" .
 				"\twindow.FacebookSignals.trackEvent('%s', %s, null, '%s', isStale ? null : %s);\n" .
-				"} else if (isStale) {\n" .
-				"\tfbq('%s', '%s', %s);\n" .
-				"} else {\n" .
-				"\tfbq('%s', '%s', %s, %s);\n" .
+				"} else if (typeof fbq === 'function') {\n" .
+				"\tif (isStale) {\n" .
+				"\t\tfbq('%s', '%s', %s);\n" .
+				"\t} else {\n" .
+				"\t\tfbq('%s', '%s', %s, %s);\n" .
+				"\t}\n" .
 				"}\n" .
-				'}',
+				"}\n" .
+				'})();',
 				WC_Facebookcommerce_Utils::get_integration_name(),
-				$agent_js,
-				esc_js( $pixel_id ),
+				$agent_code,
 				$encoded_event_id,
 				$encoded_event_id,
 				$cache_threshold,
@@ -1110,15 +1213,16 @@ JS;
 			// still flags the fire as cache-sourced when the page is served stale.
 			$event = sprintf(
 				"/* %s Facebook Integration Event Tracking */\n" .
-				"fbq('set', 'agent', %s, '%s');\n" .
+				"(function() {\n" .
+				'%s' .
 				"if (window.FacebookSignals && typeof window.FacebookSignals.trackEvent === 'function') {\n" .
 				"\twindow.FacebookSignals.trackEvent('%s', %s, null, '%s', null);\n" .
-				"} else {\n" .
+				"} else if (typeof fbq === 'function') {\n" .
 				"\tfbq('%s', '%s', %s);\n" .
-				'}',
+				"}\n" .
+				'})();',
 				WC_Facebookcommerce_Utils::get_integration_name(),
-				$agent_js,
-				esc_js( $pixel_id ),
+				$agent_code,
 				esc_js( $event_name ),
 				$encoded_params,
 				esc_js( $method ),

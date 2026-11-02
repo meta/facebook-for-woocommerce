@@ -911,6 +911,24 @@ describe('Integration: pixel-events.js IIFE', function () {
         expect(mockFbq).toHaveBeenCalledWith('track', 'ViewContent', { content_ids: ['123'] });
     });
 
+    it('should hand queued events to FacebookSignals before fbq exists instead of waiting for it', function () {
+        var trackEvent = jest.fn();
+        window.FacebookSignals = { trackEvent: trackEvent };
+        global.wc_facebook_pixel_data = {
+            eventQueue: [
+                { name: 'PageView', params: {}, method: 'track', eventId: 'event-1' }
+            ]
+        };
+
+        require('../../assets/js/frontend/pixel-events.js');
+
+        // The wrapper queues the event until the Pixel initialises, so no trap is needed.
+        expect(trackEvent).toHaveBeenCalledWith('PageView', {}, null, 'track', 'event-1');
+        expect(Object.getOwnPropertyDescriptor(global, 'fbq')).toBeUndefined();
+
+        delete window.FacebookSignals;
+    });
+
     it('should fire events immediately when fbq already exists before IIFE loads', function () {
         // Set up fbq BEFORE loading the script
         mockFbq = jest.fn();

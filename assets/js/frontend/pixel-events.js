@@ -279,15 +279,122 @@
     }
 
     /**
+     * Sends events that inline event code left in the global queue because
+     * neither FacebookSignals nor fbq existed when it ran. Only used without
+     * the wrapper; the wrapper drains the queue itself.
+     */
+    function drainInlineQueue() {
+        var queue = window.wcFacebookPixelQueuedEvents;
+        if (!queue || !queue.length || typeof fbq !== 'function') {
+            return;
+        }
+        window.wcFacebookPixelQueuedEvents = [];
+
+        for (var i = 0; i < queue.length; i++) {
+            var ev = queue[i];
+            if (!ev || !ev.name) {
+                continue;
+            }
+            try {
+                if (ev.agent && ev.pixelId) {
+                    fbq('set', 'agent', ev.agent, ev.pixelId);
+                }
+                if (ev.eventId) {
+                    fbq(ev.method || 'track', ev.name, ev.params || {}, { eventID: ev.eventId });
+                } else {
+                    fbq(ev.method || 'track', ev.name, ev.params || {});
+                }
+            } catch (e) {
+                logWarning('Queued inline event error: ' + ev.name, e);
+            }
+        }
+    }
+
+    /**
+     * Runs the callback once window.fbq is a function.
+     *
+     * Prefers an accessor on window.fbq, chained onto any accessor another
+     * script already installed, so the callback runs the moment the Pixel
+     * snippet assigns it (e.g. when a consent manager activates it) with no
+     * timers in between. Falls back to a bounded poll when the property cannot
+     * be redefined, e.g. because a script declared fbq with var.
+     *
+     * @param {Function} callback Called once, after fbq exists.
+     */
+    function watchForFbq(callback) {
+        var handled = false;
+
+        function handle() {
+            if (handled || typeof fbq !== 'function') {
+                return;
+            }
+            handled = true;
+            callback();
+        }
+
+        var descriptor = null;
+        try {
+            descriptor = Object.getOwnPropertyDescriptor(window, 'fbq') || null;
+        } catch (e) {
+            descriptor = { configurable: false };
+        }
+
+        var installed = false;
+        if (!descriptor || descriptor.configurable) {
+            var previousGet = descriptor ? descriptor.get : undefined;
+            var previousSet = descriptor ? descriptor.set : undefined;
+            var current = descriptor && Object.prototype.hasOwnProperty.call(descriptor, 'value') ? descriptor.value : undefined;
+            try {
+                Object.defineProperty(window, 'fbq', {
+                    configurable: true,
+                    enumerable: true,
+                    get: function() {
+                        return previousGet ? previousGet.call(window) : current;
+                    },
+                    set: function(value) {
+                        current = value;
+                        if (previousSet) {
+                            previousSet.call(window, value);
+                        } else if (typeof value === 'function') {
+                            // Restore a normal property so the Pixel library works as usual.
+                            Object.defineProperty(window, 'fbq', {
+                                configurable: true,
+                                enumerable: true,
+                                writable: true,
+                                value: value
+                            });
+                        }
+                        if (typeof value === 'function' && !handled) {
+                            // The snippet assigns window.fbq before it attaches the call
+                            // queue, so let it finish first.
+                            setTimeout(handle, 0);
+                        }
+                    }
+                });
+                installed = true;
+            } catch (e) {}
+        }
+
+        if (!installed) {
+            var attempts = 0;
+            var poll = setInterval(function() {
+                attempts++;
+                if (typeof fbq === 'function' || attempts >= 120) {
+                    clearInterval(poll);
+                    handle();
+                }
+            }, 500);
+        }
+    }
+
+    /**
      * Initialize pixel event handling.
      *
      * When the FacebookSignals wrapper is present, queued events are handed to
      * it right away: it queues them until the Pixel can be initialised and
      * flushes them itself. Otherwise, if fbq() is already available, fires
-     * queued events immediately. If not (e.g. consent manager blocking the
-     * SDK), uses Object.defineProperty to set a trap on window.fbq — our
-     * handler fires automatically the moment fbq is assigned, with zero
-     * overhead in between. No polling, no timers.
+     * queued events immediately, and if not (e.g. consent manager blocking the
+     * SDK) waits for it with watchForFbq().
      *
      * Also sets up Store API interceptor for WooCommerce Blocks AJAX AddToCart.
      */
@@ -295,31 +402,23 @@
         // Set up fetch interceptor for WooCommerce Blocks Store API
         setupFetchInterceptor();
 
-        if (hasSignalsWrapper() || typeof fbq === 'function') {
+        if (hasSignalsWrapper()) {
             fireQueuedEvents();
             return;
         }
 
-        // fbq doesn't exist yet — watch for it (zero overhead, no timers).
-        // Consent managers block fbq until the
-        // user accepts. This fires the moment they assign window.fbq.
-        var _fbq = window.fbq;
-        Object.defineProperty(window, 'fbq', {
-            configurable: true,
-            enumerable: true,
-            get: function() { return _fbq; },
-            set: function(value) {
-                _fbq = value;
-                if (typeof value === 'function') {
-                    // Restore normal property so FB SDK works normally
-                    Object.defineProperty(window, 'fbq', {
-                        configurable: true,
-                        enumerable: true,
-                        writable: true,
-                        value: value
-                    });
-                    setTimeout(fireQueuedEvents, 0);
-                }
+        if (typeof fbq === 'function') {
+            fireQueuedEvents();
+            drainInlineQueue();
+            return;
+        }
+
+        watchForFbq(function() {
+            fireQueuedEvents();
+            // A wrapper that appeared meanwhile drains the inline queue itself
+            // and applies the hold state; only send directly without one.
+            if (!hasSignalsWrapper()) {
+                drainInlineQueue();
             }
         });
     }

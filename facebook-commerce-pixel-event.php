@@ -436,6 +436,8 @@ window.FacebookSignals = window.FacebookSignals || {
 	_pendingPixelEvents: [],
 	_agent: null,
 	_fbqWatcherInstalled: false,
+	_fbqHandled: false,
+	_fbqPoll: null,
 	_queue: [],
 	_config: {},
 	_attribution: {},
@@ -477,6 +479,7 @@ window.FacebookSignals = window.FacebookSignals || {
 		if (typeof fbq !== 'function') {
 			this._watchForFbq();
 		}
+		this._drainInlineQueue();
 	},
 
 	// Applies the hold state to the Pixel library. Safe to call before the
@@ -511,55 +514,99 @@ window.FacebookSignals = window.FacebookSignals || {
 	// after this object initialised, so window.fbq does not exist yet. Watch
 	// for the assignment and initialise the Pixel the moment the library
 	// arrives, so events queued meanwhile are sent without waiting for another
-	// event on the page.
+	// event on the page. Falls back to polling when the property cannot be
+	// watched, and checks again on load in case another script replaced the
+	// accessor in between.
 	_watchForFbq: function() {
-		if (this._fbqWatcherInstalled) return;
+		if (this._fbqWatcherInstalled || this._fbqHandled) return;
 		var self = this;
+		var onAvailable = function() { self._onFbqAvailable(); };
+		try {
+			window.addEventListener('load', onAvailable);
+		} catch (e) {}
 		var descriptor = null;
 		try {
 			descriptor = Object.getOwnPropertyDescriptor(window, 'fbq') || null;
 		} catch (e) {
-			return;
+			descriptor = { configurable: false };
 		}
-		if (descriptor && !descriptor.configurable) return;
-		var previousGet = descriptor ? descriptor.get : undefined;
-		var previousSet = descriptor ? descriptor.set : undefined;
-		var current = descriptor && Object.prototype.hasOwnProperty.call(descriptor, 'value') ? descriptor.value : undefined;
-		try {
-			Object.defineProperty(window, 'fbq', {
-				configurable: true,
-				enumerable: true,
-				get: function() {
-					return previousGet ? previousGet.call(window) : current;
-				},
-				set: function(value) {
-					current = value;
-					if (previousSet) {
-						previousSet.call(window, value);
-					} else {
-						Object.defineProperty(window, 'fbq', {
-							configurable: true,
-							enumerable: true,
-							writable: true,
-							value: value
-						});
+		if (!descriptor || descriptor.configurable) {
+			var previousGet = descriptor ? descriptor.get : undefined;
+			var previousSet = descriptor ? descriptor.set : undefined;
+			var current = descriptor && Object.prototype.hasOwnProperty.call(descriptor, 'value') ? descriptor.value : undefined;
+			try {
+				Object.defineProperty(window, 'fbq', {
+					configurable: true,
+					enumerable: true,
+					get: function() {
+						return previousGet ? previousGet.call(window) : current;
+					},
+					set: function(value) {
+						current = value;
+						if (previousSet) {
+							previousSet.call(window, value);
+						} else if (typeof value === 'function') {
+							Object.defineProperty(window, 'fbq', {
+								configurable: true,
+								enumerable: true,
+								writable: true,
+								value: value
+							});
+						}
+						if (typeof value === 'function' && !self._fbqHandled) {
+							// The Pixel snippet assigns window.fbq before it attaches the
+							// call queue to it, so let the snippet finish first.
+							setTimeout(onAvailable, 0);
+						}
 					}
-					if (typeof value === 'function') {
-						// The Pixel snippet assigns window.fbq before it attaches the
-						// call queue to it, so let the snippet finish first.
-						setTimeout(function() { self._onFbqAvailable(); }, 0);
-					}
-				}
-			});
-			this._fbqWatcherInstalled = true;
-		} catch (e) {}
+				});
+				this._fbqWatcherInstalled = true;
+			} catch (e) {}
+		}
+		if (!this._fbqWatcherInstalled) {
+			this._pollForFbq();
+		}
+	},
+
+	// Last resort when window.fbq cannot be watched, e.g. because a script
+	// declared it with var: check twice a second for a minute.
+	_pollForFbq: function() {
+		if (this._fbqPoll) return;
+		var self = this;
+		var attempts = 0;
+		this._fbqPoll = setInterval(function() {
+			attempts++;
+			if (typeof fbq === 'function' || self._fbqHandled || attempts >= 120) {
+				clearInterval(self._fbqPoll);
+				self._fbqPoll = null;
+				self._onFbqAvailable();
+			}
+		}, 500);
 	},
 
 	_onFbqAvailable: function() {
-		if (typeof fbq !== 'function') return;
+		if (this._fbqHandled || typeof fbq !== 'function') return;
+		this._fbqHandled = true;
 		this._applyConsentState();
 		if (!this._held) {
 			this._runPixelInit();
+		}
+	},
+
+	// Event code rendered while neither this object nor fbq existed (both base
+	// code blocks blocked by a consent manager) leaves its events in a global
+	// queue; pick them up once this object runs.
+	_drainInlineQueue: function() {
+		var queue = window.wcFacebookPixelQueuedEvents;
+		if (!queue || !queue.length) return;
+		window.wcFacebookPixelQueuedEvents = [];
+		for (var i = 0; i < queue.length; i++) {
+			var ev = queue[i];
+			if (!ev || !ev.name) continue;
+			if (ev.agent) {
+				this.setAgent(ev.agent);
+			}
+			this.trackEvent(ev.name, ev.params || {}, null, ev.method || 'track', ev.eventId || null);
 		}
 	},
 
@@ -1149,20 +1196,48 @@ JS;
 			$cache_threshold
 		);
 
-		// A consent manager or script optimiser can run the Pixel base code after
-		// this event code, so fbq may not exist yet. Never call it unguarded: hand
-		// the agent and the event to FacebookSignals, which initialises the Pixel
-		// and flushes what it queued once the library arrives.
-		$agent_code = sprintf(
+		// Everything the event needs, computed once. A consent manager or script
+		// optimiser can run the Pixel base code after this event code, so neither
+		// FacebookSignals nor fbq may exist yet: hand the event to FacebookSignals
+		// when it is there, call fbq directly when only the Pixel is there, and
+		// otherwise leave it in a global queue that FacebookSignals (or
+		// pixel-events.js) drains once either arrives. The leading semicolon keeps
+		// the IIFE safe when the preceding inline chunk ends without one.
+		$header = sprintf(
+			"/* %s Facebook Integration Event Tracking */\n" .
+			";(function() {\n" .
 			"var agent = %s;\n" .
-			"if (window.FacebookSignals && typeof window.FacebookSignals.setAgent === 'function') {\n" .
-			"\twindow.FacebookSignals.setAgent(agent);\n" .
-			"} else if (typeof fbq === 'function') {\n" .
-			"\tfbq('set', 'agent', agent, '%s');\n" .
-			"}\n",
+			"var pixelId = '%s';\n",
+			WC_Facebookcommerce_Utils::get_integration_name(),
 			$agent_js,
 			esc_js( $pixel_id )
 		);
+
+		$event_object = sprintf(
+			"{ name: '%s', params: %s, method: '%s', eventId: %s }",
+			esc_js( $event_name ),
+			$encoded_params,
+			esc_js( $method ),
+			! empty( $event_id ) ? 'isStale ? null : ' . wp_json_encode( $event_id ) : 'null'
+		);
+
+		$dispatch =
+			"if (window.FacebookSignals && typeof window.FacebookSignals.trackEvent === 'function') {\n" .
+			"\tif (typeof window.FacebookSignals.setAgent === 'function') {\n" .
+			"\t\twindow.FacebookSignals.setAgent(agent);\n" .
+			"\t}\n" .
+			"\twindow.FacebookSignals.trackEvent(event.name, event.params, null, event.method, event.eventId);\n" .
+			"} else if (typeof fbq === 'function') {\n" .
+			"\tfbq('set', 'agent', agent, pixelId);\n" .
+			"\tif (event.eventId) {\n" .
+			"\t\tfbq(event.method, event.name, event.params, { eventID: event.eventId });\n" .
+			"\t} else {\n" .
+			"\t\tfbq(event.method, event.name, event.params);\n" .
+			"\t}\n" .
+			"} else {\n" .
+			"\twindow.wcFacebookPixelQueuedEvents = window.wcFacebookPixelQueuedEvents || [];\n" .
+			"\twindow.wcFacebookPixelQueuedEvents.push({ name: event.name, params: event.params, method: event.method, eventId: event.eventId, agent: agent, pixelId: pixelId });\n" .
+			"}\n";
 
 		if ( ! empty( $event_id ) ) {
 			// Guard against duplicate fires of the same event_id within a single page
@@ -1171,65 +1246,21 @@ JS;
 			// across visitors, so fire without the eventID to avoid corrupting
 			// server-side deduplication.
 			$encoded_event_id = wp_json_encode( $event_id );
-			$event            = sprintf(
-				"/* %s Facebook Integration Event Tracking */\n" .
-				"(function() {\n" .
-				'%s' .
+			$event            = $header . sprintf(
 				"window.wcFacebookPixelFiredEvents = window.wcFacebookPixelFiredEvents || {};\n" .
 				"if (!window.wcFacebookPixelFiredEvents[%s]) {\n" .
 				"window.wcFacebookPixelFiredEvents[%s] = true;\n" .
 				"var isStale = window.__wc_fb_page_generated && (Math.floor(Date.now()/1000) - window.__wc_fb_page_generated) > %d;\n" .
-				"if (window.FacebookSignals && typeof window.FacebookSignals.trackEvent === 'function') {\n" .
-				"\twindow.FacebookSignals.trackEvent('%s', %s, null, '%s', isStale ? null : %s);\n" .
-				"} else if (typeof fbq === 'function') {\n" .
-				"\tif (isStale) {\n" .
-				"\t\tfbq('%s', '%s', %s);\n" .
-				"\t} else {\n" .
-				"\t\tfbq('%s', '%s', %s, %s);\n" .
-				"\t}\n" .
-				"}\n" .
-				"}\n" .
-				'})();',
-				WC_Facebookcommerce_Utils::get_integration_name(),
-				$agent_code,
+				"var event = %s;\n",
 				$encoded_event_id,
 				$encoded_event_id,
 				$cache_threshold,
-				esc_js( $event_name ),
-				$encoded_params,
-				esc_js( $method ),
-				$encoded_event_id,
-				esc_js( $method ),
-				esc_js( $event_name ),
-				$encoded_params,
-				esc_js( $method ),
-				esc_js( $event_name ),
-				$encoded_params,
-				wp_json_encode( array( 'eventID' => $event_id ), JSON_PRETTY_PRINT | JSON_FORCE_OBJECT )
-			);
+				$event_object
+			) . $dispatch . "}\n})();";
 		} else {
-			// No event_id to deduplicate on; route through the Signals Gateway when
-			// available, otherwise fall back to a plain fbq fire. The dynamic agent
-			// still flags the fire as cache-sourced when the page is served stale.
-			$event = sprintf(
-				"/* %s Facebook Integration Event Tracking */\n" .
-				"(function() {\n" .
-				'%s' .
-				"if (window.FacebookSignals && typeof window.FacebookSignals.trackEvent === 'function') {\n" .
-				"\twindow.FacebookSignals.trackEvent('%s', %s, null, '%s', null);\n" .
-				"} else if (typeof fbq === 'function') {\n" .
-				"\tfbq('%s', '%s', %s);\n" .
-				"}\n" .
-				'})();',
-				WC_Facebookcommerce_Utils::get_integration_name(),
-				$agent_code,
-				esc_js( $event_name ),
-				$encoded_params,
-				esc_js( $method ),
-				esc_js( $method ),
-				esc_js( $event_name ),
-				$encoded_params
-			);
+			// No event_id to deduplicate on. The dynamic agent still flags the fire as
+			// cache-sourced when the page is served stale.
+			$event = $header . sprintf( "var event = %s;\n", $event_object ) . $dispatch . '})();';
 		}
 
 		return $event;

@@ -880,6 +880,8 @@ describe('Integration: pixel-events.js IIFE', function () {
         delete global.fbq;
         delete global.wc_facebook_pixel_data;
         delete window.wcFacebookPixelFiredEvents;
+        delete window.FacebookSignals;
+        delete window.wcFacebookPixelQueuedEvents;
 
         consoleWarnSpy.mockRestore();
         addEventListenerSpy.mockRestore();
@@ -925,8 +927,74 @@ describe('Integration: pixel-events.js IIFE', function () {
         // The wrapper queues the event until the Pixel initialises, so no trap is needed.
         expect(trackEvent).toHaveBeenCalledWith('PageView', {}, null, 'track', 'event-1');
         expect(Object.getOwnPropertyDescriptor(global, 'fbq')).toBeUndefined();
+    });
 
-        delete window.FacebookSignals;
+    it('should chain onto an fbq accessor another script installed', function () {
+        var stored;
+        var previousSet = jest.fn(function (value) { stored = value; });
+        Object.defineProperty(global, 'fbq', {
+            configurable: true,
+            enumerable: true,
+            get: function () { return stored; },
+            set: previousSet,
+        });
+        global.wc_facebook_pixel_data = {
+            eventQueue: [ { name: 'PageView', params: {}, method: 'track' } ]
+        };
+
+        require('../../assets/js/frontend/pixel-events.js');
+
+        mockFbq = jest.fn();
+        global.fbq = mockFbq;
+        expect(previousSet).toHaveBeenCalledWith(mockFbq);
+        jest.runAllTimers();
+
+        expect(mockFbq).toHaveBeenCalledWith('track', 'PageView', {});
+    });
+
+    it('should poll for fbq when window.fbq cannot be redefined', function () {
+        global.wc_facebook_pixel_data = {
+            eventQueue: [ { name: 'PageView', params: {}, method: 'track' } ]
+        };
+        var defineProperty = Object.defineProperty;
+        var spy = jest.spyOn(Object, 'defineProperty').mockImplementation(function (target, name, descriptor) {
+            if (target === global && name === 'fbq') {
+                throw new TypeError('Cannot redefine property: fbq');
+            }
+            return defineProperty.call(Object, target, name, descriptor);
+        });
+
+        expect(function () {
+            require('../../assets/js/frontend/pixel-events.js');
+        }).not.toThrow();
+        spy.mockRestore();
+
+        mockFbq = jest.fn();
+        global.fbq = mockFbq;
+        expect(mockFbq).not.toHaveBeenCalled();
+
+        jest.advanceTimersByTime(500);
+
+        expect(mockFbq).toHaveBeenCalledWith('track', 'PageView', {});
+    });
+
+    it('should send events the inline code queued before fbq existed', function () {
+        window.wcFacebookPixelQueuedEvents = [
+            { name: 'ViewContent', params: { content_ids: '["1"]' }, method: 'track', eventId: 'event-1', agent: 'woocommerce_2-1.0.0-2.0.0', pixelId: '123' }
+        ];
+        global.wc_facebook_pixel_data = { eventQueue: [] };
+
+        require('../../assets/js/frontend/pixel-events.js');
+
+        mockFbq = jest.fn();
+        global.fbq = mockFbq;
+        jest.runAllTimers();
+
+        expect(mockFbq.mock.calls).toEqual([
+            ['set', 'agent', 'woocommerce_2-1.0.0-2.0.0', '123'],
+            ['track', 'ViewContent', { content_ids: '["1"]' }, { eventID: 'event-1' }],
+        ]);
+        expect(window.wcFacebookPixelQueuedEvents).toEqual([]);
     });
 
     it('should fire events immediately when fbq already exists before IIFE loads', function () {

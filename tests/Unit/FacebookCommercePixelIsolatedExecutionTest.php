@@ -460,11 +460,15 @@ class FacebookCommercePixelIsolatedExecutionTest extends AbstractWPUnitTestWithO
 			$event
 		);
 		$this->assertStringContainsString(
-			'fbq(\'track\', \'AddToCart\'',
+			"var event = { name: 'AddToCart', params: {",
 			$event
 		);
 		$this->assertStringContainsString(
-			'"eventID": "add-to-cart-event-123"',
+			'eventId: isStale ? null : "add-to-cart-event-123" }',
+			$event
+		);
+		$this->assertStringContainsString(
+			'fbq(event.method, event.name, event.params, { eventID: event.eventId });',
 			$event
 		);
 	}
@@ -477,28 +481,27 @@ class FacebookCommercePixelIsolatedExecutionTest extends AbstractWPUnitTestWithO
 		);
 
 		$this->assertStringNotContainsString( 'window.wcFacebookPixelFiredEvents', $event );
-		$this->assertStringContainsString( 'fbq(\'track\', \'ViewContent\'', $event );
+		$this->assertStringContainsString( "var event = { name: 'ViewContent', params: {", $event );
+		$this->assertStringContainsString( "method: 'track', eventId: null }", $event );
 	}
 
 	/**
 	 * A consent manager or script optimiser can run the Pixel base code after
-	 * the event code, so the event code must never call fbq() without checking
-	 * that it exists, and must hand the agent to FacebookSignals so it can be
-	 * applied once the Pixel initialises.
+	 * the event code, so the event code must never call fbq() outside a block
+	 * that first checks it exists, must hand the agent and the event to
+	 * FacebookSignals when that is present, and must queue the event when
+	 * neither is there yet.
 	 *
 	 * @dataProvider provider_build_event_params
 	 */
 	public function test_build_event_never_calls_fbq_unguarded( array $params ): void {
 		$event = WC_Facebookcommerce_Pixel::build_event( 'ViewContent', $params, 'track' );
 
-		$this->assertSame( 0, preg_match( '/^fbq\\(/m', $event ), 'The event code calls fbq() at the top level.' );
-		$this->assertStringContainsString( 'window.FacebookSignals.setAgent(agent)', $event );
-		$this->assertStringContainsString( "typeof window.FacebookSignals.trackEvent === 'function'", $event );
-
-		$guard = strpos( $event, "typeof fbq === 'function'" );
-		$this->assertNotFalse( $guard );
-		$this->assertGreaterThan( $guard, strpos( $event, "fbq('set', 'agent', agent," ) );
-		$this->assertGreaterThan( $guard, strpos( $event, "fbq('track', 'ViewContent'" ) );
+		$this->assert_every_fbq_call_is_guarded( $event );
+		$this->assertMatchesRegularExpression( '/^\/\* .+ Facebook Integration Event Tracking \*\/\n;\(function\(\) \{\n/', $event );
+		$this->assertStringContainsString( 'window.FacebookSignals.setAgent(agent);', $event );
+		$this->assertStringContainsString( 'window.FacebookSignals.trackEvent(event.name, event.params, null, event.method, event.eventId);', $event );
+		$this->assertStringContainsString( 'window.wcFacebookPixelQueuedEvents.push({ name: event.name, params: event.params, method: event.method, eventId: event.eventId, agent: agent, pixelId: pixelId });', $event );
 	}
 
 	public function provider_build_event_params(): array {
@@ -511,6 +514,45 @@ class FacebookCommercePixelIsolatedExecutionTest extends AbstractWPUnitTestWithO
 			),
 			'without event id' => array( array( 'content_ids' => array( 'PROD123' ) ) ),
 		);
+	}
+
+	/**
+	 * Asserts that every fbq() call in generated JavaScript sits inside a block
+	 * opened by a typeof fbq === 'function' check, whatever its indentation.
+	 *
+	 * Tracks the brace nesting and remembers the text that opened each block.
+	 *
+	 * @param string $code Generated JavaScript.
+	 */
+	private function assert_every_fbq_call_is_guarded( string $code ): void {
+		$openers    = array();
+		$line_start = 0;
+		$calls      = 0;
+		$length     = strlen( $code );
+
+		for ( $i = 0; $i < $length; $i++ ) {
+			$char = $code[ $i ];
+
+			if ( "\n" === $char ) {
+				$line_start = $i + 1;
+			} elseif ( '{' === $char ) {
+				$openers[] = substr( $code, $line_start, $i - $line_start );
+			} elseif ( '}' === $char ) {
+				array_pop( $openers );
+			} elseif ( 'fbq(' === substr( $code, $i, 4 ) && ( 0 === $i || ! preg_match( '/[\w.]/', $code[ $i - 1 ] ) ) ) {
+				$calls++;
+				$guarded = false;
+				foreach ( $openers as $opener ) {
+					if ( false !== strpos( $opener, "typeof fbq === 'function'" ) ) {
+						$guarded = true;
+						break;
+					}
+				}
+				$this->assertTrue( $guarded, 'Unguarded fbq() call: ' . trim( substr( $code, $line_start, 100 ) ) );
+			}
+		}
+
+		$this->assertGreaterThanOrEqual( 2, $calls, 'The generated code should set the agent and track the event through fbq() when only the Pixel is present.' );
 	}
 
 	public function test_inject_event_uses_isolated_execution_when_switch_enabled(): void {

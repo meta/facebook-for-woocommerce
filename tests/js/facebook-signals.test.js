@@ -79,9 +79,16 @@ describe('FacebookSignals inline wrapper', function () {
     });
 
     afterEach(function () {
+        // Stop stale load listeners and polls of this test's wrapper from
+        // touching the next test's fbq.
+        if (window.FacebookSignals) {
+            window.FacebookSignals._fbqHandled = true;
+        }
+        jest.clearAllTimers();
         jest.useRealTimers();
         resetFbq();
         delete window.FacebookSignals;
+        delete window.wcFacebookPixelQueuedEvents;
     });
 
     it('fires events straight away when fbq already exists at initPixel() time', function () {
@@ -164,10 +171,7 @@ describe('FacebookSignals inline wrapper', function () {
         expect(calls[calls.length - 1]).toEqual(['set', 'agent', 'woocommerce_2-1.0.0-2.0.0', '123']);
     });
 
-    it('initialises the Pixel on the next event when window.fbq could not be watched', function () {
-        const signals = loadSignals();
-        signals.init({});
-
+    function preventFbqWatcher(signals) {
         const defineProperty = Object.defineProperty;
         const spy = jest.spyOn(Object, 'defineProperty').mockImplementation(function (target, name, descriptor) {
             if (target === window && name === 'fbq') {
@@ -178,9 +182,38 @@ describe('FacebookSignals inline wrapper', function () {
         signals.initPixel('123', {}, {});
         spy.mockRestore();
         expect(signals._fbqWatcherInstalled).toBe(false);
+    }
 
+    it('polls for fbq when window.fbq cannot be watched', function () {
+        const signals = loadSignals();
+        signals.init({});
+        preventFbqWatcher(signals);
         signals.trackEvent('PageView', {}, null, 'track', 'event-1');
         expect(signals._pendingPixelEvents).toHaveLength(1);
+
+        const calls = [];
+        installPixelStub(calls);
+        expect(signals._pixelInitialized).toBe(false);
+
+        jest.advanceTimersByTime(500);
+
+        expect(signals._pixelInitialized).toBe(true);
+        expect(signals._fbqPoll).toBeNull();
+        expect(calls).toEqual([
+            ['consent', 'grant'],
+            ['init', '123', {}, {}],
+            ['track', 'PageView', {}, { eventID: 'event-1' }],
+        ]);
+    });
+
+    it('initialises the Pixel on the next event after the poll has given up', function () {
+        const signals = loadSignals();
+        signals.init({});
+        preventFbqWatcher(signals);
+        signals.trackEvent('PageView', {}, null, 'track', 'event-1');
+
+        jest.advanceTimersByTime(60 * 1000);
+        expect(signals._fbqPoll).toBeNull();
 
         const calls = [];
         installPixelStub(calls);
@@ -195,6 +228,83 @@ describe('FacebookSignals inline wrapper', function () {
             ['init', '123', {}, {}],
             ['track', 'PageView', {}, { eventID: 'event-1' }],
             ['track', 'AddToCart', { value: 1 }, { eventID: 'event-2' }],
+        ]);
+    });
+
+    it('checks for fbq again on load when another script replaced the watcher', function () {
+        const signals = loadSignals();
+        signals.init({});
+        signals.initPixel('123', {}, {});
+        signals.trackEvent('PageView', {}, null, 'track', 'event-1');
+        expect(signals._fbqWatcherInstalled).toBe(true);
+
+        // Another script redefines window.fbq without chaining our accessor.
+        Object.defineProperty(window, 'fbq', { configurable: true, enumerable: true, writable: true, value: undefined });
+        const calls = [];
+        installPixelStub(calls);
+        jest.runAllTimers();
+        expect(signals._pixelInitialized).toBe(false);
+
+        window.dispatchEvent(new Event('load'));
+
+        expect(signals._pixelInitialized).toBe(true);
+        expect(calls).toEqual([
+            ['consent', 'grant'],
+            ['init', '123', {}, {}],
+            ['track', 'PageView', {}, { eventID: 'event-1' }],
+        ]);
+    });
+
+    it('chains onto an existing fbq accessor and applies consent only once', function () {
+        // Another script already watches window.fbq and keeps its accessor.
+        let stored;
+        const previousSet = jest.fn(function (value) { stored = value; });
+        Object.defineProperty(window, 'fbq', {
+            configurable: true,
+            enumerable: true,
+            get: function () { return stored; },
+            set: previousSet,
+        });
+
+        const signals = loadSignals();
+        signals.init({});
+        signals.initPixel('123', {}, {});
+        expect(signals._fbqWatcherInstalled).toBe(true);
+
+        const calls = [];
+        const stub = installPixelStub(calls);
+        expect(previousSet).toHaveBeenCalledWith(stub);
+        jest.runAllTimers();
+        expect(calls).toEqual([
+            ['consent', 'grant'],
+            ['init', '123', {}, {}],
+        ]);
+
+        // A later reassignment must not re-send consent or re-initialise.
+        const laterCalls = [];
+        installPixelStub(laterCalls);
+        jest.runAllTimers();
+        expect(laterCalls).toEqual([]);
+        expect(signals._fbqHandled).toBe(true);
+    });
+
+    it('drains events the inline code queued before the wrapper existed', function () {
+        window.wcFacebookPixelQueuedEvents = [
+            { name: 'PageView', params: { source: 'woocommerce_2' }, method: 'track', eventId: 'event-1', agent: 'woocommerce_2-1.0.0-2.0.0', pixelId: '123' },
+        ];
+        const calls = [];
+        installPixelStub(calls);
+
+        const signals = loadSignals();
+        signals.init({});
+        signals.initPixel('123', {}, {});
+
+        expect(window.wcFacebookPixelQueuedEvents).toEqual([]);
+        expect(calls).toEqual([
+            ['consent', 'grant'],
+            ['init', '123', {}, {}],
+            ['set', 'agent', 'woocommerce_2-1.0.0-2.0.0', '123'],
+            ['track', 'PageView', { source: 'woocommerce_2' }, { eventID: 'event-1' }],
         ]);
     });
 

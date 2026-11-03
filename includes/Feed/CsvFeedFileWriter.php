@@ -49,7 +49,7 @@ class CsvFeedFileWriter extends AbstractFeedFileWriter {
 			}
 
 			// Convert the header row (CSV string) to an array to use as field accessors.
-			$accessors = str_getcsv( $this->header_row );
+			$accessors = $this->get_header_columns();
 
 			// Process and write each data row.
 			foreach ( $data as $obj ) {

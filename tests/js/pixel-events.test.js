@@ -14,6 +14,8 @@
  * @package FacebookCommerce
  */
 
+const { loadSignals } = require('./helpers/signals-source');
+
 describe('Pixel Events - Isolated Execution Context', function () {
     let mockFbq;
     let originalFbq;
@@ -873,6 +875,11 @@ describe('Integration: pixel-events.js IIFE', function () {
     });
 
     afterEach(function () {
+        // Stop a wrapper's load listener or poll from touching the next test's fbq.
+        if (window.FacebookSignals && window.FacebookSignals._fbqWatch) {
+            window.FacebookSignals._fbqWatch.cancel();
+        }
+        jest.clearAllTimers();
         jest.useRealTimers();
         jest.resetModules();
 
@@ -995,6 +1002,123 @@ describe('Integration: pixel-events.js IIFE', function () {
             ['track', 'ViewContent', { content_ids: '["1"]' }, { eventID: 'event-1' }],
         ]);
         expect(window.wcFacebookPixelQueuedEvents).toEqual([]);
+    });
+
+    /**
+     * Mimics the Meta Pixel snippet's stub: calls are recorded and, as the real
+     * stub does, pushed onto fbq.queue until the library loads, so an init call
+     * shows up there.
+     *
+     * @param {Array} calls Receives every fbq() call as an argument array.
+     * @return {Function} The stub.
+     */
+    function installSnippetStub(calls) {
+        var stub = function () {
+            var args = Array.prototype.slice.call(arguments);
+            calls.push(args);
+            stub.queue.push(args);
+        };
+        stub.queue = [];
+        stub.loaded = true;
+        global.fbq = stub;
+        return stub;
+    }
+
+    it('should keep events queued while fbq has no initialised pixel and let a later wrapper send them', function () {
+        var calls = [];
+        installSnippetStub(calls);
+        global.wc_facebook_pixel_data = {
+            eventQueue: [ { name: 'ViewContent', params: { content_ids: ['1'] }, method: 'track', eventId: 'event-1' } ]
+        };
+
+        require('../../assets/js/frontend/pixel-events.js');
+
+        // Only the wrapper initialises the Pixel; firing now would reach no pixel.
+        expect(calls).toEqual([]);
+        expect(window.wcFacebookPixelQueuedEvents).toHaveLength(1);
+
+        // The consent manager activates the wrapper block.
+        var signals = loadSignals();
+        signals.init({});
+        signals.initPixel('123', {}, {});
+
+        expect(window.wcFacebookPixelQueuedEvents).toEqual([]);
+        expect(calls).toEqual([
+            ['consent', 'grant'],
+            ['init', '123', {}, {}],
+            ['track', 'ViewContent', { content_ids: ['1'] }, { eventID: 'event-1' }],
+        ]);
+
+        // The poll notices the wrapper and stops without sending anything itself.
+        jest.runAllTimers();
+        expect(calls).toHaveLength(3);
+    });
+
+    it('should send queued events itself once something else initialises the pixel', function () {
+        var calls = [];
+        var stub = installSnippetStub(calls);
+        global.wc_facebook_pixel_data = {
+            eventQueue: [ { name: 'PageView', params: {}, method: 'track' } ]
+        };
+
+        require('../../assets/js/frontend/pixel-events.js');
+        expect(calls).toEqual([]);
+
+        stub('init', '999');
+        jest.advanceTimersByTime(500);
+
+        expect(calls).toEqual([
+            ['init', '999'],
+            ['track', 'PageView', {}],
+        ]);
+        expect(window.wcFacebookPixelQueuedEvents).toEqual([]);
+    });
+
+    it('should stop waiting for a sender after a minute and keep the events queued', function () {
+        var calls = [];
+        installSnippetStub(calls);
+        global.wc_facebook_pixel_data = {
+            eventQueue: [ { name: 'PageView', params: {}, method: 'track' } ]
+        };
+
+        require('../../assets/js/frontend/pixel-events.js');
+        jest.advanceTimersByTime(60 * 1000);
+
+        expect(calls).toEqual([]);
+        expect(window.wcFacebookPixelQueuedEvents).toHaveLength(1);
+        expect(consoleWarnSpy).toHaveBeenCalledWith('[FB Pixel]', 'No Meta Pixel initialised, events kept queued:', 1);
+        expect(jest.getTimerCount()).toBe(0);
+    });
+
+    it('should let a wrapper that chains onto its fbq watcher initialise the Pixel and apply consent before the events fire', function () {
+        global.wc_facebook_pixel_data = {
+            eventQueue: [ { name: 'PageView', params: {}, method: 'track', eventId: 'event-1' } ]
+        };
+
+        // Both base-code blocks are blocked: the event is queued and window.fbq watched.
+        require('../../assets/js/frontend/pixel-events.js');
+        expect(window.wcFacebookPixelQueuedEvents).toHaveLength(1);
+        expect(typeof Object.getOwnPropertyDescriptor(global, 'fbq').set).toBe('function');
+
+        // The wrapper block is activated first, while fbq is still missing.
+        var signals = loadSignals();
+        signals.init({});
+        signals.initPixel('123', {}, {});
+        expect(signals._fbqWatcherInstalled).toBe(true);
+        expect(window.wcFacebookPixelQueuedEvents).toEqual([]);
+        expect(signals._pendingPixelEvents).toHaveLength(1);
+
+        // Then the Pixel snippet assigns fbq, running both chained setters.
+        var calls = [];
+        installSnippetStub(calls);
+        expect(calls).toEqual([]);
+        jest.runAllTimers();
+
+        expect(calls).toEqual([
+            ['consent', 'grant'],
+            ['init', '123', {}, {}],
+            ['track', 'PageView', {}, { eventID: 'event-1' }],
+        ]);
     });
 
     it('should fire events immediately when fbq already exists before IIFE loads', function () {

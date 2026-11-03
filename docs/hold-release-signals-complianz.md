@@ -44,7 +44,7 @@ The result should be `false`. If it is `true`, review Complianz's region and con
 
 ### Avoid overlapping script blocking
 
-Complianz can detect Facebook for WooCommerce and separately block matching browser scripts until Marketing is allowed. Hold/Release Signals needs Meta for WooCommerce's browser helper to load while signal delivery is held so eligible current-page events can be kept temporarily in memory.
+Complianz can detect Facebook for WooCommerce and separately block matching browser scripts until Marketing is allowed. Hold/Release Signals needs Meta for WooCommerce's browser helper to load while signal delivery is held so eligible current-page events can be kept temporarily in memory. Event scripts that run before the helper leave their events in a page-level queue the helper picks up when it loads, but the helper still has to load on the page for them to be kept and released.
 
 For this setup, go to **Complianz > Integrations > Plugins** and disable the automatic **Facebook for WooCommerce** integration. Also check the Complianz Script Center for a custom rule that blocks `wc-facebook-signals`, `FacebookSignals` or the Meta for WooCommerce event scripts.
 

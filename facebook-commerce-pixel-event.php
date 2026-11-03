@@ -437,7 +437,7 @@ window.FacebookSignals = window.FacebookSignals || {
 	_agent: null,
 	_fbqWatcherInstalled: false,
 	_fbqHandled: false,
-	_fbqPoll: null,
+	_fbqWatch: null,
 	_queue: [],
 	_config: {},
 	_attribution: {},
@@ -514,22 +514,55 @@ window.FacebookSignals = window.FacebookSignals || {
 	// after this object initialised, so window.fbq does not exist yet. Watch
 	// for the assignment and initialise the Pixel the moment the library
 	// arrives, so events queued meanwhile are sent without waiting for another
-	// event on the page. Falls back to polling when the property cannot be
-	// watched, and checks again on load in case another script replaced the
-	// accessor in between.
+	// event on the page.
 	_watchForFbq: function() {
-		if (this._fbqWatcherInstalled || this._fbqHandled) return;
+		if (this._fbqWatch || this._fbqHandled) return;
 		var self = this;
-		var onAvailable = function() { self._onFbqAvailable(); };
+		this._fbqWatch = this._startFbqWatch(function() { self._onFbqAvailable(); });
+		this._fbqWatcherInstalled = this._fbqWatch.installed;
+	},
+
+	// Runs the callback once window.fbq is a function, at most once.
+	//
+	// Prefers an accessor on window.fbq, chained onto any accessor another
+	// script already installed, so the callback runs the moment the Pixel
+	// snippet assigns it (e.g. when a consent manager activates it) with no
+	// timers in between. Falls back to a bounded poll when the property cannot
+	// be redefined, and checks again on load in case another script replaced
+	// the accessor meanwhile.
+	//
+	// Mirrored in assets/js/frontend/pixel-events.js (watchForFbq): keep both
+	// copies identical, tests/js/fbq-watcher-sync.test.js compares them.
+	_startFbqWatch: function watchForFbq(callback) {
+		var handled = false;
+		var poll = null;
+
+		function handle() {
+			if (handled || typeof fbq !== 'function') {
+				return;
+			}
+			handled = true;
+			if (poll) {
+				clearInterval(poll);
+				poll = null;
+			}
+			callback();
+		}
+
+		// Another script may replace window.fbq without going through the
+		// accessor below; check again once the page has loaded.
 		try {
-			window.addEventListener('load', onAvailable);
+			window.addEventListener('load', handle);
 		} catch (e) {}
+
 		var descriptor = null;
 		try {
 			descriptor = Object.getOwnPropertyDescriptor(window, 'fbq') || null;
 		} catch (e) {
 			descriptor = { configurable: false };
 		}
+
+		var installed = false;
 		if (!descriptor || descriptor.configurable) {
 			var previousGet = descriptor ? descriptor.get : undefined;
 			var previousSet = descriptor ? descriptor.set : undefined;
@@ -546,6 +579,7 @@ window.FacebookSignals = window.FacebookSignals || {
 						if (previousSet) {
 							previousSet.call(window, value);
 						} else if (typeof value === 'function') {
+							// Restore a normal property so the Pixel library works as usual.
 							Object.defineProperty(window, 'fbq', {
 								configurable: true,
 								enumerable: true,
@@ -553,35 +587,41 @@ window.FacebookSignals = window.FacebookSignals || {
 								value: value
 							});
 						}
-						if (typeof value === 'function' && !self._fbqHandled) {
-							// The Pixel snippet assigns window.fbq before it attaches the
-							// call queue to it, so let the snippet finish first.
-							setTimeout(onAvailable, 0);
+						if (typeof value === 'function' && !handled) {
+							// The snippet assigns window.fbq before it attaches the call
+							// queue, so let it finish first.
+							setTimeout(handle, 0);
 						}
 					}
 				});
-				this._fbqWatcherInstalled = true;
+				installed = true;
 			} catch (e) {}
 		}
-		if (!this._fbqWatcherInstalled) {
-			this._pollForFbq();
-		}
-	},
 
-	// Last resort when window.fbq cannot be watched, e.g. because a script
-	// declared it with var: check twice a second for a minute.
-	_pollForFbq: function() {
-		if (this._fbqPoll) return;
-		var self = this;
-		var attempts = 0;
-		this._fbqPoll = setInterval(function() {
-			attempts++;
-			if (typeof fbq === 'function' || self._fbqHandled || attempts >= 120) {
-				clearInterval(self._fbqPoll);
-				self._fbqPoll = null;
-				self._onFbqAvailable();
+		if (!installed) {
+			// Last resort, e.g. a script declared fbq with var: check twice a
+			// second for a minute.
+			var attempts = 0;
+			poll = setInterval(function() {
+				attempts++;
+				if (typeof fbq === 'function' || attempts >= 120) {
+					clearInterval(poll);
+					poll = null;
+					handle();
+				}
+			}, 500);
+		}
+
+		return {
+			installed: installed,
+			cancel: function() {
+				handled = true;
+				if (poll) {
+					clearInterval(poll);
+					poll = null;
+				}
 			}
-		}, 500);
+		};
 	},
 
 	_onFbqAvailable: function() {
@@ -593,9 +633,10 @@ window.FacebookSignals = window.FacebookSignals || {
 		}
 	},
 
-	// Event code rendered while neither this object nor fbq existed (both base
-	// code blocks blocked by a consent manager) leaves its events in a global
-	// queue; pick them up once this object runs.
+	// Event code that ran before this object existed (base code blocked or
+	// delayed by a consent manager) leaves its events in a page-level queue;
+	// pick them up once this object runs. Entries the held-mode code queued
+	// carry the time the page rendered them, which the release keeps.
 	_drainInlineQueue: function() {
 		var queue = window.wcFacebookPixelQueuedEvents;
 		if (!queue || !queue.length) return;
@@ -606,7 +647,13 @@ window.FacebookSignals = window.FacebookSignals || {
 			if (ev.agent) {
 				this.setAgent(ev.agent);
 			}
-			this.trackEvent(ev.name, ev.params || {}, null, ev.method || 'track', ev.eventId || null);
+			this.queueEvent({
+				event_name: ev.name,
+				custom_data: ev.params || {},
+				event_id: ev.eventId || null,
+				event_time: ev.eventTime || Math.floor(Date.now() / 1000),
+				method: ev.method || 'track'
+			});
 		}
 	},
 
@@ -877,10 +924,50 @@ JS;
 			unset( $queue_data['custom_data']['user_data'] );
 		}
 
+		// The wrapper may run after this code (base code blocked or delayed by a
+		// consent manager): hand the event over when it is there, otherwise leave
+		// it in the page-level queue the wrapper drains once it initialises.
 		return sprintf(
-			"/* %s Facebook Integration Event Queueing */\nFacebookSignals.queueEvent(%s);",
+			"/* %s Facebook Integration Event Queueing */\n" .
+			";(function() {\n" .
+			"var event = %s;\n" .
+			'%s' .
+			'})();',
 			\WC_Facebookcommerce_Utils::get_integration_name(),
-			wp_json_encode( $queue_data )
+			wp_json_encode( $queue_data ),
+			self::get_signals_dispatch_js(
+				'queueEvent',
+				'event',
+				"{ name: event.event_name, params: event.custom_data || {}, method: event.method || 'track', eventId: event.event_id || null, eventTime: event.event_time || null }"
+			)
+		);
+	}
+
+
+	/**
+	 * Gets JS that hands an event to FacebookSignals when the wrapper is present and
+	 * otherwise leaves it in the page-level queue the wrapper drains once it runs.
+	 *
+	 * A consent manager or script optimiser can run the Pixel base code, which
+	 * defines FacebookSignals, after the event code; referencing it bare there
+	 * would throw and lose the event.
+	 *
+	 * @param string $method      FacebookSignals method to call when it is present.
+	 * @param string $arguments   JS argument list for that call; may refer to `event`.
+	 * @param string $queue_entry JS expression for the queue entry; may refer to `event`.
+	 * @return string JavaScript code.
+	 */
+	private static function get_signals_dispatch_js( $method, $arguments, $queue_entry ) {
+		return sprintf(
+			"if (window.FacebookSignals && typeof window.FacebookSignals.%1\$s === 'function') {\n" .
+			"\twindow.FacebookSignals.%1\$s(%2\$s);\n" .
+			"} else {\n" .
+			"\twindow.wcFacebookPixelQueuedEvents = window.wcFacebookPixelQueuedEvents || [];\n" .
+			"\twindow.wcFacebookPixelQueuedEvents.push(%3\$s);\n" .
+			"}\n",
+			$method,
+			$arguments,
+			$queue_entry
 		);
 	}
 
@@ -1055,11 +1142,9 @@ JS;
 			?>
 			<!-- Facebook Pixel Event Code -->
 			<script <?php echo self::get_script_attributes(); ?>>
-				document.addEventListener( '<?php echo esc_js( $listener ); ?>', function (event) {
-					FacebookSignals.trackEvent(
-						<?php echo wp_json_encode( $event_name ); ?>,
-						<?php echo wp_json_encode( $params ); ?>
-					);
+				document.addEventListener( '<?php echo esc_js( $listener ); ?>', function () {
+					var event = { name: <?php echo wp_json_encode( $event_name ); ?>, params: <?php echo wp_json_encode( $params ); ?>, method: 'track', eventId: null };
+					<?php echo self::get_signals_dispatch_js( 'trackEvent', 'event.name, event.params', 'event' ); ?>
 				}, false );
 			</script>
 			<!-- End Facebook Pixel Event Code -->
@@ -1139,7 +1224,8 @@ JS;
 			<!-- Facebook Pixel Event Code -->
 			<script <?php echo self::get_script_attributes(); ?>>
 				function handle<?php echo $event_name; ?>Event() {
-					FacebookSignals.trackEvent(<?php echo wp_json_encode( $event_name ); ?>, <?php echo wp_json_encode( $params ); ?>);
+					var event = { name: <?php echo wp_json_encode( $event_name ); ?>, params: <?php echo wp_json_encode( $params ); ?>, method: 'track', eventId: null };
+					<?php echo self::get_signals_dispatch_js( 'trackEvent', 'event.name, event.params', 'event' ); ?>
 					jQuery( document.body ).off( '<?php echo esc_js( $listened_event ); ?>', handle<?php echo $event_name; ?>Event );
 				}
 				jQuery( document.body ).one( '<?php echo esc_js( $listened_event ); ?>', handle<?php echo $event_name; ?>Event );

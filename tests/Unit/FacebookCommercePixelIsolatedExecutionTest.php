@@ -8,6 +8,7 @@
 
 declare( strict_types=1 );
 
+use WooCommerce\Facebook\Events\FacebookSignalsState;
 use WooCommerce\Facebook\Tests\AbstractWPUnitTestWithOptionIsolationAndSafeFiltering;
 
 /**
@@ -517,10 +518,83 @@ class FacebookCommercePixelIsolatedExecutionTest extends AbstractWPUnitTestWithO
 	}
 
 	/**
+	 * The guard check must not be fooled by braces inside string literals, such
+	 * as a product name in the JSON-encoded params.
+	 */
+	public function test_fbq_guard_check_ignores_braces_inside_strings(): void {
+		$event = WC_Facebookcommerce_Pixel::build_event(
+			'ViewContent',
+			array(
+				'content_name' => 'Mug } with { braces',
+				'content_ids'  => array( 'PROD123' ),
+				'event_id'     => 'view-content-123',
+			),
+			'track'
+		);
+
+		$this->assertStringContainsString( '"content_name": "Mug } with { braces"', $event );
+		$this->assert_every_fbq_call_is_guarded( $event );
+	}
+
+	public function test_fbq_guard_check_detects_an_unguarded_call(): void {
+		$this->expectException( \PHPUnit\Framework\AssertionFailedError::class );
+		$this->expectExceptionMessage( 'Unguarded fbq() call' );
+
+		$this->assert_every_fbq_call_is_guarded(
+			"if (window.FacebookSignals) {\n\tfbq('set', 'agent', agent, pixelId);\n}\nif (typeof fbq === 'function') {\n\tfbq('track', 'ViewContent', {});\n}\n"
+		);
+	}
+
+	/**
+	 * Held-mode event code runs before the wrapper when a consent manager delays
+	 * the base code, so it must never reference FacebookSignals bare and must
+	 * leave the event in the page-level queue instead.
+	 */
+	public function test_queued_event_code_never_references_the_wrapper_bare(): void {
+		$pixel = new WC_Facebookcommerce_Pixel();
+		$code  = $pixel->get_queued_event_code(
+			'ViewContent',
+			array(
+				'content_ids' => array( 'PROD123' ),
+				'event_id'    => 'view-content-123',
+			),
+			'track'
+		);
+
+		$this->assertDoesNotMatchRegularExpression( '/(?<![\w.])FacebookSignals\./', $code );
+		$this->assertMatchesRegularExpression( '/^\/\* .+ Facebook Integration Event Queueing \*\/\n;\(function\(\) \{\n/', $code );
+		$this->assertStringContainsString( '"event_name":"ViewContent"', $code );
+		$this->assertStringContainsString( "typeof window.FacebookSignals.queueEvent === 'function'", $code );
+		$this->assertStringContainsString( 'window.FacebookSignals.queueEvent(event);', $code );
+		$this->assertStringContainsString( "window.wcFacebookPixelQueuedEvents.push({ name: event.event_name, params: event.custom_data || {}, method: event.method || 'track', eventId: event.event_id || null, eventTime: event.event_time || null });", $code );
+	}
+
+	public function test_held_conditional_scripts_never_reference_the_wrapper_bare(): void {
+		FacebookSignalsState::hold();
+		try {
+			$pixel   = new WC_Facebookcommerce_Pixel();
+			$scripts = array(
+				$pixel->get_conditional_event_script( 'ViewContent', array( 'content_ids' => array( 'PROD123' ) ), 'wc_fragments_loaded', '' ),
+				$pixel->get_conditional_one_time_event_script( 'AddToCart', array( 'content_ids' => array( 'PROD123' ) ), 'added_to_cart' ),
+			);
+		} finally {
+			FacebookSignalsState::release();
+		}
+
+		foreach ( $scripts as $script ) {
+			$this->assertDoesNotMatchRegularExpression( '/(?<![\w.])FacebookSignals\./', $script );
+			$this->assertStringContainsString( "typeof window.FacebookSignals.trackEvent === 'function'", $script );
+			$this->assertStringContainsString( 'window.FacebookSignals.trackEvent(event.name, event.params);', $script );
+			$this->assertStringContainsString( 'window.wcFacebookPixelQueuedEvents.push(event);', $script );
+		}
+	}
+
+	/**
 	 * Asserts that every fbq() call in generated JavaScript sits inside a block
 	 * opened by a typeof fbq === 'function' check, whatever its indentation.
 	 *
-	 * Tracks the brace nesting and remembers the text that opened each block.
+	 * Tracks the brace nesting and remembers the text that opened each block;
+	 * braces inside string literals are data and do not count.
 	 *
 	 * @param string $code Generated JavaScript.
 	 */
@@ -528,12 +602,24 @@ class FacebookCommercePixelIsolatedExecutionTest extends AbstractWPUnitTestWithO
 		$openers    = array();
 		$line_start = 0;
 		$calls      = 0;
+		$quote      = null;
 		$length     = strlen( $code );
 
 		for ( $i = 0; $i < $length; $i++ ) {
 			$char = $code[ $i ];
 
-			if ( "\n" === $char ) {
+			if ( null !== $quote ) {
+				if ( '\\' === $char ) {
+					$i++;
+				} elseif ( $quote === $char ) {
+					$quote = null;
+				}
+				continue;
+			}
+
+			if ( "'" === $char || '"' === $char || '`' === $char ) {
+				$quote = $char;
+			} elseif ( "\n" === $char ) {
 				$line_start = $i + 1;
 			} elseif ( '{' === $char ) {
 				$openers[] = substr( $code, $line_start, $i - $line_start );

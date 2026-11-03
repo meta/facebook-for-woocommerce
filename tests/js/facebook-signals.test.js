@@ -17,20 +17,7 @@
  * @package FacebookCommerce
  */
 
-const fs = require('fs');
-const path = require('path');
-
-function loadSignalsSource() {
-    const php = fs.readFileSync(path.join(__dirname, '..', '..', 'facebook-commerce-pixel-event.php'), 'utf8');
-    const marker = 'window.FacebookSignals = window.FacebookSignals ||';
-    const markerIndex = php.indexOf(marker);
-    const opener = "<<<'JS'";
-    const start = php.lastIndexOf(opener, markerIndex) + opener.length;
-    const end = php.indexOf('\nJS;', markerIndex);
-    return php.slice(start, end);
-}
-
-const signalsSource = loadSignalsSource();
+const { loadSignals } = require('./helpers/signals-source');
 
 function resetFbq() {
     try {
@@ -44,12 +31,6 @@ function resetFbq() {
         // Ignore if the property does not exist.
     }
     delete window.fbq;
-}
-
-function loadSignals() {
-    delete window.FacebookSignals;
-    new Function(signalsSource)(); // eslint-disable-line no-new-func
-    return window.FacebookSignals;
 }
 
 /**
@@ -83,6 +64,9 @@ describe('FacebookSignals inline wrapper', function () {
         // touching the next test's fbq.
         if (window.FacebookSignals) {
             window.FacebookSignals._fbqHandled = true;
+            if (window.FacebookSignals._fbqWatch) {
+                window.FacebookSignals._fbqWatch.cancel();
+            }
         }
         jest.clearAllTimers();
         jest.useRealTimers();
@@ -198,7 +182,7 @@ describe('FacebookSignals inline wrapper', function () {
         jest.advanceTimersByTime(500);
 
         expect(signals._pixelInitialized).toBe(true);
-        expect(signals._fbqPoll).toBeNull();
+        expect(jest.getTimerCount()).toBe(0);
         expect(calls).toEqual([
             ['consent', 'grant'],
             ['init', '123', {}, {}],
@@ -213,7 +197,7 @@ describe('FacebookSignals inline wrapper', function () {
         signals.trackEvent('PageView', {}, null, 'track', 'event-1');
 
         jest.advanceTimersByTime(60 * 1000);
-        expect(signals._fbqPoll).toBeNull();
+        expect(jest.getTimerCount()).toBe(0);
 
         const calls = [];
         installPixelStub(calls);
@@ -306,6 +290,23 @@ describe('FacebookSignals inline wrapper', function () {
             ['set', 'agent', 'woocommerce_2-1.0.0-2.0.0', '123'],
             ['track', 'PageView', { source: 'woocommerce_2' }, { eventID: 'event-1' }],
         ]);
+    });
+
+    it('keeps the original event time of held-mode entries it drains while held', function () {
+        window.wcFacebookPixelQueuedEvents = [
+            { name: 'PageView', params: {}, method: 'track', eventId: 'event-1', eventTime: 1700000000 },
+        ];
+
+        const signals = loadSignals();
+        signals.init({ held: true });
+        signals.initPixel('123', {}, {});
+
+        expect(window.wcFacebookPixelQueuedEvents).toEqual([]);
+        expect(signals._pendingPixelEvents).toEqual([]);
+        expect(signals._queue).toHaveLength(1);
+        expect(signals._queue[0].event_name).toBe('PageView');
+        expect(signals._queue[0].event_time).toBe(1700000000);
+        expect(signals._seenEventIds['event-1']).toBe(1);
     });
 
     it('keeps the Pixel uninitialised while held and revokes consent when fbq arrives', function () {

@@ -233,6 +233,18 @@ abstract class AbstractFeedFileWriter {
 	}
 
 	/**
+	 * Gets the header row's column names.
+	 *
+	 * The header row is always a comma-separated string, whatever delimiter the feed file uses
+	 * (ShippingProfilesFeed writes tab-separated files from a comma-separated header).
+	 *
+	 * @return array
+	 */
+	protected function get_header_columns(): array {
+		return str_getcsv( $this->header_row, ',', $this->enclosure, $this->escape_char );
+	}
+
+	/**
 	 * Gets the feed file path of given feed.
 	 *
 	 * @return string
@@ -320,8 +332,7 @@ abstract class AbstractFeedFileWriter {
 			}
 
 			if ( ! empty( $this->header_row ) ) {
-				$headers = str_getcsv( $this->header_row, $this->delimiter, $this->enclosure, $this->escape_char );
-				if ( fputcsv( $temp_feed_file, $headers, $this->delimiter, $this->enclosure, $this->escape_char ) === false ) {
+				if ( fputcsv( $temp_feed_file, $this->get_header_columns(), $this->delimiter, $this->enclosure, $this->escape_char ) === false ) {
 					throw new PluginException( "Failed to write header row to {$temp_file_path}.", 500 );
 				}
 			}

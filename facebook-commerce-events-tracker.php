@@ -135,13 +135,13 @@ if ( ! class_exists( 'WC_Facebookcommerce_EventsTracker' ) ) :
 					self::$param_builder->processRequest(
 						$site_url,
 						// phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Param builder intentionally inspects current request query parameters.
-						$_GET,
-						$_COOKIE,
+						self::get_scalar_request_values( $_GET ),
+						self::get_scalar_request_values( $_COOKIE ),
 						isset( $_SERVER['HTTP_REFERER'] ) ?
 						sanitize_text_field( wp_unslash( $_SERVER['HTTP_REFERER'] ) ) :
 						null
 					);
-				} catch ( \Exception $exception ) {
+				} catch ( \Throwable $exception ) {
 					Logger::log(
 						'Error initializing CAPI Parameter Builder: ' . $exception->getMessage(),
 						array(),
@@ -155,6 +155,34 @@ if ( ! class_exists( 'WC_Facebookcommerce_EventsTracker' ) ) :
 			}
 
 			return self::$param_builder;
+		}
+
+		/**
+		 * Returns a copy of a request superglobal that only contains scalar values.
+		 *
+		 * PHP parses `name[key]=value` cookies and query parameters into arrays. The CAPI
+		 * Parameter Builder expects `_fbc`, `_fbp`, `_fbi` and `fbclid` to be strings and
+		 * throws a TypeError otherwise, which would take the whole request down and trip the
+		 * plugin crash handler. Array-shaped values are therefore dropped and treated as absent.
+		 *
+		 * @since 3.7.9
+		 *
+		 * @param mixed $values superglobal contents, e.g. $_GET or $_COOKIE.
+		 * @return array<string, string>
+		 */
+		public static function get_scalar_request_values( $values ) {
+			if ( ! is_array( $values ) ) {
+				return array();
+			}
+
+			$scalar_values = array();
+			foreach ( $values as $key => $value ) {
+				if ( is_scalar( $value ) ) {
+					$scalar_values[ $key ] = (string) $value;
+				}
+			}
+
+			return $scalar_values;
 		}
 
 		public static function get_fbc() {
@@ -224,7 +252,7 @@ if ( ! class_exists( 'WC_Facebookcommerce_EventsTracker' ) ) :
 						}
 					}
 				}
-			} catch ( \Exception $exception ) {
+			} catch ( \Throwable $exception ) {
 				Logger::log(
 					'Error setting up server side CAPI Parameter Builder: ' . $exception->getMessage(),
 					array(),

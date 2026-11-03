@@ -295,7 +295,7 @@ class ReleaseSignalsAjax {
 				}
 			}
 		// phpcs:ignore Generic.CodeAnalysis.EmptyStatement.DetectedCatch -- Attribution cookie domains are best-effort.
-		} catch ( \Exception $e ) {
+		} catch ( \Throwable $e ) {
 			// Silently continue — attribution cookie domains are best-effort.
 		}
 
@@ -384,7 +384,7 @@ class ReleaseSignalsAjax {
 				$fbp = $param_builder->getFbp();
 			}
 		// phpcs:ignore Generic.CodeAnalysis.EmptyStatement.DetectedCatch
-		} catch ( \Exception $e ) {
+		} catch ( \Throwable $e ) {
 			// ParamBuilder is best-effort.
 		}
 	}

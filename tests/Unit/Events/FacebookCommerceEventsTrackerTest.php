@@ -137,6 +137,124 @@ class FacebookCommerceEventsTrackerTest extends AbstractWPUnitTestWithSafeFilter
 	}
 
 	/**
+	 * Test that get_scalar_request_values keeps scalar values (as strings) and drops
+	 * array-shaped or object values.
+	 *
+	 * @covers WC_Facebookcommerce_EventsTracker::get_scalar_request_values
+	 */
+	public function test_get_scalar_request_values_drops_non_scalar_values(): void {
+		$values = array(
+			'_fbc'   => array( 'x' => '1' ),
+			'_fbp'   => 'fb.1.1700000000000.123456789',
+			'fbclid' => array( 'nested' => array( 'deeper' => '1' ) ),
+			'count'  => 5,
+			'flag'   => true,
+			'object' => new \stdClass(),
+			'none'   => null,
+		);
+
+		$this->assertSame(
+			array(
+				'_fbp'  => 'fb.1.1700000000000.123456789',
+				'count' => '5',
+				'flag'  => '1',
+			),
+			WC_Facebookcommerce_EventsTracker::get_scalar_request_values( $values )
+		);
+
+		$this->assertSame( array(), WC_Facebookcommerce_EventsTracker::get_scalar_request_values( null ) );
+		$this->assertSame( array(), WC_Facebookcommerce_EventsTracker::get_scalar_request_values( 'not-an-array' ) );
+	}
+
+	/**
+	 * Test that array-shaped attribution cookies and query parameters (e.g. a
+	 * `Cookie: _fbc[x]=1` header) are ignored instead of crashing the request with a
+	 * TypeError inside the vendor ParamBuilder.
+	 *
+	 * @covers WC_Facebookcommerce_EventsTracker::get_param_builder
+	 * @covers WC_Facebookcommerce_EventsTracker::get_fbc
+	 * @covers WC_Facebookcommerce_EventsTracker::get_fbp
+	 */
+	public function test_get_param_builder_ignores_array_shaped_cookies_and_query_params(): void {
+		$original_state  = $this->reset_param_builder_state();
+		$original_cookie = $_COOKIE;
+		$original_get    = $_GET;
+
+		$_COOKIE['_fbc'] = array( 'x' => '1' );
+		$_COOKIE['_fbp'] = array( 'x' => '1' );
+		$_COOKIE['_fbi'] = array( 'x' => '1' );
+		$_GET['fbclid']  = array( 'x' => '1' );
+
+		try {
+			$param_builder = WC_Facebookcommerce_EventsTracker::get_param_builder();
+
+			$this->assertInstanceOf( \FacebookAds\ParamBuilder::class, $param_builder );
+			$this->assertNull(
+				WC_Facebookcommerce_EventsTracker::get_fbc(),
+				'A malformed _fbc cookie must be treated as absent'
+			);
+
+			$fbp = WC_Facebookcommerce_EventsTracker::get_fbp();
+			$this->assertIsString( $fbp );
+			$this->assertStringStartsWith( 'fb.', $fbp, 'A malformed _fbp cookie must be replaced by a freshly generated one' );
+		} finally {
+			$_COOKIE = $original_cookie;
+			$_GET    = $original_get;
+			$this->restore_param_builder_state( $original_state );
+		}
+	}
+
+	/**
+	 * Test that a well-formed _fbc cookie still flows through ParamBuilder after the
+	 * scalar filtering, so the fix does not regress normal attribution.
+	 *
+	 * @covers WC_Facebookcommerce_EventsTracker::get_param_builder
+	 * @covers WC_Facebookcommerce_EventsTracker::get_fbc
+	 */
+	public function test_get_param_builder_keeps_well_formed_fbc_cookie(): void {
+		$original_state  = $this->reset_param_builder_state();
+		$original_cookie = $_COOKIE;
+
+		$_COOKIE['_fbc'] = 'fb.1.1700000000000.AbCdEf';
+
+		try {
+			WC_Facebookcommerce_EventsTracker::get_param_builder();
+
+			$this->assertStringStartsWith(
+				'fb.1.1700000000000.AbCdEf',
+				(string) WC_Facebookcommerce_EventsTracker::get_fbc(),
+				'A well-formed _fbc cookie must be preserved'
+			);
+		} finally {
+			$_COOKIE = $original_cookie;
+			$this->restore_param_builder_state( $original_state );
+		}
+	}
+
+	/**
+	 * Test that constructing the tracker, which runs param_builder_server_setup on every
+	 * front-end request, survives array-shaped attribution cookies.
+	 *
+	 * @covers WC_Facebookcommerce_EventsTracker::param_builder_server_setup
+	 */
+	public function test_param_builder_server_setup_survives_array_shaped_cookies(): void {
+		$original_state  = $this->reset_param_builder_state();
+		$original_cookie = $_COOKIE;
+
+		$_COOKIE['_fbc'] = array( 'x' => '1' );
+		$_COOKIE['_fbp'] = array( 'x' => '1' );
+
+		try {
+			$this->instance = $this->create_tracker_with_pixel_enabled();
+
+			$this->assertInstanceOf( WC_Facebookcommerce_EventsTracker::class, $this->instance );
+		} finally {
+			$_COOKIE = $original_cookie;
+			$this->restore_param_builder_state( $original_state );
+		}
+	}
+
+	/**
 	 * Test that get_tracked_events returns an array.
 	 *
 	 * @covers WC_Facebookcommerce_EventsTracker::get_tracked_events
@@ -991,6 +1109,41 @@ class FacebookCommerceEventsTrackerTest extends AbstractWPUnitTestWithSafeFilter
 			}
 		};
 		return $mock_param_builder;
+	}
+
+	/**
+	 * Clears the tracker's static ParamBuilder state so the next get_param_builder()
+	 * call processes the current superglobals.
+	 *
+	 * @return array<string, mixed> original static values keyed by property name.
+	 */
+	private function reset_param_builder_state(): array {
+		$original = array();
+		$ref      = new ReflectionClass( WC_Facebookcommerce_EventsTracker::class );
+
+		foreach ( array( 'param_builder', 'cached_fbc', 'cached_fbp' ) as $prop_name ) {
+			$prop = $ref->getProperty( $prop_name );
+			$prop->setAccessible( true );
+			$original[ $prop_name ] = $prop->getValue();
+			$prop->setValue( null, null );
+		}
+
+		return $original;
+	}
+
+	/**
+	 * Restores the static ParamBuilder state captured by reset_param_builder_state().
+	 *
+	 * @param array<string, mixed> $original original static values keyed by property name.
+	 */
+	private function restore_param_builder_state( array $original ): void {
+		$ref = new ReflectionClass( WC_Facebookcommerce_EventsTracker::class );
+
+		foreach ( $original as $prop_name => $value ) {
+			$prop = $ref->getProperty( $prop_name );
+			$prop->setAccessible( true );
+			$prop->setValue( null, $value );
+		}
 	}
 
 	/**

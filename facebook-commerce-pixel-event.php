@@ -343,8 +343,11 @@ class WC_Facebookcommerce_Pixel {
 		ob_start();
 
 		?>
+			<?php // Rendered apart from the loader: the event code's stale-page check reads this, and a consent manager that blocks the loader by matching connect.facebook.net must not delay it. ?>
 			<script <?php echo self::get_script_attributes(); ?>>
 				window.__wc_fb_page_generated = <?php echo (int) time(); ?>;
+			</script>
+			<script <?php echo self::get_script_attributes(); ?>>
 				!function(f,b,e,v,n,t,s){if(f.fbq)return;n=f.fbq=function(){n.callMethod?
 					n.callMethod.apply(n,arguments):n.queue.push(arguments)};if(!f._fbq)f._fbq=n;
 					n.push=n;n.loaded=!0;n.version='2.0';n.queue=[];t=b.createElement(e);t.async=!0;

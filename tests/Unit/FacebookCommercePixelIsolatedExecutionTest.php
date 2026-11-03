@@ -590,6 +590,41 @@ class FacebookCommercePixelIsolatedExecutionTest extends AbstractWPUnitTestWithO
 	}
 
 	/**
+	 * The event code's stale-page check reads window.__wc_fb_page_generated. A
+	 * consent manager that blocks the Pixel loader by matching connect.facebook.net
+	 * must not delay the timestamp with it, or a stale cached page would replay
+	 * its shared event ID.
+	 */
+	public function test_page_generated_timestamp_is_rendered_apart_from_the_pixel_loader(): void {
+		$this->reset_static_properties();
+		WC_Facebookcommerce_Pixel::set_pixel_id( '123456789' );
+
+		$pixel = new WC_Facebookcommerce_Pixel();
+		$code  = $pixel->pixel_base_code();
+
+		preg_match_all( '/<script[^>]*>(.*?)<\/script>/is', $code, $matches );
+		$scripts = $matches[1];
+		$this->assertNotEmpty( $scripts, 'The base code rendered no script blocks.' );
+
+		$timestamp_index = null;
+		$loader_index    = null;
+		foreach ( $scripts as $index => $script ) {
+			if ( false !== strpos( $script, '__wc_fb_page_generated = ' ) ) {
+				$timestamp_index = $index;
+			}
+			if ( false !== strpos( $script, 'connect.facebook.net' ) ) {
+				$loader_index = $index;
+			}
+		}
+
+		$this->assertNotNull( $timestamp_index, 'The page timestamp is missing.' );
+		$this->assertNotNull( $loader_index, 'The Pixel loader is missing.' );
+		$this->assertNotSame( $timestamp_index, $loader_index, 'The page timestamp shares a script block with the Pixel loader.' );
+		$this->assertLessThan( $loader_index, $timestamp_index, 'The page timestamp must come before the Pixel loader.' );
+		$this->assertStringNotContainsString( 'fbq', $scripts[ $timestamp_index ], 'The timestamp block must not match a consent manager rule on fbq.' );
+	}
+
+	/**
 	 * Asserts that every fbq() call in generated JavaScript sits inside a block
 	 * opened by a typeof fbq === 'function' check, whatever its indentation.
 	 *

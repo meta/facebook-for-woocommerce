@@ -182,15 +182,16 @@ class FeedConfigurationDetection {
 				return $info;
 			}
 
-			$upload['error-count']         = $upload_metadata['error_count'];
-			$upload['warning-count']       = $upload_metadata['warning_count'];
-			$upload['num-detected-items']  = $upload_metadata['num_detected_items'];
-			$upload['num-persisted-items'] = $upload_metadata['num_persisted_items'];
+			// The Graph API omits fields it has no value for yet, e.g. while an upload is still processing.
+			$upload['error-count']         = $upload_metadata['error_count'] ?? 0;
+			$upload['warning-count']       = $upload_metadata['warning_count'] ?? 0;
+			$upload['num-detected-items']  = $upload_metadata['num_detected_items'] ?? 0;
+			$upload['num-persisted-items'] = $upload_metadata['num_persisted_items'] ?? 0;
 
 			// True if the feed upload url (Facebook side) matches the feed endpoint URL and secret.
 			// If it doesn't match, it's likely it's unused.
 			$upload['url-matches-site-endpoint'] = wc_bool_to_string(
-				Feed::get_feed_data_url() === $upload_metadata['url']
+				Feed::get_feed_data_url() === ( $upload_metadata['url'] ?? '' )
 			);
 
 			$info['active-feed']['latest-upload'] = $upload;

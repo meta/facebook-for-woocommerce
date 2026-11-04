@@ -26,6 +26,15 @@
 
 defined( 'ABSPATH' ) || exit;
 
+// Load the crash guard state class before anything else, so the fallback shutdown handler
+// below, the main crash handler and this loader share one definition of "paused".
+foreach ( [ 'CrashGuardState.php', 'crash-guard-bootstrap-fallback.php' ] as $wc_facebook_crash_guard_file ) {
+	if ( is_readable( __DIR__ . '/includes/Framework/' . $wc_facebook_crash_guard_file ) ) {
+		require_once __DIR__ . '/includes/Framework/' . $wc_facebook_crash_guard_file;
+	}
+}
+unset( $wc_facebook_crash_guard_file );
+
 // Register a minimal fallback shutdown handler before main plugin initialization.
 register_shutdown_function(
 	static function () {
@@ -33,70 +42,9 @@ register_shutdown_function(
 			return;
 		}
 
-		$error = error_get_last();
-		if ( ! is_array( $error ) || empty( $error['type'] ) ) {
-			return;
+		if ( function_exists( 'wc_facebook_handle_bootstrap_crash' ) ) {
+			wc_facebook_handle_bootstrap_crash( error_get_last(), __DIR__ );
 		}
-
-		if ( ! in_array( (int) $error['type'], [ E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR ], true ) ) {
-			return;
-		}
-
-		$error_file = isset( $error['file'] ) ? (string) $error['file'] : '';
-		if ( '' === $error_file ) {
-			return;
-		}
-
-		$normalized_error_file = str_replace( '\\', '/', $error_file );
-		$normalized_plugin_dir = rtrim( str_replace( '\\', '/', __DIR__ ), '/' );
-		if ( 0 !== strpos( $normalized_error_file, $normalized_plugin_dir . '/' ) ) {
-			return;
-		}
-
-		$wp_content_dir = defined( 'WP_CONTENT_DIR' ) ? WP_CONTENT_DIR : dirname( dirname( __DIR__ ) );
-		$flag_file      = rtrim( str_replace( '\\', '/', (string) $wp_content_dir ), '/' ) . '/uploads/facebook-for-woocommerce/.disabled';
-		$flag_dir       = dirname( $flag_file );
-
-		$current_crash_count = 0;
-		if ( is_readable( $flag_file ) ) {
-			$raw = @file_get_contents( $flag_file ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged,WordPress.WP.AlternativeFunctions.file_get_contents_file_get_contents
-			if ( is_string( $raw ) && '' !== $raw ) {
-				$decoded = json_decode( $raw, true );
-				if ( is_array( $decoded ) && isset( $decoded['crash_count'], $decoded['timestamp'] ) ) {
-					$existing_count = max( 0, (int) $decoded['crash_count'] );
-					$existing_time  = (int) $decoded['timestamp'];
-
-					$window_seconds = null;
-					if ( $existing_count <= 1 ) {
-						$window_seconds = 10 * MINUTE_IN_SECONDS;
-					} elseif ( 2 === $existing_count ) {
-						$window_seconds = HOUR_IN_SECONDS;
-					}
-
-					$is_window_active    = null === $window_seconds || ( time() - $existing_time ) < $window_seconds;
-					$current_crash_count = $is_window_active ? $existing_count : 0;
-				}
-			}
-		}
-
-		$payload      = [
-			'timestamp'   => time(),
-			'crash_count' => $current_crash_count + 1,
-		];
-		$payload_json = wp_json_encode( $payload );
-		if ( ! is_string( $payload_json ) || '' === $payload_json ) {
-			return;
-		}
-
-		if ( ! is_dir( $flag_dir ) ) {
-			if ( function_exists( 'wp_mkdir_p' ) ) {
-				wp_mkdir_p( $flag_dir );
-			} else {
-				@mkdir( $flag_dir, 0755, true ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged,WordPress.WP.AlternativeFunctions.file_system_operations_mkdir
-			}
-		}
-
-		@file_put_contents( $flag_file, $payload_json ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged,WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents
 	}
 );
 
@@ -110,6 +58,7 @@ require_once $autoload_file;
 use Automattic\WooCommerce\Grow\Tools\CompatChecker\v0_0_1\Checker;
 use Automattic\WooCommerce\Utilities\FeaturesUtil;
 use WooCommerce\Facebook\Framework\BatchLogHandler;
+use WooCommerce\Facebook\Framework\CrashGuardState;
 use WooCommerce\Facebook\Framework\ErrorLogHandler;
 use WooCommerce\Facebook\Framework\PluginCrashHandler;
 
@@ -196,13 +145,6 @@ class WC_Facebook_Loader {
 	 */
 	private static $compat_cached_entry = null;
 
-	/**
-	 * Whether file-based disabled mode is active for this bootstrap cycle.
-	 *
-	 * @var bool
-	 */
-	private $is_file_disabled_mode = false;
-
 
 	/**
 	 * Constructs the class.
@@ -227,8 +169,6 @@ class WC_Facebook_Loader {
 		// Flush rewrite rules if flagged (runs once after activation/upgrade).
 		// Priority 99 ensures all rewrite rules are registered before flushing.
 		add_action( 'init', array( $this, 'maybe_flush_rewrite_rules' ), 99 );
-
-		$this->is_file_disabled_mode = $this->has_active_disable_flag_file_only();
 
 		// If the environment check fails, initialize the plugin.
 		if ( $this->is_environment_compatible() ) {
@@ -275,7 +215,7 @@ class WC_Facebook_Loader {
 			return;
 		}
 
-		if ( $this->is_file_disabled_mode || $this->has_valid_disable_flag() ) {
+		if ( $this->has_valid_disable_flag() ) {
 			$this->register_disabled_mode_services();
 			error_log( 'Meta for WooCommerce is disabled via crash flag. Skipping full plugin initialization.' ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
 			return;
@@ -294,118 +234,38 @@ class WC_Facebook_Loader {
 		// fire it up!
 		if ( function_exists( 'facebook_for_woocommerce' ) ) {
 			facebook_for_woocommerce();
+			PluginCrashHandler::mark_plugin_initialized();
 		}
 	}
 
 	/**
-	 * Checks whether file-based disable flag is currently active.
+	 * Checks whether the crash guard currently pauses the plugin.
 	 *
-	 * File-only path is used during bootstrap hardening to avoid early DB access.
-	 *
-	 * @since 3.6.4
-	 *
-	 * @return bool
-	 */
-	private function has_active_disable_flag_file_only() {
-		$flag_file = trailingslashit( WP_CONTENT_DIR ) . self::DISABLE_FLAG_FILE_RELATIVE_PATH;
-
-		if ( ! is_readable( $flag_file ) ) {
-			return false;
-		}
-
-		$raw_payload = @file_get_contents( $flag_file ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_get_contents_file_get_contents
-		if ( ! is_string( $raw_payload ) || '' === $raw_payload ) {
-			return false;
-		}
-
-		$decoded = json_decode( $raw_payload, true );
-		if ( ! $this->is_valid_disable_flag_payload( $decoded ) ) {
-			return false;
-		}
-
-		return $this->is_disable_window_active( $decoded );
-	}
-
-	/**
-	 * Checks whether a valid and currently active disable flag exists.
+	 * Reads both the flag file and the transient fallback and lets the newer one decide. That
+	 * matters when the file is stale: a transient written after it, such as the idle tombstone
+	 * that "Resume now" leaves when the file cannot be deleted, must be honored here or the
+	 * plugin would stay paused while the notice disappears.
 	 *
 	 * @since 3.6.4
 	 *
 	 * @return bool
 	 */
 	private function has_valid_disable_flag() {
-		if ( $this->has_active_disable_flag_file_only() ) {
-			return true;
-		}
-
-		$transient_payload = get_transient( self::DISABLE_FLAG_TRANSIENT );
-		if ( ! $this->is_valid_disable_flag_payload( $transient_payload ) ) {
-			return false;
-		}
-
-		return $this->is_disable_window_active( $transient_payload );
+		return CrashGuardState::is_disabled( CrashGuardState::read() );
 	}
 
 	/**
-	 * Validates disable flag payload shape.
+	 * Returns the pause length for a crash guard escalation level.
+	 *
+	 * Levels escalate 10 minutes, 1 hour, 6 hours, 24 hours and cap there; there is no permanent pause.
 	 *
 	 * @since 3.6.4
 	 *
-	 * @param mixed $payload decoded disable flag payload.
-	 * @return bool
+	 * @param int $level escalation level.
+	 * @return int seconds.
 	 */
-	private function is_valid_disable_flag_payload( $payload ) {
-		return is_array( $payload )
-			&& isset( $payload['timestamp'], $payload['crash_count'] )
-			&& is_numeric( $payload['timestamp'] )
-			&& is_numeric( $payload['crash_count'] )
-			&& (int) $payload['crash_count'] > 0;
-	}
-
-	/**
-	 * Checks whether the disable window is currently active.
-	 *
-	 * Crash windows:
-	 * - 1 crash: 10 minutes
-	 * - 2 crashes: 1 hour
-	 * - 3+ crashes: permanent
-	 *
-	 * @since 3.6.4
-	 *
-	 * @param array $payload disable flag payload.
-	 * @return bool
-	 */
-	private function is_disable_window_active( array $payload ) {
-		$crash_count    = (int) $payload['crash_count'];
-		$crash_time     = (int) $payload['timestamp'];
-		$window_seconds = $this->get_disable_window_seconds( $crash_count );
-
-		// Permanent disable for 3+ crashes.
-		if ( null === $window_seconds ) {
-			return true;
-		}
-
-		return ( time() - $crash_time ) < $window_seconds;
-	}
-
-	/**
-	 * Returns disable window length by crash count.
-	 *
-	 * @since 3.6.4
-	 *
-	 * @param int $crash_count crash count value.
-	 * @return int|null Seconds for temporary disable, or null for permanent disable.
-	 */
-	private function get_disable_window_seconds( $crash_count ) {
-		if ( $crash_count <= 1 ) {
-			return 10 * MINUTE_IN_SECONDS;
-		}
-
-		if ( 2 === $crash_count ) {
-			return HOUR_IN_SECONDS;
-		}
-
-		return null;
+	private function get_disable_window_seconds( $level ) {
+		return CrashGuardState::get_window_seconds( $level );
 	}
 
 	/**
@@ -456,12 +316,15 @@ class WC_Facebook_Loader {
 			return;
 		}
 
-		$payload = $this->get_disable_flag_payload_for_notice();
-		if ( ! $this->is_valid_disable_flag_payload( $payload ) || ! $this->is_disable_window_active( $payload ) ) {
+		$state = CrashGuardState::read();
+		if ( ! CrashGuardState::is_disabled( $state ) ) {
+			if ( $this->has_unverified_crashes( $state ) ) {
+				$this->render_unverified_crashes_notice( $state );
+			}
 			return;
 		}
 
-		$signature = $this->get_disabled_notice_signature( $payload );
+		$signature = $this->get_disabled_notice_signature( $state );
 		if ( $this->is_disabled_notice_dismissed_for_current_user( $signature ) ) {
 			return;
 		}
@@ -471,14 +334,102 @@ class WC_Facebook_Loader {
 			'wc_facebook_clear_disable_flag'
 		);
 
-		$source         = $this->has_active_disable_flag_file_only() ? esc_html__( 'File', 'facebook-for-woocommerce' ) : esc_html__( 'Transient', 'facebook-for-woocommerce' );
-		$crash_count    = (int) $payload['crash_count'];
-		$disabled_since = date_i18n( get_option( 'date_format' ) . ' ' . get_option( 'time_format' ), (int) $payload['timestamp'] );
-		$window_seconds = $this->get_disable_window_seconds( $crash_count );
-		/* translators: %d: disable window duration in minutes. */
-		$window_label = null === $window_seconds ? esc_html__( 'Permanent (3+ crashes)', 'facebook-for-woocommerce' ) : sprintf( esc_html__( '%d minutes', 'facebook-for-woocommerce' ), (int) round( $window_seconds / MINUTE_IN_SECONDS ) );
+		$level           = (int) $state['level'];
+		$datetime_format = get_option( 'date_format' ) . ' ' . get_option( 'time_format' );
+		$paused_since    = wp_date( $datetime_format, (int) $state['disabled_at'] );
+		$resumes_at      = wp_date( $datetime_format, (int) $state['disabled_until'] );
+		$pause_length    = human_time_diff( 0, $this->get_disable_window_seconds( $level ) );
 
-		echo '<tr class="plugin-update-tr active wc-facebook-disabled-notice-row"><td colspan="4" class="plugin-update colspanchange"><div class="notice inline notice-warning notice-alt wc-facebook-disabled-notice is-dismissible" data-wc-facebook-disabled-notice="1"><p><strong>' . esc_html__( 'Meta for WooCommerce is currently disabled due to repeated crashes.', 'facebook-for-woocommerce' ) . '</strong></p><p>' . esc_html__( 'You can re-enable the plugin after reviewing recent crash conditions.', 'facebook-for-woocommerce' ) . '</p><p><strong>' . esc_html__( 'Crash count:', 'facebook-for-woocommerce' ) . '</strong> ' . esc_html( (string) $crash_count ) . ' &nbsp; <strong>' . esc_html__( 'Disabled since:', 'facebook-for-woocommerce' ) . '</strong> ' . esc_html( $disabled_since ) . ' &nbsp; <strong>' . esc_html__( 'Disable window:', 'facebook-for-woocommerce' ) . '</strong> ' . esc_html( $window_label ) . ' &nbsp; <strong>' . esc_html__( 'Source:', 'facebook-for-woocommerce' ) . '</strong> ' . esc_html( $source ) . '</p><p><a class="button button-primary" href="' . esc_url( $clear_url ) . '">' . esc_html__( 'Re-enable plugin', 'facebook-for-woocommerce' ) . '</a></p><button type="button" class="notice-dismiss"><span class="screen-reader-text">' . esc_html__( 'Dismiss this notice.', 'facebook-for-woocommerce' ) . '</span></button><input type="hidden" class="wc-facebook-disabled-notice-signature" value="' . esc_attr( $signature ) . '" /></div></td></tr>';
+		$last_crash       = get_transient( PluginCrashHandler::LAST_CRASH_TRANSIENT );
+		$last_crash_label = '';
+		if ( is_array( $last_crash ) && ! empty( $last_crash['message'] ) ) {
+			$last_crash_label = (string) $last_crash['message'];
+			if ( ! empty( $last_crash['file'] ) ) {
+				$last_crash_label .= ' (' . (string) $last_crash['file'] . ':' . (int) ( $last_crash['line'] ?? 0 ) . ')';
+			}
+		}
+
+		echo '<tr class="plugin-update-tr active wc-facebook-disabled-notice-row"><td colspan="4" class="plugin-update colspanchange"><div class="notice inline notice-warning notice-alt wc-facebook-disabled-notice is-dismissible" data-wc-facebook-disabled-notice="1">';
+		echo '<p><strong>' . esc_html__( 'Meta for WooCommerce is paused after repeated crashes.', 'facebook-for-woocommerce' ) . '</strong></p>';
+		echo '<p>' . sprintf(
+			/* translators: %s: date and time when the plugin resumes automatically. */
+			esc_html__( 'It resumes automatically at %s. If it keeps crashing after resuming, the pause grows: 10 minutes, 1 hour, 6 hours, then 24 hours.', 'facebook-for-woocommerce' ),
+			'<strong>' . esc_html( $resumes_at ) . '</strong>'
+		) . '</p>';
+		echo '<p><strong>' . esc_html__( 'Pause level:', 'facebook-for-woocommerce' ) . '</strong> ' . esc_html( $level . ' / ' . CrashGuardState::MAX_LEVEL ) . ' &nbsp; <strong>' . esc_html__( 'Pause length:', 'facebook-for-woocommerce' ) . '</strong> ' . esc_html( $pause_length ) . ' &nbsp; <strong>' . esc_html__( 'Paused since:', 'facebook-for-woocommerce' ) . '</strong> ' . esc_html( $paused_since ) . '</p>';
+		if ( '' !== $last_crash_label ) {
+			echo '<p><strong>' . esc_html__( 'Last crash:', 'facebook-for-woocommerce' ) . '</strong> <code>' . esc_html( $last_crash_label ) . '</code></p>';
+		}
+		echo '<p><a class="button button-primary" href="' . esc_url( $clear_url ) . '">' . esc_html__( 'Resume now', 'facebook-for-woocommerce' ) . '</a></p>';
+		echo '<button type="button" class="notice-dismiss"><span class="screen-reader-text">' . esc_html__( 'Dismiss this notice.', 'facebook-for-woocommerce' ) . '</span></button><input type="hidden" class="wc-facebook-disabled-notice-signature" value="' . esc_attr( $signature ) . '" /></div></td></tr>';
+	}
+
+	/**
+	 * Whether crashes reached the pause threshold without the self-check being able to confirm them.
+	 *
+	 * Such crashes do not pause the plugin (an outsider must not be able to switch the
+	 * integration off), so the admin is told instead.
+	 *
+	 * @since 3.7.9
+	 *
+	 * @param array|null $state crash guard state, read when null.
+	 * @return bool
+	 */
+	private function has_unverified_crashes( $state = null ) {
+		if ( null === $state ) {
+			$state = CrashGuardState::read();
+		}
+
+		return ! CrashGuardState::is_disabled( $state ) && (int) $state['unverified']['count'] > 0;
+	}
+
+	/**
+	 * Renders the plugins-page notice for crashes that could not be verified.
+	 *
+	 * @since 3.7.9
+	 *
+	 * @param array $state crash guard state.
+	 */
+	private function render_unverified_crashes_notice( array $state ) {
+		$signature = md5( 'unverified|' . (int) $state['unverified']['last_at'] . '|' . (int) $state['unverified']['count'] );
+		if ( $this->is_disabled_notice_dismissed_for_current_user( $signature ) ) {
+			return;
+		}
+
+		$clear_url = wp_nonce_url(
+			admin_url( 'admin-post.php?action=wc_facebook_clear_disable_flag' ),
+			'wc_facebook_clear_disable_flag'
+		);
+
+		$count   = (int) $state['unverified']['count'];
+		$last_at = wp_date( get_option( 'date_format' ) . ' ' . get_option( 'time_format' ), (int) $state['unverified']['last_at'] );
+		$reason  = (string) $state['unverified']['reason'];
+
+		$last_crash       = get_transient( PluginCrashHandler::LAST_CRASH_TRANSIENT );
+		$last_crash_label = '';
+		if ( is_array( $last_crash ) && ! empty( $last_crash['message'] ) ) {
+			$last_crash_label = (string) $last_crash['message'];
+			if ( ! empty( $last_crash['file'] ) ) {
+				$last_crash_label .= ' (' . (string) $last_crash['file'] . ':' . (int) ( $last_crash['line'] ?? 0 ) . ')';
+			}
+		}
+
+		echo '<tr class="plugin-update-tr active wc-facebook-disabled-notice-row"><td colspan="4" class="plugin-update colspanchange"><div class="notice inline notice-warning notice-alt wc-facebook-disabled-notice is-dismissible" data-wc-facebook-disabled-notice="1">';
+		echo '<p><strong>' . esc_html__( 'Meta for WooCommerce has crashed repeatedly but was not paused.', 'facebook-for-woocommerce' ) . '</strong></p>';
+		echo '<p>' . sprintf(
+			/* translators: 1: number of unverified crashes, 2: date and time of the latest one. */
+			esc_html( _n( 'Visitor requests crashed the plugin %1$d time (last at %2$s), but the plugin could not confirm that a plain request crashes too, so it stays on rather than let outside requests switch it off. Check the error log for the crash.', 'Visitor requests crashed the plugin %1$d times (last at %2$s), but the plugin could not confirm that a plain request crashes too, so it stays on rather than let outside requests switch it off. Check the error log for the crash.', $count, 'facebook-for-woocommerce' ) ),
+			(int) $count,
+			'<strong>' . esc_html( $last_at ) . '</strong>'
+		) . '</p>';
+		if ( '' !== $reason ) {
+			echo '<p><strong>' . esc_html__( 'Self-check:', 'facebook-for-woocommerce' ) . '</strong> ' . esc_html( $reason ) . '</p>';
+		}
+		if ( '' !== $last_crash_label ) {
+			echo '<p><strong>' . esc_html__( 'Last crash:', 'facebook-for-woocommerce' ) . '</strong> <code>' . esc_html( $last_crash_label ) . '</code></p>';
+		}
+		echo '<p><a class="button" href="' . esc_url( $clear_url ) . '">' . esc_html__( 'Clear crash records', 'facebook-for-woocommerce' ) . '</a></p>';
+		echo '<button type="button" class="notice-dismiss"><span class="screen-reader-text">' . esc_html__( 'Dismiss this notice.', 'facebook-for-woocommerce' ) . '</span></button><input type="hidden" class="wc-facebook-disabled-notice-signature" value="' . esc_attr( $signature ) . '" /></div></td></tr>';
 	}
 
 	/**
@@ -511,55 +462,25 @@ class WC_Facebook_Loader {
 	 * @return bool
 	 */
 	private function clear_disable_flag_state() {
-		$flag_file    = trailingslashit( WP_CONTENT_DIR ) . self::DISABLE_FLAG_FILE_RELATIVE_PATH;
-		$file_cleared = true;
+		$cleared = CrashGuardState::clear();
+		delete_transient( PluginCrashHandler::LAST_CRASH_TRANSIENT );
 
-		if ( file_exists( $flag_file ) ) {
-			$file_cleared = @unlink( $flag_file ); // phpcs:ignore WordPress.WP.AlternativeFunctions.unlink_unlink
-		}
-
-		$has_transient     = false !== get_transient( self::DISABLE_FLAG_TRANSIENT );
-		$transient_cleared = ! $has_transient || delete_transient( self::DISABLE_FLAG_TRANSIENT );
-
-		return (bool) $file_cleared && (bool) $transient_cleared;
+		return $cleared;
 	}
 
 	/**
-	 * Gets disable flag payload for notice rendering.
+	 * Builds a stable notice signature from the crash guard state, so dismissing the notice
+	 * for one pause does not hide the notice for the next one.
 	 *
 	 * @since 3.6.4
 	 *
-	 * @return array|null
-	 */
-	private function get_disable_flag_payload_for_notice() {
-		$flag_file = trailingslashit( WP_CONTENT_DIR ) . self::DISABLE_FLAG_FILE_RELATIVE_PATH;
-
-		if ( is_readable( $flag_file ) ) {
-			$raw_payload = @file_get_contents( $flag_file ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_get_contents_file_get_contents
-			if ( is_string( $raw_payload ) && '' !== $raw_payload ) {
-				$decoded = json_decode( $raw_payload, true );
-				if ( is_array( $decoded ) ) {
-					return $decoded;
-				}
-			}
-		}
-
-		$transient_payload = get_transient( self::DISABLE_FLAG_TRANSIENT );
-		return is_array( $transient_payload ) ? $transient_payload : null;
-	}
-
-	/**
-	 * Builds a stable notice signature from disable payload.
-	 *
-	 * @since 3.6.4
-	 *
-	 * @param array $payload disable payload.
+	 * @param array $state crash guard state.
 	 * @return string
 	 */
-	private function get_disabled_notice_signature( array $payload ) {
-		$timestamp   = isset( $payload['timestamp'] ) ? (int) $payload['timestamp'] : 0;
-		$crash_count = isset( $payload['crash_count'] ) ? (int) $payload['crash_count'] : 0;
-		return md5( $timestamp . '|' . $crash_count );
+	private function get_disabled_notice_signature( array $state ) {
+		$disabled_at = isset( $state['disabled_at'] ) ? (int) $state['disabled_at'] : 0;
+		$level       = isset( $state['level'] ) ? (int) $state['level'] : 0;
+		return md5( $disabled_at . '|' . $level );
 	}
 
 	/**
@@ -603,7 +524,7 @@ class WC_Facebook_Loader {
 	 */
 	public function print_disabled_notice_dismiss_script() {
 		global $pagenow;
-		if ( 'plugins.php' !== $pagenow || ! current_user_can( 'manage_woocommerce' ) || ! $this->has_valid_disable_flag() ) {
+		if ( 'plugins.php' !== $pagenow || ! current_user_can( 'manage_woocommerce' ) || ( ! $this->has_valid_disable_flag() && ! $this->has_unverified_crashes() ) ) {
 			return;
 		}
 
@@ -698,13 +619,8 @@ tr[data-plugin="facebook-for-woocommerce/facebook-for-woocommerce.php"] td{borde
 	 * @since 3.6.4
 	 */
 	public static function uninstall_cleanup() {
-		$flag_file = trailingslashit( WP_CONTENT_DIR ) . self::DISABLE_FLAG_FILE_RELATIVE_PATH;
-
-		if ( file_exists( $flag_file ) ) {
-			@unlink( $flag_file ); // phpcs:ignore WordPress.WP.AlternativeFunctions.unlink_unlink,WordPress.PHP.NoSilencedErrors.Discouraged
-		}
-
-		delete_transient( self::DISABLE_FLAG_TRANSIENT );
+		CrashGuardState::clear();
+		delete_transient( PluginCrashHandler::LAST_CRASH_TRANSIENT );
 	}
 
 
@@ -723,7 +639,6 @@ tr[data-plugin="facebook-for-woocommerce/facebook-for-woocommerce.php"] td{borde
 
 		if ( self::PLUGIN_VERSION !== $stored_version ) {
 			$this->clear_disable_flag_state();
-			$this->is_file_disabled_mode = false;
 		}
 
 		// Flush if activation flag is set OR if plugin version has changed (plugin upgrade).

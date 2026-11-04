@@ -107,6 +107,72 @@ class PluginCrashHandler {
 	private static $is_registered = false;
 
 	/**
+	 * Transient holding a sanitized summary of the last plugin crash, shown in the admin notice.
+	 *
+	 * @since 3.7.9
+	 */
+	const LAST_CRASH_TRANSIENT = 'wc_facebook_crash_guard_last_crash';
+
+	/**
+	 * Query argument that marks the crash guard's own self-check request.
+	 *
+	 * @since 3.7.9
+	 */
+	const SELF_CHECK_QUERY_ARG = 'wc_facebook_crash_probe';
+
+	/**
+	 * Transient prefix for a self-check token the guard is waiting on.
+	 *
+	 * @since 3.7.9
+	 */
+	const SELF_CHECK_PENDING_PREFIX = 'wc_facebook_crash_probe_pending_';
+
+	/**
+	 * Transient prefix for the outcome a self-check request recorded.
+	 *
+	 * @since 3.7.9
+	 */
+	const SELF_CHECK_OUTCOME_PREFIX = 'wc_facebook_crash_probe_result_';
+
+	/**
+	 * Seconds the self-check request may take.
+	 *
+	 * @since 3.7.9
+	 */
+	const SELF_CHECK_TIMEOUT = 8;
+
+	const SELF_CHECK_CLEAN        = 'clean';
+	const SELF_CHECK_CRASHED      = 'crashed';
+	const SELF_CHECK_INCONCLUSIVE = 'inconclusive';
+	const SELF_CHECK_SKIPPED      = 'skipped';
+
+	/**
+	 * What the self-check verification allows for a crash: pause the plugin, reset the streak
+	 * because a plain request runs cleanly, or neither, leaving the crash unverified.
+	 *
+	 * @since 3.7.9
+	 */
+	const VERIFICATION_PAUSE      = 'pause';
+	const VERIFICATION_RESET      = 'reset';
+	const VERIFICATION_UNVERIFIED = 'unverified';
+
+	/**
+	 * Token carried by this request when it is the crash guard's own self-check; empty otherwise.
+	 *
+	 * @var string
+	 */
+	private static $self_check_token = '';
+
+	/**
+	 * Whether the plugin completed its bootstrap in this request (as opposed to disabled mode).
+	 *
+	 * Only such requests count as healthy evidence for the crash guard streak.
+	 *
+	 * @var bool
+	 */
+	private static $plugin_initialized = false;
+
+	/**
 	 * Registers crash handling hooks.
 	 *
 	 * @since 3.6.4
@@ -115,6 +181,8 @@ class PluginCrashHandler {
 		if ( self::$is_registered ) {
 			return;
 		}
+
+		self::detect_self_check_request();
 
 		$this->previous_exception_handler = set_exception_handler( [ $this, 'handle_uncaught_exception' ] );
 		register_shutdown_function( [ $this, 'handle_shutdown' ] );
@@ -127,13 +195,99 @@ class PluginCrashHandler {
 	 * @since 3.6.4
 	 *
 	 * @param Throwable $throwable uncaught throwable.
+	 * @throws Throwable The same throwable, when no previous handler exists, so PHP reports it as uncaught.
 	 */
 	public function handle_uncaught_exception( Throwable $throwable ) {
 		$this->captured_throwable_error = $this->normalize_throwable_to_error( $throwable );
 
 		if ( is_callable( $this->previous_exception_handler ) ) {
 			call_user_func( $this->previous_exception_handler, $throwable );
+			return;
 		}
+
+		// Rethrowing from the exception handler lets PHP finish the request the standard way:
+		// it logs the uncaught exception and populates error_get_last(), so WordPress's own
+		// fatal error handler renders its critical-error page with a 500 status. Returning
+		// silently here produced a blank HTTP 200 response and no log line at all.
+		throw $throwable;
+	}
+
+	/**
+	 * Recognizes the crash guard's own self-check request.
+	 *
+	 * A request qualifies only when it carries a token that a crashing request registered moments
+	 * ago, so a visitor cannot mark their own requests as self-checks. Runs at plugin load so the
+	 * events tracker can see it before any hook fires.
+	 *
+	 * @since 3.7.9
+	 *
+	 * @return bool whether this request is a self-check.
+	 */
+	public static function detect_self_check_request() {
+		self::$self_check_token = '';
+
+		// phpcs:ignore WordPress.Security.NonceVerification.Recommended -- The token itself is the credential.
+		if ( ! isset( $_GET[ self::SELF_CHECK_QUERY_ARG ] ) || ! function_exists( 'get_transient' ) ) {
+			return false;
+		}
+
+		// phpcs:ignore WordPress.Security.NonceVerification.Recommended
+		$token = preg_replace( '/[^a-f0-9]/', '', sanitize_key( wp_unslash( $_GET[ self::SELF_CHECK_QUERY_ARG ] ) ) );
+		if ( '' === $token || strlen( $token ) > 64 ) {
+			return false;
+		}
+
+		try {
+			$pending = get_transient( self::SELF_CHECK_PENDING_PREFIX . $token );
+		} catch ( Throwable $e ) {
+			unset( $e );
+			return false;
+		}
+
+		if ( false === $pending ) {
+			return false;
+		}
+
+		self::$self_check_token = $token;
+
+		return true;
+	}
+
+	/**
+	 * Whether this request is the crash guard's own self-check.
+	 *
+	 * The events tracker uses this to send nothing to Meta for it: a self-check is not a visitor.
+	 *
+	 * @since 3.7.9
+	 *
+	 * @return bool
+	 */
+	public static function is_self_check_request() {
+		return '' !== self::$self_check_token;
+	}
+
+	/**
+	 * Marks the plugin as fully bootstrapped for this request.
+	 *
+	 * Called by the loader once the main plugin class has been constructed. Requests that
+	 * never reach this point (disabled mode, incompatible environment) are not healthy
+	 * evidence for the crash guard, so they must not reset its streaks.
+	 *
+	 * @since 3.7.9
+	 */
+	public static function mark_plugin_initialized() {
+		self::$plugin_initialized = true;
+	}
+
+	/**
+	 * Whether mark_plugin_initialized() was called in this request.
+	 *
+	 * @since 3.7.9
+	 *
+	 * @return bool
+	 */
+	public static function is_plugin_initialized() {
+		return self::$plugin_initialized;
 	}
 
 	/**
@@ -142,21 +296,47 @@ class PluginCrashHandler {
 	 * @since 3.6.4
 	 */
 	public function handle_shutdown() {
-		$error = $this->normalize_captured_error( error_get_last(), 'fatal_error' );
+		$error    = $this->normalize_captured_error( error_get_last(), 'fatal_error' );
+		$captured = $this->normalize_captured_error( $this->captured_throwable_error, 'uncaught_exception' );
 
-		if ( ! $this->is_supported_fatal_error( $error ) ) {
-			$error = $this->normalize_captured_error( $this->captured_throwable_error, 'uncaught_exception' );
+		// Prefer the throwable captured by handle_uncaught_exception(): once it is rethrown, PHP
+		// also reports it through error_get_last() with a message that embeds the stack trace
+		// and no exception class, which would change crash fingerprints and reports.
+		if ( ! $this->is_supported_fatal_error( $error ) || $this->is_rethrown_captured_throwable( $error, $captured ) ) {
+			$error = $captured;
 		}
 
 		if ( ! $this->is_supported_fatal_error( $error ) ) {
+			if ( self::is_self_check_request() ) {
+				// A clean finish proves nothing unless the plugin actually bootstrapped: auth
+				// middleware or an early exit can end the request before plugins_loaded, exactly
+				// as the healthy-request path below refuses such requests as evidence.
+				$this->record_self_check_outcome( self::$plugin_initialized ? self::SELF_CHECK_CLEAN : self::SELF_CHECK_INCONCLUSIVE );
+				return;
+			}
+
+			$this->record_healthy_request();
 			return;
 		}
 
 		if ( ! $this->is_plugin_error( $error ) ) {
+			if ( self::is_self_check_request() ) {
+				// Something else broke the self-check, so it says nothing about the plugin.
+				$this->record_self_check_outcome( self::SELF_CHECK_INCONCLUSIVE );
+			}
 			return;
 		}
 
-		$this->write_disable_flag();
+		if ( self::is_self_check_request() ) {
+			// The plugin crashed on a plain request. The request that asked for this check decides
+			// what follows; it already reported the crash, so this one is not counted again. Whether
+			// WordPress resolved the probed URL to a page travels with the verdict: a crash on a URL
+			// nobody links to is not the same as a crash on a page visitors see.
+			$this->record_self_check_outcome( self::SELF_CHECK_CRASHED, $this->did_request_resolve_to_a_page() );
+			return;
+		}
+
+		$this->record_plugin_crash( $error );
 
 		try {
 			$normalized_report = $this->normalize_crash_report_payload( $error );
@@ -915,6 +1095,43 @@ class PluginCrashHandler {
 	}
 
 	/**
+	 * Whether a fatal error reported by PHP is the uncaught throwable this handler already captured.
+	 *
+	 * @since 3.7.9
+	 *
+	 * @param array|null $error    normalized error_get_last() payload.
+	 * @param array|null $captured normalized captured throwable payload.
+	 * @return bool
+	 */
+	private function is_rethrown_captured_throwable( $error, $captured ) {
+		if ( ! is_array( $error ) || ! is_array( $captured ) ) {
+			return false;
+		}
+
+		return 0 === strpos( $error['message'], 'Uncaught ' )
+			&& $error['file'] === $captured['file']
+			&& $error['line'] === $captured['line'];
+	}
+
+	/**
+	 * Reduces an error message to its first line, capped in length, for log lines and notices.
+	 *
+	 * @since 3.7.9
+	 *
+	 * @param string $message sanitized message.
+	 * @return string
+	 */
+	private function summarize_message( $message ) {
+		$first_line = trim( (string) strtok( (string) $message, "\r\n" ) );
+
+		if ( function_exists( 'mb_substr' ) ) {
+			return mb_substr( $first_line, 0, 300 );
+		}
+
+		return substr( $first_line, 0, 300 );
+	}
+
+	/**
 	 * Checks whether a fatal error originated from this plugin path.
 	 *
 	 * @since 3.6.4
@@ -938,29 +1155,582 @@ class PluginCrashHandler {
 	}
 
 	/**
-	 * Writes disable flag state.
+	 * Tells the crash guard that this request ran the plugin and finished without a plugin fatal.
 	 *
-	 * Primary storage is a file-based flag in uploads; if file write fails,
-	 * falls back to a transient. If both writes fail, logs to error_log.
-	 *
-	 * Known limitation: during memory-exhaustion shutdowns this method may not run
-	 * (or may fail early) due to insufficient memory in the dying process.
-	 *
-	 * @since 3.6.4
+	 * @since 3.7.9
 	 */
-	private function write_disable_flag() {
-		$existing_payload = $this->get_existing_disable_flag_payload();
-		$payload          = $this->build_next_disable_flag_payload( $existing_payload );
-
-		if ( $this->write_disable_flag_file( $payload ) ) {
+	private function record_healthy_request() {
+		if ( ! self::$plugin_initialized ) {
 			return;
 		}
 
-		if ( $this->write_disable_flag_transient( $payload ) ) {
-			return;
+		try {
+			CrashGuardState::record_healthy_request( null, $this->get_current_time() );
+		} catch ( Throwable $e ) {
+			unset( $e );
+		}
+	}
+
+	/**
+	 * Records a plugin crash with the crash guard, remembers a sanitized summary for the admin
+	 * notice and writes one log line with the decision taken.
+	 *
+	 * @since 3.7.9
+	 *
+	 * @param array $error normalized error payload.
+	 * @return array|null crash guard result, or null when the state could not be updated.
+	 */
+	private function record_plugin_crash( array $error ) {
+		$result        = null;
+		$verification  = null;
+		$request_class = CrashGuardState::get_request_class();
+		$now           = $this->get_current_time();
+		$is_trusted    = CrashGuardState::REQUEST_CLASS_TRUSTED === $request_class;
+
+		// Only a request that carries nothing a client could have shaped (WP-CLI, a bare cron run)
+		// pauses on its streak alone. Every other request asks the self-check first, a manager's
+		// browser included: a link can hand it a crashing query string, and a hostile page can
+		// drive three such navigations from one click, since the login cookie travels on every
+		// top-level GET. A manager's request still pauses on its streak when the self-check yields
+		// no verdict at all, so a plugin broken everywhere is caught through wp-admin even where
+		// the loopback is blocked; an untrusted request never does. The default is therefore
+		// "cannot pause": the preview below is unlocked, and if another request pushes the streak
+		// to the threshold between the preview and the locked write, this crash is counted as
+		// unverified rather than pausing without a verdict of its own.
+		$streak_alone = $is_trusted && CrashGuardState::is_input_free_request();
+		$may_pause    = $streak_alone;
+		$reason       = 'no self-check verdict for this request (the streak reached the threshold concurrently)';
+
+		try {
+			if ( ! $streak_alone && CrashGuardState::would_pause( $request_class, $now ) ) {
+				$verification = $this->verify_crash_with_self_check();
+
+				if ( self::VERIFICATION_RESET === $verification['decision'] ) {
+					// A plain request ran the plugin cleanly, so this crash depends on something the
+					// client sent. The self-check is the healthy request the store did not have.
+					CrashGuardState::record_healthy_request( $request_class, $now );
+				} elseif ( self::VERIFICATION_PAUSE === $verification['decision'] || ( $is_trusted && $verification['no_verdict'] ) ) {
+					$may_pause = true;
+				} else {
+					$reason = $verification['reason'];
+				}
+			}
+
+			$result = CrashGuardState::record_crash( $request_class, $now, $may_pause, $may_pause ? '' : $reason );
+		} catch ( Throwable $e ) {
+			unset( $e );
 		}
 
-		error_log( 'Meta for WooCommerce crash capture: failed to write disable flag file and transient fallback.' ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
+		$this->remember_last_crash( $error );
+		$this->log_crash_decision( $error, $result, $verification, $is_trusted );
+
+		return $result;
+	}
+
+	/**
+	 * Runs the self-check and turns its verdict into a decision about this crash.
+	 *
+	 * A clean plain request means the crash depends on client input: the streak resets. A crash
+	 * on the home page, or on a path WordPress resolved to a real page, means visitors hit it
+	 * too: the plugin may pause. A crash on a path WordPress did not resolve (a 404, or a crash
+	 * before the main query ran) is different: that path is the requester's own input, and a
+	 * crafted URL nobody links to must not pause the plugin by itself, so the home page is probed
+	 * as well and decides. Anything without a verdict leaves the crash unverified.
+	 *
+	 * @since 3.7.9
+	 *
+	 * @return array {
+	 *     @type string $decision   one of the VERIFICATION_* constants.
+	 *     @type string $reason     why the crash stays unverified, for the admin notice.
+	 *     @type bool   $no_verdict whether the self-check produced no verdict at all.
+	 *     @type array  $checks     run_self_check() results, in the order they ran.
+	 * }
+	 */
+	private function verify_crash_with_self_check() {
+		$first  = $this->run_self_check( $this->get_self_check_target() );
+		$checks = [ $first ];
+
+		if ( self::SELF_CHECK_CLEAN === $first['outcome'] ) {
+			return $this->verification( self::VERIFICATION_RESET, '', false, $checks );
+		}
+
+		if ( self::SELF_CHECK_CRASHED !== $first['outcome'] ) {
+			return $this->verification( self::VERIFICATION_UNVERIFIED, $first['outcome'] . ': ' . $first['detail'], true, $checks );
+		}
+
+		if ( '/' === $first['target'] || true === $first['resolved'] ) {
+			return $this->verification( self::VERIFICATION_PAUSE, '', false, $checks );
+		}
+
+		$second   = $this->run_self_check( '/' );
+		$checks[] = $second;
+
+		if ( self::SELF_CHECK_CRASHED === $second['outcome'] ) {
+			return $this->verification( self::VERIFICATION_PAUSE, '', false, $checks );
+		}
+
+		if ( self::SELF_CHECK_CLEAN === $second['outcome'] ) {
+			return $this->verification(
+				self::VERIFICATION_UNVERIFIED,
+				sprintf( 'crashed on %s, a path WordPress did not resolve to a page, while / ran cleanly', $first['target'] ),
+				false,
+				$checks
+			);
+		}
+
+		return $this->verification(
+			self::VERIFICATION_UNVERIFIED,
+			sprintf( 'crashed on %s, a path WordPress did not resolve to a page; / %s: %s', $first['target'], $second['outcome'], $second['detail'] ),
+			false,
+			$checks
+		);
+	}
+
+	/**
+	 * Builds a verify_crash_with_self_check() result.
+	 *
+	 * @since 3.7.9
+	 *
+	 * @param string $decision   one of the VERIFICATION_* constants.
+	 * @param string $reason     why the crash stays unverified.
+	 * @param bool   $no_verdict whether no verdict was produced at all.
+	 * @param array  $checks     self-check results.
+	 * @return array
+	 */
+	private function verification( $decision, $reason, $no_verdict, array $checks ) {
+		return [
+			'decision'   => $decision,
+			'reason'     => (string) $reason,
+			'no_verdict' => (bool) $no_verdict,
+			'checks'     => $checks,
+		];
+	}
+
+	/**
+	 * Runs the self-check: a plain loopback request that carries nothing from the client.
+	 *
+	 * Every crash that could carry client input is checked; only WP-CLI and bare cron pause on
+	 * their streak alone. The question the check answers is whether the plugin runs cleanly for a
+	 * visitor who sends nothing, so it applies to admin-ajax, REST and cron crashes as much as to
+	 * page views.
+	 *
+	 * The target is the path of the crashing request without its query string for a storefront
+	 * GET, and the home page for everything else (see get_self_check_target()). The request
+	 * carries a one-time token; the request it spawns recognizes the token, runs the plugin as
+	 * any visitor would, and records clean, crashed or inconclusive at its own shutdown, together
+	 * with whether WordPress resolved the URL to a page. The verdict comes from that record, never
+	 * from the HTTP status, so a page cache answering 200 counts as inconclusive.
+	 *
+	 * @since 3.7.9
+	 *
+	 * @param string $target path to request, relative to the home URL.
+	 * @return array {
+	 *     @type string    $outcome  one of the SELF_CHECK_* constants.
+	 *     @type string    $target   path that was requested.
+	 *     @type string    $detail   transport detail for the log line.
+	 *     @type bool|null $resolved whether WordPress resolved the URL to a page; null when unknown.
+	 * }
+	 */
+	private function run_self_check( $target ) {
+		if ( ! function_exists( 'wp_safe_remote_get' ) || ! function_exists( 'home_url' ) || ! function_exists( 'add_query_arg' ) ) {
+			return $this->self_check_result( self::SELF_CHECK_SKIPPED, $target, 'HTTP API unavailable' );
+		}
+
+		$token = $this->generate_self_check_token();
+
+		if ( ! $this->safe_set_transient( self::SELF_CHECK_PENDING_PREFIX . $token, 1, MINUTE_IN_SECONDS ) ) {
+			return $this->self_check_result( self::SELF_CHECK_SKIPPED, $target, 'could not register the token' );
+		}
+
+		$response = $this->perform_self_check_request( add_query_arg( self::SELF_CHECK_QUERY_ARG, $token, home_url( $target ) ) );
+		$verdict  = $this->read_self_check_outcome( $token );
+
+		$this->safe_delete_transient( self::SELF_CHECK_PENDING_PREFIX . $token );
+		$this->safe_delete_transient( self::SELF_CHECK_OUTCOME_PREFIX . $token );
+
+		$detail = is_wp_error( $response ) ? $response->get_error_message() : 'HTTP ' . (int) wp_remote_retrieve_response_code( $response );
+
+		if ( is_array( $verdict ) && in_array( $verdict['outcome'], [ self::SELF_CHECK_CLEAN, self::SELF_CHECK_CRASHED, self::SELF_CHECK_INCONCLUSIVE ], true ) ) {
+			return $this->self_check_result( $verdict['outcome'], $target, $detail, $verdict['resolved'] );
+		}
+
+		return $this->self_check_result( self::SELF_CHECK_INCONCLUSIVE, $target, 'no verdict recorded, ' . $detail );
+	}
+
+	/**
+	 * Performs the self-check HTTP request. Overridable so tests can stand in for the loopback.
+	 *
+	 * @since 3.7.9
+	 *
+	 * @param string $url self-check URL.
+	 * @return array|\WP_Error
+	 */
+	protected function perform_self_check_request( $url ) {
+		return wp_safe_remote_get(
+			$url,
+			[
+				'timeout'     => self::SELF_CHECK_TIMEOUT,
+				'redirection' => 2,
+				'cookies'     => [],
+				'sslverify'   => apply_filters( 'https_local_ssl_verify', false ),
+				'user-agent'  => 'Meta for WooCommerce crash guard self-check',
+				'headers'     => [
+					'Cache-Control' => 'no-cache',
+					'Pragma'        => 'no-cache',
+				],
+			]
+		);
+	}
+
+	/**
+	 * Reads the verdict the self-check request stored, retrying briefly for hosts that end the
+	 * HTTP response before shutdown functions run.
+	 *
+	 * @since 3.7.9
+	 *
+	 * @param string $token self-check token.
+	 * @return array|null {
+	 *     @type string    $outcome  one of the SELF_CHECK_* constants.
+	 *     @type bool|null $resolved whether WordPress resolved the URL to a page; null when unknown.
+	 * } Null when no verdict was recorded.
+	 */
+	private function read_self_check_outcome( $token ) {
+		$key = self::SELF_CHECK_OUTCOME_PREFIX . $token;
+
+		for ( $attempt = 0; $attempt < 3; $attempt++ ) {
+			if ( $attempt > 0 ) {
+				usleep( 150000 );
+			}
+
+			$verdict = $this->normalize_self_check_outcome( 0 === $attempt ? $this->safe_get_transient( $key ) : $this->reread_transient( $key ) );
+			if ( null !== $verdict ) {
+				return $verdict;
+			}
+		}
+
+		return null;
+	}
+
+	/**
+	 * Normalizes a stored self-check verdict: either the outcome alone, or the outcome with
+	 * whether WordPress resolved the probed URL to a page.
+	 *
+	 * @since 3.7.9
+	 *
+	 * @param mixed $value transient value.
+	 * @return array|null
+	 */
+	private function normalize_self_check_outcome( $value ) {
+		if ( is_string( $value ) && '' !== $value ) {
+			return [
+				'outcome'  => $value,
+				'resolved' => null,
+			];
+		}
+
+		if ( is_array( $value ) && isset( $value['outcome'] ) && is_string( $value['outcome'] ) && '' !== $value['outcome'] ) {
+			return [
+				'outcome'  => $value['outcome'],
+				'resolved' => isset( $value['resolved'] ) && is_bool( $value['resolved'] ) ? $value['resolved'] : null,
+			];
+		}
+
+		return null;
+	}
+
+	/**
+	 * Reads a transient again, getting past this request's memory of an earlier miss without
+	 * deleting anything another request may have stored in the meantime.
+	 *
+	 * With a persistent object cache the cache entry is the transient itself, so it is read with
+	 * a forced refresh and never deleted. Without one, transients live in the options table and
+	 * only this request's in-memory memo of the miss is forgotten before reading again.
+	 *
+	 * @since 3.7.9
+	 *
+	 * @param string $key transient key.
+	 * @return mixed transient value, or false.
+	 */
+	private function reread_transient( $key ) {
+		try {
+			if ( function_exists( 'wp_using_ext_object_cache' ) && wp_using_ext_object_cache() ) {
+				return wp_cache_get( $key, 'transient', true );
+			}
+
+			if ( function_exists( 'wp_cache_get' ) ) {
+				$option_keys = [ '_transient_' . $key, '_transient_timeout_' . $key ];
+				$notoptions  = wp_cache_get( 'notoptions', 'options' );
+
+				if ( is_array( $notoptions ) ) {
+					foreach ( $option_keys as $option_key ) {
+						unset( $notoptions[ $option_key ] );
+					}
+					wp_cache_set( 'notoptions', $notoptions, 'options' );
+				}
+
+				foreach ( $option_keys as $option_key ) {
+					wp_cache_delete( $option_key, 'options' );
+				}
+			}
+
+			return get_transient( $key );
+		} catch ( Throwable $e ) {
+			unset( $e );
+			return false;
+		}
+	}
+
+	/**
+	 * Records the verdict of this self-check request for the request that spawned it.
+	 *
+	 * @since 3.7.9
+	 *
+	 * @param string    $outcome  one of the SELF_CHECK_* constants.
+	 * @param bool|null $resolved whether WordPress resolved this request's URL to a page; null when unknown.
+	 */
+	private function record_self_check_outcome( $outcome, $resolved = null ) {
+		$this->safe_set_transient(
+			self::SELF_CHECK_OUTCOME_PREFIX . self::$self_check_token,
+			[
+				'outcome'  => $outcome,
+				'resolved' => is_bool( $resolved ) ? $resolved : null,
+			],
+			MINUTE_IN_SECONDS
+		);
+	}
+
+	/**
+	 * Whether WordPress resolved this request's URL to a page.
+	 *
+	 * True once the main query ran and found something, false for a 404, and null when the
+	 * request ended before the main query ran, so nothing is known about the URL.
+	 *
+	 * @since 3.7.9
+	 *
+	 * @return bool|null
+	 */
+	private function did_request_resolve_to_a_page() {
+		global $wp_query;
+
+		if ( ! function_exists( 'did_action' ) || ! did_action( 'wp' ) || ! ( $wp_query instanceof \WP_Query ) ) {
+			return null;
+		}
+
+		return ! $wp_query->is_404();
+	}
+
+	/**
+	 * Chooses what the self-check requests: for a storefront GET, the crashing request's path
+	 * stripped of everything the client sent; for anything else (admin-ajax, REST, wp-admin,
+	 * cron, POST), the home page.
+	 *
+	 * A cron request that reaches this point carried client input, since an input-free one is
+	 * trusted and never self-checked. Its own URL is no use as a target: wp-cron.php ends the
+	 * HTTP response before WordPress loads, so no verdict would arrive in time, and the probe
+	 * would run the due cron jobs. The home page answers the question that matters, whether the
+	 * plugin runs cleanly for a visitor who sends nothing.
+	 *
+	 * @since 3.7.9
+	 *
+	 * @return string path relative to the home URL, starting with a slash.
+	 */
+	private function get_self_check_target() {
+		$method = isset( $_SERVER['REQUEST_METHOD'] ) ? strtoupper( sanitize_key( wp_unslash( $_SERVER['REQUEST_METHOD'] ) ) ) : 'GET';
+
+		$is_storefront = ! ( function_exists( 'is_admin' ) && is_admin() ) && ! ( defined( 'REST_REQUEST' ) && REST_REQUEST ) && ! ( function_exists( 'wp_doing_ajax' ) && wp_doing_ajax() ) && ! CrashGuardState::is_doing_cron();
+
+		if ( ! $is_storefront || ! in_array( $method, [ 'GET', 'HEAD' ], true ) ) {
+			return '/';
+		}
+
+		// The path is kept as the visitor sent it, percent-encoding included, so a non-ASCII slug is
+		// probed as the real page rather than stripped to a 404 that then looks clean. Bytes a URL
+		// path may not carry are encoded, and a malformed percent sequence falls back to the home page.
+		// phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- Validated against an allow-list below.
+		$uri  = isset( $_SERVER['REQUEST_URI'] ) ? (string) wp_unslash( $_SERVER['REQUEST_URI'] ) : '/';
+		$path = (string) wp_parse_url( $uri, PHP_URL_PATH );
+
+		if ( '' === $path || '/' !== $path[0] || false !== strpos( $path, '..' ) || strlen( $path ) > 2000 ) {
+			return '/';
+		}
+
+		$path = preg_replace_callback(
+			'#[^A-Za-z0-9\-._~!$&\'()*+,;=:@/%]#',
+			static function ( array $matches ) {
+				return rawurlencode( $matches[0] );
+			},
+			$path
+		);
+
+		if ( ! is_string( $path ) || preg_match( '/%(?![0-9A-Fa-f]{2})/', $path ) ) {
+			return '/';
+		}
+
+		// home_url() prepends the site's own path, so strip it when the site lives in a subdirectory.
+		$home_path = rtrim( (string) wp_parse_url( home_url( '/' ), PHP_URL_PATH ), '/' );
+		if ( '' !== $home_path && 0 === strpos( $path, $home_path . '/' ) ) {
+			$path = substr( $path, strlen( $home_path ) );
+		}
+
+		return '' === $path ? '/' : $path;
+	}
+
+	/**
+	 * Generates an unguessable self-check token.
+	 *
+	 * @since 3.7.9
+	 *
+	 * @return string
+	 */
+	private function generate_self_check_token() {
+		try {
+			return bin2hex( random_bytes( 12 ) );
+		} catch ( Throwable $e ) {
+			unset( $e );
+			return md5( uniqid( 'wc_facebook_crash_probe', true ) );
+		}
+	}
+
+	/**
+	 * Builds a self-check result array.
+	 *
+	 * @since 3.7.9
+	 *
+	 * @param string    $outcome  one of the SELF_CHECK_* constants.
+	 * @param string    $target   requested path.
+	 * @param string    $detail   transport detail.
+	 * @param bool|null $resolved whether WordPress resolved the URL to a page; null when unknown.
+	 * @return array
+	 */
+	private function self_check_result( $outcome, $target, $detail, $resolved = null ) {
+		return [
+			'outcome'  => $outcome,
+			'target'   => (string) $target,
+			'detail'   => (string) $detail,
+			'resolved' => is_bool( $resolved ) ? $resolved : null,
+		];
+	}
+
+	/**
+	 * Describes the self-check verification for the log line.
+	 *
+	 * @since 3.7.9
+	 *
+	 * @param array|null $verification result of verify_crash_with_self_check(), or null when none ran.
+	 * @param bool       $is_trusted   whether the crashing request was trusted; such a request pauses on
+	 *                                 its streak when no verdict exists.
+	 * @return string
+	 */
+	private function describe_verification( $verification, $is_trusted ) {
+		if ( ! is_array( $verification ) ) {
+			return '';
+		}
+
+		$sentences = [];
+
+		foreach ( $verification['checks'] as $index => $check ) {
+			$label  = 0 === $index ? 'Self-check' : 'Second self-check';
+			$target = '' !== $check['target'] ? $check['target'] : '/';
+
+			switch ( $check['outcome'] ) {
+				case self::SELF_CHECK_CLEAN:
+					$sentences[] = 0 === $index
+						? sprintf( '%s: a plain request to %s ran cleanly, so this crash needs input the client sent; streak reset.', $label, $target )
+						: sprintf( '%s: a plain request to %s ran cleanly, so the crashing path is only its requester\'s input.', $label, $target );
+					break;
+				case self::SELF_CHECK_CRASHED:
+					if ( 0 === $index && '/' !== $target && true !== $check['resolved'] ) {
+						$sentences[] = sprintf(
+							'%s: a plain request to %s crashed too, but %s, so the home page decides.',
+							$label,
+							$target,
+							false === $check['resolved'] ? 'WordPress did not resolve that path to a page' : 'the crash came before WordPress resolved the path'
+						);
+					} else {
+						$sentences[] = sprintf( '%s: a plain request to %s crashed too.', $label, $target );
+					}
+					break;
+				case self::SELF_CHECK_SKIPPED:
+					$sentences[] = sprintf( '%s skipped (%s).', $label, $check['detail'] );
+					break;
+				default:
+					$sentences[] = sprintf( '%s of %s inconclusive (%s).', $label, $target, $check['detail'] );
+			}
+		}
+
+		if ( self::VERIFICATION_UNVERIFIED === $verification['decision'] ) {
+			$sentences[] = $is_trusted && $verification['no_verdict']
+				? 'A trusted request pauses on its streak when no verdict can be obtained.'
+				: 'Not pausing on an unverified crash.';
+		}
+
+		return ' ' . implode( ' ', $sentences );
+	}
+
+	/**
+	 * Stores a sanitized summary of the crash for the plugins-page notice.
+	 *
+	 * The summary lives in a transient rather than in the flag file because the uploads
+	 * directory may be served publicly, and error messages can carry paths or PII.
+	 *
+	 * @since 3.7.9
+	 *
+	 * @param array $error normalized error payload.
+	 */
+	private function remember_last_crash( array $error ) {
+		$this->safe_set_transient(
+			self::LAST_CRASH_TRANSIENT,
+			[
+				'message' => $this->summarize_message( $this->sanitize_message( isset( $error['message'] ) ? (string) $error['message'] : '' ) ),
+				'file'    => $this->sanitize_file_path( isset( $error['file'] ) ? (string) $error['file'] : '' ),
+				'line'    => isset( $error['line'] ) ? (int) $error['line'] : 0,
+				'class'   => isset( $error['exception_class'] ) ? (string) $error['exception_class'] : '',
+				'time'    => $this->get_current_time(),
+			],
+			WEEK_IN_SECONDS
+		);
+	}
+
+	/**
+	 * Writes one error_log line describing the crash and what the crash guard decided.
+	 *
+	 * The uncaught-exception path used to leave no trace in the PHP log at all, which made a
+	 * "disabled via crash flag" message impossible to diagnose from logs alone.
+	 *
+	 * @since 3.7.9
+	 *
+	 * @param array      $error        normalized error payload.
+	 * @param array|null $result       crash guard result.
+	 * @param array|null $verification self-check verification, when one ran.
+	 * @param bool       $is_trusted   whether the crashing request was trusted.
+	 */
+	private function log_crash_decision( array $error, $result, $verification = null, $is_trusted = false ) {
+		$class    = isset( $error['exception_class'] ) && '' !== $error['exception_class'] ? $error['exception_class'] : $this->get_php_error_type_label( isset( $error['type'] ) ? (int) $error['type'] : 0 );
+		$decision = is_array( $result ) ? CrashGuardState::describe_decision( $result ) : 'Crash guard state could not be updated.';
+
+		error_log( // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
+			sprintf(
+				'Meta for WooCommerce crash guard: %s "%s" in %s:%d during %s request.%s %s',
+				$class,
+				$this->summarize_message( $this->sanitize_message( isset( $error['message'] ) ? (string) $error['message'] : '' ) ),
+				$this->sanitize_file_path( isset( $error['file'] ) ? (string) $error['file'] : '' ),
+				isset( $error['line'] ) ? (int) $error['line'] : 0,
+				$this->get_request_context(),
+				$this->describe_verification( $verification, $is_trusted ),
+				$decision
+			)
+		);
+	}
+
+	/**
+	 * Returns the current Unix timestamp. Overridable so tests can drive the crash guard clock.
+	 *
+	 * @since 3.7.9
+	 *
+	 * @return int
+	 */
+	protected function get_current_time() {
+		return time();
 	}
 
 	/**
@@ -1014,142 +1784,6 @@ class PluginCrashHandler {
 			unset( $e );
 			return false;
 		}
-	}
-
-	/**
-	 * Gets the existing disable flag payload from file or transient fallback.
-	 *
-	 * @since 3.6.4
-	 *
-	 * @return array
-	 */
-	private function get_existing_disable_flag_payload() {
-		$flag_file = $this->get_disable_flag_file_path();
-
-		if ( is_readable( $flag_file ) ) {
-			$raw_payload = @file_get_contents( $flag_file ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_get_contents_file_get_contents
-			if ( false === $raw_payload ) {
-				error_log( 'Meta for WooCommerce crash capture: failed to read disable flag file.' ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
-			} elseif ( is_string( $raw_payload ) && '' !== $raw_payload ) {
-				$decoded = json_decode( $raw_payload, true );
-				if ( is_array( $decoded ) && isset( $decoded['crash_count'] ) ) {
-					return $this->is_disable_window_active( $decoded ) ? $decoded : [];
-				}
-			}
-		}
-
-		$transient_payload = $this->safe_get_transient( \WC_Facebook_Loader::DISABLE_FLAG_TRANSIENT );
-
-		if ( is_array( $transient_payload ) && isset( $transient_payload['crash_count'] ) ) {
-			return $this->is_disable_window_active( $transient_payload ) ? $transient_payload : [];
-		}
-
-		return [];
-	}
-
-	/**
-	 * Builds the next disable flag payload.
-	 *
-	 * @since 3.6.4
-	 *
-	 * @param array $existing_payload existing payload values.
-	 * @return array
-	 */
-	private function build_next_disable_flag_payload( array $existing_payload ) {
-		$crash_count = ( isset( $existing_payload['crash_count'] ) && $this->is_disable_window_active( $existing_payload ) ) ? (int) $existing_payload['crash_count'] : 0;
-
-		return [
-			'timestamp'   => time(),
-			'crash_count' => $crash_count + 1,
-		];
-	}
-
-	/**
-	 * Writes the disable flag file.
-	 *
-	 * @since 3.6.4
-	 *
-	 * @param array $payload disable flag payload.
-	 * @return bool
-	 */
-	private function write_disable_flag_file( array $payload ) {
-		$flag_file = $this->get_disable_flag_file_path();
-		$flag_dir  = dirname( $flag_file );
-
-		if ( ! is_dir( $flag_dir ) && ! wp_mkdir_p( $flag_dir ) ) {
-			return false;
-		}
-
-		$bytes_written = @file_put_contents( $flag_file, wp_json_encode( $payload ) ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents
-		if ( false === $bytes_written ) {
-			error_log( 'Meta for WooCommerce crash capture: failed to write disable flag file.' ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
-		}
-
-		return false !== $bytes_written;
-	}
-
-	/**
-	 * Writes the disable flag transient fallback.
-	 *
-	 * @since 3.6.4
-	 *
-	 * @param array $payload disable flag payload.
-	 * @return bool
-	 */
-	private function write_disable_flag_transient( array $payload ) {
-		return $this->safe_set_transient( \WC_Facebook_Loader::DISABLE_FLAG_TRANSIENT, $payload, MONTH_IN_SECONDS );
-	}
-
-	/**
-	 * Checks whether the disable window is still active for a payload.
-	 *
-	 * @since 3.6.4
-	 *
-	 * @param array $payload disable flag payload.
-	 * @return bool
-	 */
-	private function is_disable_window_active( array $payload ) {
-		if ( ! isset( $payload['timestamp'], $payload['crash_count'] ) ) {
-			return false;
-		}
-
-		$window_seconds = $this->get_disable_window_seconds( (int) $payload['crash_count'] );
-		if ( null === $window_seconds ) {
-			return true;
-		}
-
-		return ( time() - (int) $payload['timestamp'] ) < $window_seconds;
-	}
-
-	/**
-	 * Returns disable window length by crash count.
-	 *
-	 * @since 3.6.4
-	 *
-	 * @param int $crash_count crash count value.
-	 * @return int|null Seconds for temporary disable, or null for permanent disable.
-	 */
-	private function get_disable_window_seconds( $crash_count ) {
-		if ( $crash_count <= 1 ) {
-			return 10 * MINUTE_IN_SECONDS;
-		}
-
-		if ( 2 === $crash_count ) {
-			return HOUR_IN_SECONDS;
-		}
-
-		return null;
-	}
-
-	/**
-	 * Gets the disable flag file path.
-	 *
-	 * @since 3.6.4
-	 *
-	 * @return string
-	 */
-	private function get_disable_flag_file_path() {
-		return trailingslashit( WP_CONTENT_DIR ) . 'uploads/facebook-for-woocommerce/.disabled';
 	}
 
 	/**
@@ -1239,7 +1873,11 @@ class PluginCrashHandler {
 	 * @return string
 	 */
 	private function get_request_context() {
-		if ( defined( 'DOING_CRON' ) && DOING_CRON ) {
+		if ( defined( 'WP_CLI' ) && WP_CLI ) {
+			return 'cli';
+		}
+
+		if ( CrashGuardState::is_doing_cron() ) {
 			return 'cron';
 		}
 

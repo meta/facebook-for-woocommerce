@@ -397,6 +397,60 @@ class FeedConfigurationDetectionTest extends AbstractWPUnitTestWithOptionIsolati
 	}
 
 	/**
+	 * Test get_data_source_feed_tracker_info when the upload metadata omits its count and url fields,
+	 * as the Graph API does while an upload is still processing.
+	 */
+	public function test_get_data_source_feed_tracker_info_with_upload_metadata_missing_fields() {
+		$detection = new FeedConfigurationDetection();
+
+		$mock_integration = $this->createMock( \WC_Facebookcommerce_Integration::class );
+		$mock_integration->method( 'get_feed_id' )->willReturn( 'feed_123' );
+		$mock_integration->method( 'get_product_catalog_id' )->willReturn( 'catalog_456' );
+
+		$mock_feeds_response = $this->createMock( \WooCommerce\Facebook\API\ProductCatalog\ProductFeeds\ReadAll\Response::class );
+		$mock_feeds_response->method( '__get' )->with( 'data' )->willReturn( [
+			[ 'id' => 'feed_123', 'name' => 'Test Feed' ]
+		] );
+
+		$feed_response = new \WooCommerce\Facebook\API\Response( wp_json_encode( [
+			'id'            => 'feed_123',
+			'latest_upload' => [
+				'id'         => 'upload_789',
+				'start_time' => '2023-01-02T00:00:00+0000',
+			],
+		] ) );
+
+		// A real response, so a missing key goes through the same offsetGet() that raised the warning.
+		$upload_response = new \WooCommerce\Facebook\API\Response( wp_json_encode( [ 'id' => 'upload_789' ] ) );
+
+		$mock_api = $this->createMock( \WooCommerce\Facebook\API::class );
+		$mock_api->method( 'read_feeds' )->willReturn( $mock_feeds_response );
+		$mock_api->method( 'read_feed' )->willReturn( $feed_response );
+		$mock_api->method( 'read_upload' )->willReturn( $upload_response );
+
+		$mock_plugin = $this->createMock( \WC_Facebookcommerce::class );
+		$mock_plugin->method( 'get_integration' )->willReturn( $mock_integration );
+		$mock_plugin->method( 'get_api' )->willReturn( $mock_api );
+
+		$this->add_filter_with_safe_teardown( 'wc_facebook_instance', function() use ( $mock_plugin ) {
+			return $mock_plugin;
+		} );
+
+		$reflection = new \ReflectionClass( $detection );
+		$method = $reflection->getMethod( 'get_data_source_feed_tracker_info' );
+		$method->setAccessible( true );
+
+		$result = $method->invoke( $detection );
+
+		$upload = $result['active-feed']['latest-upload'];
+		$this->assertSame( 0, $upload['error-count'] );
+		$this->assertSame( 0, $upload['warning-count'] );
+		$this->assertSame( 0, $upload['num-detected-items'] );
+		$this->assertSame( 0, $upload['num-persisted-items'] );
+		$this->assertSame( 'no', $upload['url-matches-site-endpoint'] );
+	}
+
+	/**
 	 * Test get_data_source_feed_tracker_info with multiple feeds.
 	 */
 	public function test_get_data_source_feed_tracker_info_with_multiple_feeds() {

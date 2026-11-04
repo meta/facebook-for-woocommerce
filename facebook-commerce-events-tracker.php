@@ -2537,6 +2537,11 @@ if ( ! class_exists( 'WC_Facebookcommerce_EventsTracker' ) ) :
 				return false;
 			}
 
+			// The crash guard's self-check is a loopback request, not a visitor: send nothing to Meta for it.
+			if ( \WooCommerce\Facebook\Framework\PluginCrashHandler::is_self_check_request() ) {
+				return false;
+			}
+
 			// Skip CAPI events when the connection is known-invalid (auth error detected).
 			// Sending events with an invalid token generates Graph API errors with no chance
 			// of success, so we suppress them until the merchant reconnects.

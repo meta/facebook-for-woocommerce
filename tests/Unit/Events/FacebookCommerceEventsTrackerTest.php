@@ -1531,6 +1531,33 @@ class FacebookCommerceEventsTrackerTest extends AbstractWPUnitTestWithSafeFilter
 	}
 
 	/**
+	 * Test that send_api_event sends nothing while the request is the crash guard's self-check.
+	 *
+	 * @covers WC_Facebookcommerce_EventsTracker::send_api_event
+	 */
+	public function test_send_api_event_skips_during_crash_guard_self_check(): void {
+		$this->instance = $this->create_tracker_with_pixel_enabled();
+
+		$handler_ref = new ReflectionClass( \WooCommerce\Facebook\Framework\PluginCrashHandler::class );
+		$token_prop  = $handler_ref->getProperty( 'self_check_token' );
+		$token_prop->setAccessible( true );
+		$token_prop->setValue( null, 'abc123' );
+
+		try {
+			$event      = new \WooCommerce\Facebook\Events\Event( array( 'event_name' => 'PageView' ) );
+			$reflection = new ReflectionClass( $this->instance );
+			$method     = $reflection->getMethod( 'send_api_event' );
+			$method->setAccessible( true );
+
+			$this->assertFalse( $method->invoke( $this->instance, $event, false ) );
+			$this->assertEmpty( $this->instance->get_tracked_events(), 'A self-check is not a visitor and must leave no trace at Meta.' );
+			$this->assertEmpty( $this->instance->get_pending_events() );
+		} finally {
+			$token_prop->setValue( null, '' );
+		}
+	}
+
+	/**
 	 * Test that send_api_event skips tracking for crawler requests.
 	 *
 	 * @covers WC_Facebookcommerce_EventsTracker::send_api_event

@@ -223,6 +223,7 @@ class WC_Facebookcommerce_Integration extends WC_Integration {
 		self::OPTION_INSTALLED_FEATURES,
 		'wc_facebook_instagram_business_id',
 		'wc_facebook_last_attribute_sync',
+		'facebook_for_woocommerce_latest_version_sent_to_server',
 	);
 
 	/** @var string default value for facebook_managed_coupons_setting */

@@ -264,9 +264,9 @@ class LanguageOverrideFeed {
 		if ( ! empty( $language_stats ) ) {
 			// Cache the stats in a transient for the hourly telemetry to use
 			set_transient(
-				\WooCommerce\Facebook\ExternalVersionUpdate\Update::TRANSIENT_LANGUAGE_FEED_STATS,
+				\WooCommerce\Facebook\Utilities\PluginConfigTelemetry::TRANSIENT_LANGUAGE_FEED_STATS,
 				$language_stats,
-				\WooCommerce\Facebook\ExternalVersionUpdate\Update::TRANSIENT_LANGUAGE_FEED_STATS_LIFETIME
+				\WooCommerce\Facebook\Utilities\PluginConfigTelemetry::TRANSIENT_LANGUAGE_FEED_STATS_LIFETIME
 			);
 		}
 

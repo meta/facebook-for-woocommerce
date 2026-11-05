@@ -146,34 +146,6 @@ class ApiTest extends \WooCommerce\Facebook\Tests\AbstractWPUnitTestWithSafeFilt
 	}
 
 	/**
-	 * Tests get user returns information about user.
-	 *
-	 * @return void
-	 * @throws ApiException In case of failed request.
-	 */
-	public function test_get_user_returns_user_information_request() {
-		$user_id = '';
-
-		$response = function( $result, $parsed_args, $url ) {
-			$this->assertEquals( 'GET', $parsed_args['method'] );
-			$this->assertEquals( "{$this->endpoint}{$this->version}/me", $url );
-			return [
-				'body'     => '{"name":"WooCommerce Integration System User","id":"111189594891749"}',
-				'response' => [
-					'code'    => 200,
-					'message' => 'OK',
-				],
-			];
-		};
-		$this->add_filter_with_safe_teardown( 'pre_http_request', $response, 10, 3 );
-
-		$response = $this->api->get_user( $user_id );
-
-		$this->assertEquals( '111189594891749', $response->id );
-		$this->assertEquals( 'WooCommerce Integration System User', $response->name );
-	}
-
-	/**
 	 * Tests delete mbe request performs a request to delete facebook connection.
 	 *
 	 * @return void

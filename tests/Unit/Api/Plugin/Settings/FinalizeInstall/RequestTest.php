@@ -42,28 +42,12 @@ class RequestTest extends AbstractWPUnitTestWithOptionIsolationAndSafeFiltering 
 					'type'     => 'string',
 					'required' => false,
 				),
-				'page_id'                         => array(
-					'type'     => 'string',
-					'required' => false,
-				),
-				'business_manager_id'             => array(
-					'type'     => 'string',
-					'required' => false,
-				),
 				'commerce_merchant_settings_id'   => array(
-					'type'     => 'string',
-					'required' => false,
-				),
-				'ad_account_id'                   => array(
 					'type'     => 'string',
 					'required' => false,
 				),
 				'commerce_partner_integration_id' => array(
 					'type'     => 'string',
-					'required' => false,
-				),
-				'profiles'                        => array(
-					'type'     => 'array',
 					'required' => false,
 				),
 				'installed_features'              => array(

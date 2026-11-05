@@ -1016,4 +1016,79 @@ test.describe('WooCommerce Plugin level tests', () => {
       console.log('✅ Cleanup completed');
     }
   });
+
+  test('Feed callback checks the secret before rebuilding a missing feed file', async ({ page }, testInfo) => {
+    let feed = null;
+
+    // wp-load can print notices before the payload, so parse only the JSON object.
+    const parseJson = (stdout) => {
+      const text = (stdout || '').trim();
+      return JSON.parse(text.slice(text.indexOf('{'), text.lastIndexOf('}') + 1));
+    };
+
+    const feedFileExists = async () => {
+      const { stdout } = await execWP(`echo json_encode(['exists' => file_exists('${feed.filePath}')]);`);
+      return parseJson(stdout).exists;
+    };
+
+    try {
+      // Resolve the promotions feed URL (it carries the feed secret) and the file it serves.
+      const { stdout } = await execWP(`
+        \\$feed = facebook_for_woocommerce()->feed_manager->get_feed_instance('promotions');
+        \\$writer = new \\WooCommerce\\Facebook\\Feed\\CsvFeedFileWriter('promotions', '');
+        echo json_encode([
+          'url' => \\$feed->get_feed_data_url(),
+          'filePath' => \\$writer->get_file_path(),
+        ]);
+      `);
+      feed = parseJson(stdout);
+      console.log(`📄 Promotions feed file: ${feed.filePath}`);
+
+      // Move the current file aside so the callback finds it missing.
+      await execWP(`
+        if (file_exists('${feed.filePath}')) {
+          rename('${feed.filePath}', '${feed.filePath}.e2e-backup');
+        }
+      `);
+      expect(await feedFileExists()).toBe(false);
+
+      console.log('🔍 Requesting the feed with a wrong secret...');
+      const wrongSecretUrl = new URL(feed.url);
+      wrongSecretUrl.searchParams.set('secret', 'wrong-secret');
+      const rejected = await page.request.get(wrongSecretUrl.toString());
+      expect(rejected.status()).toBe(401);
+      expect(await feedFileExists()).toBe(false);
+      console.log('✅ Wrong secret rejected with 401 and the feed file was not rebuilt');
+
+      console.log('🔍 Requesting the feed with the right secret...');
+      const accepted = await page.request.get(feed.url);
+      expect(accepted.status()).toBe(200);
+      expect(await feedFileExists()).toBe(true);
+      console.log('✅ Right secret served the feed and rebuilt the missing file');
+
+      logTestEnd(testInfo, true);
+    } catch (error) {
+      console.error(`❌ Test failed: ${error.message}`);
+      logTestEnd(testInfo, false);
+      throw error;
+    } finally {
+      if (feed) {
+        console.log('🧹 Starting cleanup...');
+        try {
+          // Restore the original file if the callback did not rebuild it; otherwise drop the backup.
+          await execWP(`
+            \\$backup = '${feed.filePath}.e2e-backup';
+            if (file_exists(\\$backup) && file_exists('${feed.filePath}')) {
+              unlink(\\$backup);
+            } elseif (file_exists(\\$backup)) {
+              rename(\\$backup, '${feed.filePath}');
+            }
+          `);
+          console.log('✅ Cleanup completed');
+        } catch (cleanupError) {
+          console.warn(`⚠️ Feed file restore failed: ${cleanupError.message}`);
+        }
+      }
+    }
+  });
 });

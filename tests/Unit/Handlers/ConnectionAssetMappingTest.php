@@ -118,7 +118,7 @@ class ConnectionAssetMappingTest extends AbstractWPUnitTestWithOptionIsolationAn
 		$this->add_filter_with_safe_teardown(
 			'pre_http_request',
 			function () {
-				return new \WP_Error( 'http_request_failed', 'STEFI unavailable in this test.' );
+				return new \WP_Error( 'http_request_failed', 'Commerce Integration API unavailable in this test.' );
 			}
 		);
 
@@ -148,6 +148,106 @@ class ConnectionAssetMappingTest extends AbstractWPUnitTestWithOptionIsolationAn
 
 		$this->assertSame( 'catalog-from-fbe', get_option( \WC_Facebookcommerce_Integration::OPTION_PRODUCT_CATALOG_ID ) );
 		$this->assertSame( 'cms-from-fbe', get_option( Connection::OPTION_COMMERCE_MERCHANT_SETTINGS_ID ) );
+	}
+
+	/**
+	 * A Graph error or an empty result from the legacy FBE install read is a failure, not a refresh.
+	 *
+	 * @dataProvider provide_failed_fbe_install_reads
+	 *
+	 * @param array $body Decoded FBE install read response body.
+	 */
+	public function test_fbe_install_read_error_is_not_reported_as_refresh( array $body ): void {
+		update_option( Connection::OPTION_ACCESS_TOKEN, 'access-token' );
+		update_option( Connection::OPTION_EXTERNAL_BUSINESS_ID, wp_generate_uuid4() );
+		update_option( Connection::OPTION_COMMERCE_PARTNER_INTEGRATION_ID, 'stored-cpi' );
+		update_option( \WC_Facebookcommerce_Integration::OPTION_PRODUCT_CATALOG_ID, 'catalog-kept' );
+		delete_transient( '_wc_facebook_for_woocommerce_refresh_installation_data' );
+
+		$this->add_filter_with_safe_teardown(
+			'pre_http_request',
+			function () {
+				return new \WP_Error( 'http_request_failed', 'Commerce Integration API unavailable in this test.' );
+			}
+		);
+
+		$api = $this->createMock( API::class );
+		$api->expects( $this->once() )
+			->method( 'get_installation_ids' )
+			->willReturn( new InstallationResponse( wp_json_encode( $body ) ) );
+		$api->method( 'update_commerce_integration' )
+			->willReturn( new UpdateResponse( wp_json_encode( array( 'success' => true ) ) ) );
+
+		$messages = array();
+		$plugin   = $this->mock_plugin( $api );
+		$plugin->method( 'log' )->willReturnCallback(
+			function ( $message ) use ( &$messages ) {
+				$messages[] = $message;
+			}
+		);
+
+		$connection = new Connection( $plugin );
+		$connection->refresh_installation_data();
+
+		$this->assertNotContains( 'Refreshed asset mapping from the legacy FBE install read.', $messages );
+		$this->assertNotEmpty(
+			array_filter(
+				$messages,
+				function ( $message ) {
+					return 0 === strpos( $message, 'Could not refresh installation data.' );
+				}
+			)
+		);
+		$this->assertSame( 'catalog-kept', get_option( \WC_Facebookcommerce_Integration::OPTION_PRODUCT_CATALOG_ID ) );
+	}
+
+	/**
+	 * FBE install read responses that did not refresh anything.
+	 *
+	 * @return array
+	 */
+	public function provide_failed_fbe_install_reads(): array {
+		return array(
+			'graph error'  => array(
+				array(
+					'error' => array(
+						'message' => 'Unsupported get request.',
+						'type'    => 'GraphMethodException',
+						'code'    => 100,
+					),
+				),
+			),
+			'no install'   => array( array( 'data' => array() ) ),
+			'empty install' => array( array( 'data' => array( array() ) ) ),
+		);
+	}
+
+	/**
+	 * A numeric catalog ID from the legacy FBE install read must not throw a TypeError.
+	 */
+	public function test_fbe_install_read_accepts_numeric_catalog_id(): void {
+		update_option( Connection::OPTION_ACCESS_TOKEN, 'access-token' );
+		update_option( Connection::OPTION_EXTERNAL_BUSINESS_ID, wp_generate_uuid4() );
+		update_option( Connection::OPTION_COMMERCE_PARTNER_INTEGRATION_ID, 'stored-cpi' );
+		delete_transient( '_wc_facebook_for_woocommerce_refresh_installation_data' );
+
+		$this->add_filter_with_safe_teardown(
+			'pre_http_request',
+			function () {
+				return new \WP_Error( 'http_request_failed', 'Commerce Integration API unavailable in this test.' );
+			}
+		);
+
+		$api = $this->createMock( API::class );
+		$api->method( 'get_installation_ids' )
+			->willReturn( new InstallationResponse( wp_json_encode( array( 'data' => array( array( 'catalog_id' => 1234567890123 ) ) ) ) ) );
+		$api->method( 'update_commerce_integration' )
+			->willReturn( new UpdateResponse( wp_json_encode( array( 'success' => true ) ) ) );
+
+		$connection = new Connection( $this->mock_plugin( $api ) );
+		$connection->refresh_installation_data();
+
+		$this->assertSame( '1234567890123', get_option( \WC_Facebookcommerce_Integration::OPTION_PRODUCT_CATALOG_ID ) );
 	}
 
 	/**

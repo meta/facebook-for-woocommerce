@@ -132,8 +132,9 @@ jobs:
     runs-on: ubuntu-latest
     # Fail fast instead of letting a stuck step (e.g. a hung browser install) run
     # until GitHub's 6-hour default job timeout. plugin-events runs many browser
-    # projects sequentially, so it gets a larger budget.
-    timeout-minutes: ${{ matrix.test-group == 'plugin-events' && 90 || 45 }}
+    # projects sequentially, while product-category includes bounded waits for
+    # remote catalog propagation, so both receive a larger budget.
+    timeout-minutes: ${{ matrix.test-group == 'plugin-events' && 90 || matrix.test-group == 'product-category' && 90 || 45 }}
 
     strategy:
       fail-fast: false
@@ -441,10 +442,29 @@ jobs:
           ARRAY_LENGTH=$(echo "$ASSETS" | jq 'length')
           echo "Total available business asset sets: $ARRAY_LENGTH"
 
-          # Use run_number as selector - it's sequential (1, 2, 3, ...) across all workflow runs
-          # This ensures each concurrent run gets a different business asset set
-          SELECTOR="${{ github.run_number }}"
-          echo "Using GitHub Run Number as selector: $SELECTOR"
+          # Product category assertions depend on asynchronous catalog reads.
+          # Keep the supported and latest category shards away from the asset
+          # used by the rest of this workflow run, reducing unrelated catalog
+          # writes while product-set membership propagates.
+          REQUIRED_ASSET_COUNT=3
+          if [ "$ARRAY_LENGTH" -lt "$REQUIRED_ASSET_COUNT" ]; then
+            echo "::error title=E2E Assets Missing::Product category isolation requires at least $REQUIRED_ASSET_COUNT asset sets, found $ARRAY_LENGTH."
+            exit 1
+          fi
+
+          # Rotate the base asset between workflow runs and reruns. Category
+          # shards receive separate offsets so all three lanes are distinct.
+          SELECTOR=$(( ${{ github.run_number }} + ${{ github.run_attempt }} - 1 ))
+          ASSET_OFFSET=0
+          if [ "${{ matrix.test-group }}" = "product-category" ]; then
+            if [ "${{ matrix.version-set }}" = "supported" ]; then
+              ASSET_OFFSET=1
+            else
+              ASSET_OFFSET=2
+            fi
+          fi
+          SELECTOR=$((SELECTOR + ASSET_OFFSET))
+          echo "Using asset selector $SELECTOR (offset $ASSET_OFFSET)"
 
           # Calculate index using modulo
           INDEX=$((SELECTOR % ARRAY_LENGTH))

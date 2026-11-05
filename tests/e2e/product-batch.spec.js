@@ -17,7 +17,6 @@ const {
   logTestStart,
   logTestEnd,
   validateFacebookSync,
-  processPendingSyncJobs,
   generateProductFeedCSV,
   deleteFeedFile,
   generateUniqueSKU,
@@ -145,8 +144,6 @@ test.describe('Meta for WooCommerce - Product Batch Import E2E Tests', () => {
         let productValidated = false;
 
         for (let attempt = 1; attempt <= perProductAttempts; attempt++) {
-          await processPendingSyncJobs().catch(() => {});
-
           let result = null;
           try {
             result = await validateFacebookSync(productId, null, 5, 8);
@@ -575,8 +572,6 @@ test.describe('Meta for WooCommerce - Product Batch Import E2E Tests', () => {
         let productValidated = false;
 
         for (let attempt = 1; attempt <= perProductAttempts; attempt++) {
-          await processPendingSyncJobs().catch(() => {});
-
           let result = null;
           try {
             result = await validateFacebookSync(productId, null, 5, 8);

@@ -120,7 +120,7 @@ jobs:
           echo "Resolved versions — WP: $WP_VERSION, WC: $WC_VERSION"
 
   e2e-tests:
-    name: E2E Tests - ${{ matrix.version-label }} - ${{ matrix.test-group }}
+    name: E2E Tests - ${{ matrix.version-label }} - ${{ matrix.test-group }} - Asset ${{ matrix.asset-index }}
     needs: [check-secrets, resolve-versions]
     if: ${{ needs.check-secrets.outputs.secrets-configured == 'true' }}
     # Run every shard on the standard GitHub-hosted runner. We previously
@@ -130,28 +130,102 @@ jobs:
     # never actually executing. The mysql:8.0 service container is multi-arch,
     # so this is no longer constrained to x86-only pools.
     runs-on: ubuntu-latest
-    # Fail fast instead of letting a stuck step (e.g. a hung browser install) run
-    # until GitHub's 6-hour default job timeout. plugin-events runs many browser
-    # projects sequentially, so it gets a larger budget.
-    timeout-minutes: ${{ matrix.test-group == 'plugin-events' && 90 || 45 }}
+    # Keep bounded job runtimes while allowing the catalog-heavy shards enough
+    # time to finish when Meta catalog propagation is slower than usual.
+    timeout-minutes: ${{ (matrix.test-group == 'plugin-events' || matrix.test-group == 'performance-sync' || matrix.test-group == 'product-crud') && 90 || (matrix.test-group == 'variable-product-depth' || matrix.test-group == 'product-category') && 60 || 45 }}
 
     strategy:
       fail-fast: false
-      # Cap how many shards run concurrently within a run to keep shared-test-asset
-      # contention reasonable (all shards now share the ubuntu-latest pool).
-      max-parallel: 8
+      # There are three independent Meta test asset sets. Limit each run to three
+      # active shards and spread those shards across the asset pool to reduce
+      # catalog contention.
+      max-parallel: 3
       matrix:
-        test-group: ['plugin-events', 'product-crud', 'variable-product-depth', 'product-batch', 'product-category', 'performance-sync']
-        version-set: ['supported', 'latest']
         include:
-          - version-set: 'supported'
+          - test-group: 'plugin-events'
+            version-set: 'supported'
             wp-version: ${{ needs.resolve-versions.outputs.wp-supported }}
             wc-version: ${{ needs.resolve-versions.outputs.wc-supported }}
             version-label: 'Currently supported'
-          - version-set: 'latest'
+            asset-index: 0
+            shard-index: 0
+          - test-group: 'plugin-events'
+            version-set: 'latest'
             wp-version: 'latest'
             wc-version: 'latest'
             version-label: 'Latest'
+            asset-index: 1
+            shard-index: 1
+          - test-group: 'product-crud'
+            version-set: 'supported'
+            wp-version: ${{ needs.resolve-versions.outputs.wp-supported }}
+            wc-version: ${{ needs.resolve-versions.outputs.wc-supported }}
+            version-label: 'Currently supported'
+            asset-index: 2
+            shard-index: 2
+          - test-group: 'product-crud'
+            version-set: 'latest'
+            wp-version: 'latest'
+            wc-version: 'latest'
+            version-label: 'Latest'
+            asset-index: 0
+            shard-index: 3
+          - test-group: 'variable-product-depth'
+            version-set: 'supported'
+            wp-version: ${{ needs.resolve-versions.outputs.wp-supported }}
+            wc-version: ${{ needs.resolve-versions.outputs.wc-supported }}
+            version-label: 'Currently supported'
+            asset-index: 1
+            shard-index: 4
+          - test-group: 'variable-product-depth'
+            version-set: 'latest'
+            wp-version: 'latest'
+            wc-version: 'latest'
+            version-label: 'Latest'
+            asset-index: 2
+            shard-index: 5
+          - test-group: 'product-batch'
+            version-set: 'supported'
+            wp-version: ${{ needs.resolve-versions.outputs.wp-supported }}
+            wc-version: ${{ needs.resolve-versions.outputs.wc-supported }}
+            version-label: 'Currently supported'
+            asset-index: 0
+            shard-index: 6
+          - test-group: 'product-batch'
+            version-set: 'latest'
+            wp-version: 'latest'
+            wc-version: 'latest'
+            version-label: 'Latest'
+            asset-index: 1
+            shard-index: 7
+          - test-group: 'product-category'
+            version-set: 'supported'
+            wp-version: ${{ needs.resolve-versions.outputs.wp-supported }}
+            wc-version: ${{ needs.resolve-versions.outputs.wc-supported }}
+            version-label: 'Currently supported'
+            asset-index: 2
+            shard-index: 8
+          - test-group: 'product-category'
+            version-set: 'latest'
+            wp-version: 'latest'
+            wc-version: 'latest'
+            version-label: 'Latest'
+            asset-index: 0
+            shard-index: 9
+          - test-group: 'performance-sync'
+            version-set: 'supported'
+            wp-version: ${{ needs.resolve-versions.outputs.wp-supported }}
+            wc-version: ${{ needs.resolve-versions.outputs.wc-supported }}
+            version-label: 'Currently supported'
+            asset-index: 1
+            shard-index: 10
+          - test-group: 'performance-sync'
+            version-set: 'latest'
+            wp-version: 'latest'
+            wc-version: 'latest'
+            version-label: 'Latest'
+            asset-index: 2
+            shard-index: 11
 
     services:
       mysql:
@@ -289,6 +363,24 @@ jobs:
             --admin_password=admin \
             --admin_email=test@example.com \
             --allow-root
+
+      - name: Isolate catalog object IDs for this shard
+        run: |
+          cd ${{ env.WORDPRESS_PATH }}
+
+          # Every runner starts from the same WordPress IDs, while several shards
+          # can write to the same remote catalog. Give each run/shard a distinct
+          # numeric range so one shard cannot overwrite or delete another shard's
+          # products or category-backed product sets.
+          RUN_ID_SUFFIX=$(( ${{ github.run_id }} % 100000000 ))
+          ID_BASE=$(( RUN_ID_SUFFIX * 100000 + ${{ matrix.shard-index }} * 5000 + 1000 ))
+          DB_PREFIX=$(wp db prefix --allow-root)
+
+          wp db query "ALTER TABLE ${DB_PREFIX}posts AUTO_INCREMENT = ${ID_BASE};"
+          wp db query "ALTER TABLE ${DB_PREFIX}terms AUTO_INCREMENT = ${ID_BASE};"
+          wp db query "ALTER TABLE ${DB_PREFIX}term_taxonomy AUTO_INCREMENT = ${ID_BASE};"
+
+          echo "✅ Reserved object ID range starting at ${ID_BASE} for shard ${{ matrix.shard-index }}"
 
       - name: Install WooCommerce
         run: |
@@ -441,13 +533,15 @@ jobs:
           ARRAY_LENGTH=$(echo "$ASSETS" | jq 'length')
           echo "Total available business asset sets: $ARRAY_LENGTH"
 
-          # Use run_number as selector - it's sequential (1, 2, 3, ...) across all workflow runs
-          # This ensures each concurrent run gets a different business asset set
-          SELECTOR="${{ github.run_number }}"
-          echo "Using GitHub Run Number as selector: $SELECTOR"
+          # The matrix spreads jobs across the three Meta test asset sets.
+          # Fail clearly if the secret no longer contains every configured lane.
+          REQUIRED_ASSET_COUNT=3
+          if [ "$ARRAY_LENGTH" -lt "$REQUIRED_ASSET_COUNT" ]; then
+            echo "::error title=E2E Assets Missing::Expected at least $REQUIRED_ASSET_COUNT asset sets, found $ARRAY_LENGTH."
+            exit 1
+          fi
 
-          # Calculate index using modulo
-          INDEX=$((SELECTOR % ARRAY_LENGTH))
+          INDEX="${{ matrix.asset-index }}"
           echo "Selected asset set index: $INDEX"
 
           # Extract the selected asset set
@@ -1024,7 +1118,9 @@ jobs:
         if: matrix.test-group == 'product-crud'
         run: |
           cd ${{ env.PLUGIN_PATH }}
-          npx playwright test "product-(creation|modification|deletion).spec.js" --project=chromium-wp-admin --workers=2
+          # The local PHP server and WordPress database are shared by the suite.
+          # A single worker avoids concurrent product/catalog mutations.
+          npx playwright test "product-(creation|modification|deletion).spec.js" --project=chromium-wp-admin --workers=1
 
       - name: Run Variable Product Depth tests
         if: matrix.test-group == 'variable-product-depth'
@@ -1046,6 +1142,10 @@ jobs:
 
       - name: Run Product Stress Sync tests
         if: matrix.test-group == 'performance-sync'
+        env:
+          # PRs exercise a representative batch while scheduled/manual runs retain
+          # the full stress workload.
+          PERFORMANCE_SIMPLE_BATCH_COUNT: ${{ github.event_name == 'pull_request' && '3' || '15' }}
         run: |
           cd ${{ env.PLUGIN_PATH }}
           npx playwright test performance-sync.spec.js --project=chromium-wp-admin --workers=1

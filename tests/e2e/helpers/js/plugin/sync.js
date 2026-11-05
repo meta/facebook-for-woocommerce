@@ -16,6 +16,7 @@ const path = require('path');
 const execAsync = promisify(exec);
 
 let connectionPreflightChecked = false;
+let pendingSyncDrainPromise = null;
 
 async function ensureFacebookConnectionConfigured() {
   if (connectionPreflightChecked) {
@@ -122,6 +123,7 @@ async function validateFacebookSync(productId, productName, waitSeconds = 10, ma
   console.log(`🔍 Validating Facebook sync for product ${displayName}...`);
 
   try {
+    await drainPendingSyncJobs();
     await ensureFacebookConnectionConfigured();
     const command = buildValidatorCommand('product', productId, waitSeconds, maxRetries);
     const { stdout } = await execAsync(command, {
@@ -168,6 +170,7 @@ async function validateCategorySync(categoryId, categoryName = null, waitSeconds
   console.log(`🔍 Validating category sync for ${displayName}...`);
 
   try {
+    await drainPendingSyncJobs();
     await ensureFacebookConnectionConfigured();
     const command = buildValidatorCommand('category', categoryId, waitSeconds, maxRetries);
     const { stdout } = await execAsync(command, {
@@ -204,6 +207,26 @@ async function validateCategorySync(categoryId, categoryName = null, waitSeconds
 }
 
 /**
+ * Drains pending sync jobs before reading Facebook catalog state.
+ *
+ * Multiple validators are often started together with Promise.all(). Reuse the
+ * same in-flight drain so they do not race while processing the local queue.
+ * A completed drain is not cached because later product/category mutations may
+ * enqueue new work that must be processed before the next validation.
+ *
+ * @return {Promise<Object>} Processing result
+ */
+async function drainPendingSyncJobs() {
+  if (!pendingSyncDrainPromise) {
+    pendingSyncDrainPromise = processPendingSyncJobs().finally(() => {
+      pendingSyncDrainPromise = null;
+    });
+  }
+
+  return pendingSyncDrainPromise;
+}
+
+/**
  * Process pending Facebook sync background jobs directly.
  *
  * The background job handler normally dispatches via a loopback HTTP request
@@ -218,12 +241,12 @@ async function processPendingSyncJobs() {
 
   try {
     const phpDir = path.resolve(__dirname, '../../php');
-    const { stdout, stderr } = await execAsync(
+    const { stdout } = await execAsync(
       'php process-sync-jobs.php',
       { cwd: phpDir, timeout: 120000 }
     );
 
-    const result = JSON.parse(stdout);
+    const result = parseJsonFromOutput(stdout);
     if (result.success) {
       console.log(`✅ Processed ${result.jobs_processed} sync job(s)`);
     } else {

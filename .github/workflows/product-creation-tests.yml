@@ -193,6 +193,7 @@ jobs:
           # Themes and plugins
           fetch_package "https://api.wordpress.org/themes/info/1.2/?action=theme_information&request%5Bslug%5D=storefront" storefront
           fetch_package "https://api.wordpress.org/themes/info/1.2/?action=theme_information&request%5Bslug%5D=twentytwentyfive" twentytwentyfive
+          fetch_package "https://api.wordpress.org/themes/info/1.2/?action=theme_information&request%5Bslug%5D=twentythirteen" twentythirteen
           fetch_package "https://api.wordpress.org/plugins/info/1.0/wpc-composite-products.json" wpc-composite-products
 
           if [ "$USE_MARKETPLACE_VERSION" = "true" ]; then
@@ -407,6 +408,10 @@ jobs:
           # Recent WordPress releases bundle it, and installing a zip over an existing theme fails.
           wp theme is-installed twentytwentyfive --allow-root || wp theme install ${{ env.WP_DEPS_DIR }}/twentytwentyfive.zip --allow-root
           echo "✅ Twenty Twenty-Five theme installed"
+          # Install Twenty Thirteen theme, used by the events classic-theme project. WordPress no longer
+          # bundles it, so without this the test helper would install it from WordPress.org mid-run.
+          wp theme is-installed twentythirteen --allow-root || wp theme install ${{ env.WP_DEPS_DIR }}/twentythirteen.zip --allow-root
+          echo "✅ Twenty Thirteen theme installed"
           wp plugin install ${{ env.WP_DEPS_DIR }}/woocommerce-${{ matrix.version-set }}.zip --activate --allow-root
 
           # Basic WooCommerce setup

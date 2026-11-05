@@ -17,12 +17,11 @@
   "require": {
     "php": ">=7.4",
     "woocommerce/action-scheduler-job-framework": "2.0.0",
-    "composer/installers": "~1.0",
+    "composer/installers": "~2.3",
     "woocommerce/grow": "dev-compat-checker",
     "facebook/capi-param-builder-php": "^1.3.0"
   },
   "require-dev": {
-    "composer/installers": "^1.7.0",
     "woocommerce/woocommerce-sniffs": "^1.0.0",
     "sirbrillig/phpcs-changed": "^2.11.1",
     "phpunit/phpunit": "^9.6",

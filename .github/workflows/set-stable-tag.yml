@@ -21,7 +21,7 @@ jobs:
     outputs:
       version: ${{ steps.package-version.outputs.current-version }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Fail if not on a release publish branch
         run: |
@@ -229,7 +229,7 @@ jobs:
     env:
       VERSION: ${{ needs.set-stable-tag.outputs.version }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           ref: release/${{ needs.set-stable-tag.outputs.version }}
 

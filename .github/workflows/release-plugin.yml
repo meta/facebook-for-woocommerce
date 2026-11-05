@@ -10,7 +10,7 @@ jobs:
     runs-on: ubuntu-latest
     environment: Deployment
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Get NPM Version
         id: package-version
@@ -30,7 +30,7 @@ jobs:
           tools: composer
       
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version-file: 'package.json'
           cache-dependency-path: './package-lock.json'
@@ -77,7 +77,7 @@ jobs:
         run: unzip facebook-for-woocommerce.zip -d artifact-contents
 
       - name: Store built plugin
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: facebook-for-woocommerce
           path: artifact-contents/facebook-for-woocommerce

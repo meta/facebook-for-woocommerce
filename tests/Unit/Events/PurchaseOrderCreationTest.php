@@ -195,6 +195,145 @@ class PurchaseOrderCreationTest extends AbstractWPUnitTestWithSafeFiltering {
 	}
 
 	/**
+	 * Subscription plugins and similar integrations save an empty order before adding its items.
+	 * The order is reported at the end of the request, from its persisted state.
+	 *
+	 * @dataProvider order_storage
+	 * @param string $hpos Whether to enable HPOS.
+	 */
+	public function test_empty_order_is_reported_at_request_end_once_items_exist( string $hpos ): void {
+		update_option( 'woocommerce_custom_orders_table_enabled', $hpos );
+		update_option( 'woocommerce_custom_orders_table_data_sync_enabled', 'no' );
+		$order = new \WC_Order();
+		$order->set_status( 'pending' );
+		$order->save();
+		$order->set_customer_note( 'Still empty' );
+		$order->save();
+
+		$this->assertCount( 0, $this->tracker->get_tracked_events() );
+		$this->assertFalse( $order->meta_exists( '_meta_purchase_tracked_server' ) );
+		$this->assertFalse( $order->meta_exists( '_meta_event_id' ) );
+
+		$source = $this->build_order();
+		foreach ( $source->get_items() as $item ) {
+			$order->add_item( $item );
+		}
+		$order->set_currency( $source->get_currency() );
+		$order->set_total( $source->get_total() );
+		$order->save();
+		$this->assertCount( 0, $this->tracker->get_tracked_events(), 'Nothing is reported until the request ends.' );
+
+		$this->tracker->inject_deferred_purchase_events();
+		$this->assert_complete_purchase( $order );
+		$event_id = wc_get_order( $order->get_id() )->get_meta( '_meta_event_id' );
+		$this->assertNotEmpty( $event_id );
+		$this->assertNotEmpty( wc_get_order( $order->get_id() )->get_meta( '_meta_purchase_tracked_server' ) );
+
+		// A second flush, later saves and the thank-you page keep the same event and do not
+		// resend CAPI, including after the transient has expired.
+		$this->tracker->inject_deferred_purchase_events();
+		delete_transient( '_wc_' . facebook_for_woocommerce()->get_id() . '_purchase_tracked_' . $order->get_id() . '_server' );
+		$order->save();
+		ob_start();
+		try {
+			do_action( 'woocommerce_thankyou', $order->get_id() );
+		} finally {
+			ob_end_clean();
+		}
+		$this->assertCount( 1, $this->tracker->get_tracked_events() );
+		$this->assertSame( $event_id, wc_get_order( $order->get_id() )->get_meta( '_meta_event_id' ) );
+	}
+
+	/**
+	 * Woo Subscriptions inserts the items directly, and WP Swings saves the order before
+	 * calculating totals. The persisted state at request end is what gets reported.
+	 *
+	 * @dataProvider order_storage
+	 * @param string $hpos Whether to enable HPOS.
+	 */
+	public function test_directly_inserted_items_and_late_totals_are_reported_from_the_persisted_order( string $hpos ): void {
+		update_option( 'woocommerce_custom_orders_table_enabled', $hpos );
+		update_option( 'woocommerce_custom_orders_table_data_sync_enabled', 'no' );
+		$order = new \WC_Order();
+		$order->set_status( 'pending' );
+		$order->set_currency( 'USD' );
+		$order->save();
+
+		foreach ( $this->build_order()->get_items() as $item ) {
+			$item->set_order_id( $order->get_id() );
+			$item->save();
+		}
+
+		// An intermediate save with items but no totals yet, as WP Swings does through its meta helper.
+		$intermediate = wc_get_order( $order->get_id() );
+		$intermediate->update_meta_data( '_qa_renewal', 'yes' );
+		$intermediate->save();
+		$this->assertSame( '0.00', $intermediate->get_total() );
+
+		$fresh = wc_get_order( $order->get_id() );
+		$fresh->calculate_totals();
+		$fresh->save();
+		$this->assertCount( 0, $this->tracker->get_tracked_events() );
+
+		$this->tracker->inject_deferred_purchase_events();
+		$this->assert_complete_purchase( $fresh );
+		$this->assertNotEmpty( wc_get_order( $order->get_id() )->get_meta( '_meta_purchase_tracked_server' ) );
+	}
+
+	/**
+	 * @dataProvider purchase_statuses
+	 * @param string $status Order status.
+	 * @param int    $count Expected events.
+	 */
+	public function test_deferred_order_keeps_existing_status_eligibility( string $status, int $count ): void {
+		$order = new \WC_Order();
+		$order->set_status( $status );
+		$order->save();
+
+		foreach ( $this->build_order()->get_items() as $item ) {
+			$order->add_item( $item );
+		}
+		$order->set_currency( 'USD' );
+		$order->set_total( 45 );
+		$order->save();
+		$this->assertCount( 0, $this->tracker->get_tracked_events() );
+
+		$this->tracker->inject_deferred_purchase_events();
+		$this->assertCount( $count, $this->tracker->get_tracked_events() );
+	}
+
+	/** Only orders that were created without items are reported at request end. */
+	public function test_orders_excluded_at_creation_are_not_reported_at_request_end(): void {
+		wp_set_current_user( self::factory()->user->create( array( 'role' => 'administrator' ) ) );
+		$order = $this->build_order();
+		$order->save();
+		$this->assertCount( 0, $this->tracker->get_tracked_events() );
+
+		wp_set_current_user( 0 );
+		$order->set_status( 'processing' );
+		$order->save();
+		$this->tracker->inject_deferred_purchase_events();
+		$this->assertCount( 0, $this->tracker->get_tracked_events() );
+		$this->assertFalse( wc_get_order( $order->get_id() )->meta_exists( '_meta_purchase_tracked_server' ) );
+	}
+
+	/** Orders that are still empty, or were deleted, by the end of the request are skipped. */
+	public function test_orders_still_empty_or_deleted_at_request_end_are_skipped(): void {
+		$empty = new \WC_Order();
+		$empty->set_status( 'pending' );
+		$empty->save();
+
+		$deleted = new \WC_Order();
+		$deleted->set_status( 'pending' );
+		$deleted->save();
+		$deleted->delete( true );
+
+		$this->tracker->inject_deferred_purchase_events();
+		$this->assertCount( 0, $this->tracker->get_tracked_events() );
+		$this->assertFalse( wc_get_order( $empty->get_id() )->meta_exists( '_meta_purchase_tracked_server' ) );
+	}
+
+	/**
 	 * Blocks creates a draft first and fires new_order on the pending transition.
 	 *
 	 * @dataProvider order_storage

@@ -58,6 +58,16 @@ if ( ! class_exists( 'WC_Facebookcommerce_EventsTracker' ) ) :
 		/** @var array array with epnding events */
 		private $pending_events = array();
 
+		/**
+		 * IDs of orders that were saved without items, keyed by order ID.
+		 *
+		 * They are reported at the end of the request, once the integration that created
+		 * them has finished adding items and totals.
+		 *
+		 * @var array<int, true>
+		 */
+		private $deferred_purchase_order_ids = array();
+
 		/** @var AAMSettings aam settings instance, used to filter advanced matching fields*/
 		private $aam_settings;
 
@@ -341,6 +351,9 @@ if ( ! class_exists( 'WC_Facebookcommerce_EventsTracker' ) ) :
 			add_action( 'woocommerce_process_shop_order_meta', array( $this, 'inject_purchase_event' ), 20 );
 			add_action( 'woocommerce_checkout_update_order_meta', array( $this, 'inject_purchase_event' ), 30 );
 			add_action( 'woocommerce_thankyou', array( $this, 'inject_purchase_event' ), 40 );
+			// Orders created without items are reported at the end of the request, once the
+			// integration that created them has added items and totals.
+			add_action( 'shutdown', array( $this, 'inject_deferred_purchase_events' ), 5 );
 
 			// Offline Purchase events, reported once a point-of-sale order is paid.
 			add_action( 'woocommerce_order_status_changed', array( $this, 'inject_offline_purchase_event_on_status_change' ), 10 );
@@ -354,9 +367,10 @@ if ( ! class_exists( 'WC_Facebookcommerce_EventsTracker' ) ) :
 			add_filter( 'wpforms_ajax_submit_redirect', array( $this, 'inject_wpforms_lead_event_ajax' ), 20, 3 );
 			add_action( 'wp_footer', array( $this, 'inject_wpforms_ajax_listener' ), 20 );
 
-			// Prevent stale Purchase tracking flags from being copied from subscriptions
-			// onto renewal orders (which would make inject_purchase_event() skip CAPI).
+			// New subscription-generated orders must not inherit Purchase tracking flags.
 			add_filter( 'wc_subscriptions_renewal_order_data', array( $this, 'exclude_purchase_tracking_meta_from_renewal_orders' ), 10, 3 );
+			add_filter( 'wc_subscriptions_resubscribe_order_data', array( $this, 'exclude_purchase_tracking_meta_from_renewal_orders' ), 10, 3 );
+			add_filter( 'wc_subscriptions_parent_data', array( $this, 'exclude_purchase_tracking_meta_from_renewal_orders' ), 10, 3 );
 
 			// Flush pending events on shutdown
 			add_action( 'shutdown', array( $this, 'send_pending_events' ) );
@@ -1355,18 +1369,18 @@ if ( ! class_exists( 'WC_Facebookcommerce_EventsTracker' ) ) :
 
 		/**
 		 * Excludes Meta Purchase tracking keys when Woo Subscriptions copies subscription meta
-		 * to renewal orders.
+		 * to renewal, resubscribe or parent orders.
 		 *
-		 * Without this, renewal orders may inherit `_meta_purchase_tracked_server` and
+		 * Without this, these orders may inherit `_meta_purchase_tracked_server` and
 		 * `_meta_event_id`, causing inject_purchase_event() to treat them as already sent.
 		 *
 		 * @param array    $data copied data keyed by meta key.
-		 * @param WC_Order $to_object target order (renewal order).
+		 * @param WC_Order $to_object target order.
 		 * @param WC_Order $from_object source object (subscription).
 		 * @return array
 		 */
 		public function exclude_purchase_tracking_meta_from_renewal_orders( $data, $to_object, $from_object ) {
-			// Guard to only affect subscription -> renewal order copies.
+			// Guard to only affect subscription -> order copies.
 			if ( ! is_a( $to_object, 'WC_Order' ) || 'shop_order' !== $to_object->get_type() ) {
 				return $data;
 			}
@@ -1875,6 +1889,14 @@ if ( ! class_exists( 'WC_Facebookcommerce_EventsTracker' ) ) :
 			$valid_purchase_order_states = array( 'processing', 'completed', 'on-hold', 'pending' );
 			$order_id                    = $order->get_id();
 
+			// Some integrations save an empty order first and add its items and totals
+			// afterwards. Report it at the end of the request instead of now, when a
+			// Purchase would have no contents.
+			if ( 'woocommerce_new_order' === current_action() && ! $this->order_has_items( $order ) ) {
+				$this->deferred_purchase_order_ids[ $order_id ] = true;
+				return;
+			}
+
 			$hook_name = current_action();
 
 			// Determine if this is a browser or server event.
@@ -1989,6 +2011,43 @@ if ( ! class_exists( 'WC_Facebookcommerce_EventsTracker' ) ) :
 		}
 
 		/**
+		 * Reports orders that were created without items once the request completes.
+		 *
+		 * Subscription plugins and similar integrations save an empty order first and add
+		 * its items and totals afterwards, sometimes across several saves. Waiting for the
+		 * end of the request reports the order from its persisted state, whichever plugin
+		 * created it and however it filled it.
+		 */
+		public function inject_deferred_purchase_events() {
+			$order_ids                         = array_keys( $this->deferred_purchase_order_ids );
+			$this->deferred_purchase_order_ids = array();
+
+			foreach ( $order_ids as $order_id ) {
+				$order = wc_get_order( $order_id );
+
+				// Orders that are still empty, or were removed meanwhile, have nothing to report.
+				if ( ! $order instanceof \WC_Order || ! $this->order_has_items( $order ) ) {
+					continue;
+				}
+
+				$this->inject_purchase_event( $order_id, $order );
+			}
+		}
+
+		/**
+		 * Determines whether an order has any items yet.
+		 *
+		 * Line items are checked first so orders built in memory, such as checkout orders,
+		 * do not trigger an extra read of the other item types.
+		 *
+		 * @param WC_Order $order Order object.
+		 * @return bool
+		 */
+		private function order_has_items( $order ) {
+			return (bool) $order->get_items() || (bool) $order->get_items( array( 'fee', 'shipping', 'tax', 'coupon' ) );
+		}
+
+		/**
 		 * Triggers a Purchase event when checkout is completed.
 		 *
 		 * This may happen either when:
@@ -2003,7 +2062,7 @@ if ( ! class_exists( 'WC_Facebookcommerce_EventsTracker' ) ) :
 		 * @internal
 		 *
 		 * @param int           $order_id Order identifier.
-		 * @param WC_Order|null $order    Original order supplied by woocommerce_new_order, if available.
+		 * @param WC_Order|null $order    Order object supplied by the caller, if available.
 		 */
 		public function inject_purchase_event( $order_id, $order = null ) {
 

@@ -1980,6 +1980,9 @@ if ( ! class_exists( 'WC_Facebookcommerce_EventsTracker' ) ) :
 				$this->send_api_event( $event );
 			}
 
+			// Removing net_revenue value from the Pixel event, to ensure the business-sensitive data is not exposed to the users.
+			unset( $event_data['custom_data']['net_revenue'] );
+
 			$this->pixel->inject_event( $event_name, $event_data );
 
 			$this->inject_subscribe_event( $order_id );

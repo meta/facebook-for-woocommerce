@@ -41,6 +41,9 @@ if (!defined('ABSPATH')) {
  */
 class FacebookSyncValidator {
 
+    private const POLL_INTERVAL_SECONDS = 10;
+    private const MAX_POLL_SECONDS = 300;
+
     private $product_id;
     private $product;
     private $integration;
@@ -204,12 +207,12 @@ class FacebookSyncValidator {
         // $this->debug("WooCommerce data: " . json_encode($woo_data, JSON_PRETTY_PRINT));
 
         // Get Facebook data using full retailer ID
-        $facebook_data = $this->fetchFacebookData($retailer_id, 'simple');
+        $facebook_data = $this->fetchFacebookData([$retailer_id]);
 
         return [
             'type' => 'simple',
             'woo_data' => [$woo_data],
-            'facebook_data' => [$facebook_data]
+            'facebook_data' => $facebook_data
         ];
     }
 
@@ -219,7 +222,7 @@ class FacebookSyncValidator {
     private function getVariableProductData() {
         $failed_variations = [];
         $woo_data_array = [];
-        $facebook_data_array = [];
+        $retailer_ids = [];
 
         // Set parent retailer_id for result tracking
         $this->result['retailer_id']  = WC_Facebookcommerce_Utils::get_fb_retailer_id($this->product);
@@ -234,7 +237,7 @@ class FacebookSyncValidator {
             try {
                 $var_retailer_id = WC_Facebookcommerce_Utils::get_fb_retailer_id($variation);
                 $woo_data_array[] = $this->extractWooCommerceFields($variation, $var_retailer_id);
-                $facebook_data_array[] = $this->fetchFacebookData($var_retailer_id, 'variable');
+                $retailer_ids[] = $var_retailer_id;
 
                 $this->debug("Extracted variation {$variation_id} data successfully");
             } catch (Exception $e) {
@@ -256,6 +259,22 @@ class FacebookSyncValidator {
         if (count($failed_variations) > 0) {
             $this->debug("Failed to process variations: " . implode(', ', $failed_variations));
         }
+
+        // Poll every variation within one shared retry window. Previously each
+        // missing variation exhausted the complete exponential backoff before
+        // the next variation was checked, multiplying the validation duration.
+        $product_group_id = (string)get_post_meta(
+            $this->product_id,
+            WC_Facebookcommerce_Integration::FB_PRODUCT_GROUP_ID,
+            true
+        );
+        if ($product_group_id) {
+            $this->debug("Polling Facebook product group {$product_group_id} as one variation snapshot");
+        } else {
+            $this->debug("Facebook product group ID is unavailable; falling back to retailer_id lookups");
+        }
+
+        $facebook_data_array = $this->fetchFacebookData($retailer_ids, $product_group_id);
 
         return [
             'type' => 'variable',
@@ -291,61 +310,266 @@ class FacebookSyncValidator {
     }
 
     /**
-     * Fetch Facebook data via API using the full retailer ID.
+     * Find the product group created for a WooCommerce retailer ID.
+     *
+     * Catalog batch status can be finished while the filtered products edge
+     * still returns no item. The product-group edge becomes authoritative
+     * sooner and lets the validator read the group's products directly.
      */
-    private function fetchFacebookData($retailer_id, $context = 'simple') {
-        global $wp_url;
+    private function findFacebookProductGroupId($catalog_id, $retailer_id) {
+        $api = facebook_for_woocommerce()->get_api();
+        $access_token = $api ? $api->get_access_token() : '';
 
+        if (!$access_token) {
+            throw new Exception('Facebook access token is unavailable for product group lookup');
+        }
+
+        $url = add_query_arg(
+            [
+                'filter' => wp_json_encode(['retailer_id' => ['eq' => (string)$retailer_id]]),
+                'fields' => 'id,retailer_id',
+                // Meta currently returns the newest groups even when the
+                // retailer filter is not applied, so verify matches locally.
+                'limit' => 100
+            ],
+            \WooCommerce\Facebook\API::GRAPH_API_URL
+                . \WooCommerce\Facebook\API::API_VERSION
+                . "/{$catalog_id}/product_groups"
+        );
+
+        $response = wp_remote_get(
+            $url,
+            [
+                'headers' => ['Authorization' => "Bearer {$access_token}"],
+                'timeout' => 30
+            ]
+        );
+
+        if (is_wp_error($response)) {
+            throw new Exception($response->get_error_message());
+        }
+
+        $response_code = wp_remote_retrieve_response_code($response);
+        $body = json_decode(wp_remote_retrieve_body($response), true);
+        if (200 !== $response_code) {
+            throw new Exception($body['error']['message'] ?? "HTTP {$response_code}");
+        }
+
+        foreach ((array)($body['data'] ?? []) as $group) {
+            if ((string)($group['retailer_id'] ?? '') === (string)$retailer_id) {
+                return (string)($group['id'] ?? '');
+            }
+        }
+
+        return '';
+    }
+
+    /**
+     * Fetch Facebook data for all retailer IDs within one shared retry window.
+     */
+    private function fetchFacebookData($retailer_ids, $product_group_id = '') {
         $api = facebook_for_woocommerce()->get_api();
         $catalog_id = $this->integration->get_product_catalog_id();
         $fields = 'id,name,price,description,availability,retailer_id,condition,brand,color,size,image_url,product_group{id},product_sets{id,retailer_id}';
-
-        $retry_count = 0;
+        $requested_retailer_ids = array_map('strval', $retailer_ids);
+        $unique_retailer_ids = array_values(array_unique($requested_retailer_ids));
+        $facebook_data = [];
+        $poll_timeout_seconds = $this->getPollTimeoutSeconds();
+        $deadline = microtime(true) + $poll_timeout_seconds;
+        $attempt = 0;
+        $complete_snapshot_count = 0;
+        $required_complete_snapshots = $product_group_id ? 1 : (count($unique_retailer_ids) > 1 ? 2 : 1);
+        $stable_snapshot_found = false;
 
         do {
-            try {
-                $response = $api->get_product_facebook_fields($catalog_id, $retailer_id, $fields);
+            $attempt++;
+            $current_facebook_data = [];
+            $missing_retailer_ids = [];
+            $has_api_error = false;
 
-                if ($response && $response->response_data && isset($response->response_data['data'][0])) {
-                    $fb_data = $response->response_data['data'][0];
-                    $this->debug(
-                        $retry_count === 0
-                            ? "Successfully fetched Facebook data for retailer_id: {$retailer_id}"
-                            : "Successfully fetched Facebook data for retailer_id: {$retailer_id} on retry #" . ($retry_count + 1)
+            if (!$product_group_id && !empty($this->result['retailer_id'])) {
+                try {
+                    $product_group_id = $this->findFacebookProductGroupId(
+                        $catalog_id,
+                        $this->result['retailer_id']
                     );
 
-                    return [
-                        'id' => $fb_data['id'] ?? null,
-                        'name' => $fb_data['name'] ?? '',
-                        'price' => $fb_data['price'] ?? '',
-                        'description' => $fb_data['description'] ?? '',
-                        'availability' => $fb_data['availability'] ?? '',
-                        'retailer_id' => $fb_data['retailer_id'] ?? '',
-                        'condition' => $fb_data['condition'] ?? '',
-                        'brand' => $fb_data['brand'] ?? '',
-                        'color' => $fb_data['color'] ?? '',
-                        'size' => $fb_data['size'] ?? '',
-                        'image_url' => (!empty($fb_data['image_url'])) ? $fb_data['image_url'] : ($wp_url . '/wp-content/uploads/woocommerce-placeholder.webp'),
-                        'product_group_id' => $fb_data['product_group']['id'] ?? null,
-                        'product_sets' => $fb_data['product_sets']['data'],
-                        'found' => true
-                    ];
+                    if ($product_group_id) {
+                        $required_complete_snapshots = 1;
+                        $this->debug("Discovered Facebook product group {$product_group_id} from the catalog group edge");
+                    }
+                } catch (Exception $e) {
+                    // Fall back to the existing product search. Any connection
+                    // failure there remains a distinct validation error.
+                    $this->debug("Facebook product group lookup failed: " . $e->getMessage());
                 }
-            } catch (Exception $e) {
-                $this->debug("Facebook API error for retailer_id {$retailer_id}: " . $e->getMessage());
-                return ['found' => false, 'error' => $e->getMessage()];
             }
 
-            $retry_count++;
-            if ($retry_count < $this->max_retries) {
-                $backoff_seconds = pow(2, $retry_count);
-                $this->debug("Facebook API retry attempt #{$retry_count} of {$this->max_retries} for retailer_id: {$retailer_id} (waiting {$backoff_seconds}s)");
-                sleep($backoff_seconds);
-            }
-        } while ($retry_count < $this->max_retries);
+            if ($product_group_id) {
+                try {
+                    $response = $api->get_product_group_products($product_group_id, 1000, $fields);
+                    $group_products = $response->response_data['data'] ?? [];
 
-        $this->debug("No Facebook data found for retailer_id: {$retailer_id}");
-        return ['found' => false];
+                    foreach ($group_products as $group_product) {
+                        $retailer_id = (string)($group_product['retailer_id'] ?? '');
+                        if ($retailer_id && in_array($retailer_id, $unique_retailer_ids, true)) {
+                            $current_facebook_data[$retailer_id] = $this->formatFacebookData($group_product);
+                        }
+                    }
+
+                    foreach ($unique_retailer_ids as $retailer_id) {
+                        if (!isset($current_facebook_data[$retailer_id])) {
+                            $current_facebook_data[$retailer_id] = ['found' => false];
+                            $missing_retailer_ids[] = $retailer_id;
+                        }
+                    }
+                } catch (Exception $e) {
+                    $has_api_error = true;
+                    foreach ($unique_retailer_ids as $retailer_id) {
+                        $current_facebook_data[$retailer_id] = ['found' => false, 'error' => $e->getMessage()];
+                        $missing_retailer_ids[] = $retailer_id;
+                    }
+                    $this->debug("Facebook product group API error: " . $e->getMessage());
+                }
+            } else {
+                foreach ($unique_retailer_ids as $retailer_id) {
+                    try {
+                        $response = $api->get_product_facebook_fields($catalog_id, $retailer_id, $fields);
+
+                        if ($response && $response->response_data && isset($response->response_data['data'][0])) {
+                            $current_facebook_data[$retailer_id] = $this->formatFacebookData($response->response_data['data'][0]);
+                        } else {
+                            $current_facebook_data[$retailer_id] = ['found' => false];
+                            $missing_retailer_ids[] = $retailer_id;
+                        }
+                    } catch (Exception $e) {
+                        $current_facebook_data[$retailer_id] = ['found' => false, 'error' => $e->getMessage()];
+                        $missing_retailer_ids[] = $retailer_id;
+                        $has_api_error = true;
+                        $this->debug("Facebook API error for retailer_id {$retailer_id}: " . $e->getMessage());
+                    }
+                }
+
+                // A retailer-id lookup can become visible before its siblings
+                // and exposes the authoritative product group ID. Switch to the
+                // group endpoint as soon as that happens so subsequent polling
+                // reads one coherent variation snapshot instead of independent
+                // eventually-consistent search results.
+                if (!$has_api_error && count($missing_retailer_ids) > 0) {
+                    foreach ($current_facebook_data as $data) {
+                        if (!empty($data['product_group_id'])) {
+                            $product_group_id = (string)$data['product_group_id'];
+                            $required_complete_snapshots = 1;
+                            $this->debug("Discovered Facebook product group {$product_group_id}; switching to group snapshot polling");
+                            break;
+                        }
+                    }
+
+                    if ($product_group_id) {
+                        $facebook_data = $current_facebook_data;
+                        continue;
+                    }
+                }
+            }
+
+            // Use one complete catalog snapshot. An ID observed on an earlier
+            // attempt may disappear from the eventually consistent query, so
+            // latching individual successes can produce a false positive.
+            $facebook_data = $current_facebook_data;
+
+            if (count($missing_retailer_ids) === 0) {
+                $complete_snapshot_count++;
+                if ($complete_snapshot_count >= $required_complete_snapshots) {
+                    $stable_snapshot_found = true;
+                    $this->debug("Successfully fetched all Facebook data in {$complete_snapshot_count} consecutive snapshot(s), ending on attempt #{$attempt}");
+                    break;
+                }
+
+                $this->debug("Facebook API attempt #{$attempt} returned a complete snapshot; confirming stability");
+            } else {
+                $complete_snapshot_count = 0;
+            }
+
+            // Preserve API errors as distinct failures instead of retrying an
+            // authentication or request error for the entire poll window.
+            if ($has_api_error) {
+                break;
+            }
+
+            $remaining_seconds = $deadline - microtime(true);
+            if ($remaining_seconds <= 0) {
+                break;
+            }
+
+            $sleep_seconds = min(self::POLL_INTERVAL_SECONDS, max(1, (int) ceil($remaining_seconds)));
+            if (count($missing_retailer_ids) === 0) {
+                $this->debug("Waiting {$sleep_seconds}s to confirm the complete catalog snapshot remains stable");
+            } else {
+                $missing_ids = implode(', ', $missing_retailer_ids);
+                $this->debug("Facebook API attempt #{$attempt} did not find retailer_ids: [{$missing_ids}] (waiting {$sleep_seconds}s; {$poll_timeout_seconds}s shared poll window)");
+            }
+            sleep($sleep_seconds);
+        } while (true);
+
+        if (!$stable_snapshot_found && $complete_snapshot_count > 0) {
+            $this->debug("A complete catalog snapshot was observed but could not be confirmed on a consecutive poll");
+            foreach ($facebook_data as $retailer_id => $data) {
+                $facebook_data[$retailer_id]['found'] = false;
+                $facebook_data[$retailer_id]['unstable'] = true;
+            }
+        }
+
+        foreach ($facebook_data as $retailer_id => $data) {
+            if (!($data['found'] ?? false) && !isset($data['error'])) {
+                $this->debug("No Facebook data found for retailer_id: {$retailer_id} after {$attempt} attempts within a {$poll_timeout_seconds}s shared poll window");
+            }
+        }
+
+        return array_map(function($retailer_id) use ($facebook_data) {
+            return $facebook_data[$retailer_id];
+        }, $requested_retailer_ids);
+    }
+
+    /**
+     * Use one bounded propagation window for every positive catalog lookup.
+     * The legacy retry argument is retained so callers can pass zero when they
+     * expect an item to be absent, but it no longer shortens positive checks.
+     */
+    private function getPollTimeoutSeconds() {
+        if ($this->max_retries <= 1) {
+            return 0;
+        }
+
+        $poll_override = getenv('FB_E2E_CATALOG_POLL_SECONDS');
+        if (false !== $poll_override && is_numeric($poll_override)) {
+            return (int)min(self::MAX_POLL_SECONDS, max(0, (int)$poll_override));
+        }
+
+        return self::MAX_POLL_SECONDS;
+    }
+
+    /**
+     * Normalize one Facebook catalog response for field comparison.
+     */
+    private function formatFacebookData($fb_data) {
+        global $wp_url;
+
+        return [
+            'id' => $fb_data['id'] ?? null,
+            'name' => $fb_data['name'] ?? '',
+            'price' => $fb_data['price'] ?? '',
+            'description' => $fb_data['description'] ?? '',
+            'availability' => $fb_data['availability'] ?? '',
+            'retailer_id' => $fb_data['retailer_id'] ?? '',
+            'condition' => $fb_data['condition'] ?? '',
+            'brand' => $fb_data['brand'] ?? '',
+            'color' => $fb_data['color'] ?? '',
+            'size' => $fb_data['size'] ?? '',
+            'image_url' => (!empty($fb_data['image_url'])) ? $fb_data['image_url'] : ($wp_url . '/wp-content/uploads/woocommerce-placeholder.webp'),
+            'product_group_id' => $fb_data['product_group']['id'] ?? null,
+            'product_sets' => $fb_data['product_sets']['data'] ?? [],
+            'found' => true
+        ];
     }
 
 

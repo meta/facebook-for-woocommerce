@@ -78,6 +78,8 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       secrets-configured: ${{ steps.check.outputs.configured }}
+      max-parallel: ${{ steps.check.outputs.max-parallel }}
+      use-parallel-assets: ${{ steps.check.outputs.use-parallel-assets }}
     steps:
       - name: Check if required secrets are configured
         id: check
@@ -87,11 +89,31 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           REPO_OWNER: ${{ github.repository_owner }}
         run: |
+          echo "configured=false" >> "$GITHUB_OUTPUT"
+          echo "max-parallel=1" >> "$GITHUB_OUTPUT"
+          echo "use-parallel-assets=false" >> "$GITHUB_OUTPUT"
+
           if [ -n "$TEST_SITE_HOST" ] && [ -n "$FB_TEST_META_BUSINESS_ASSETS" ]; then
+            if ! echo "$FB_TEST_META_BUSINESS_ASSETS" | jq -e 'type == "array" and length > 0' > /dev/null; then
+              echo "::error title=Invalid Meta test assets::FB_TEST_META_BUSINESS_ASSETS must be a non-empty JSON array."
+              exit 1
+            fi
+
             echo "configured=true" >> $GITHUB_OUTPUT
             echo "✅ Required secrets are configured"
+
+            ASSET_COUNT=$(echo "$FB_TEST_META_BUSINESS_ASSETS" | jq 'length')
+            DISTINCT_CATALOG_COUNT=$(echo "$FB_TEST_META_BUSINESS_ASSETS" | jq \
+              '[.[0:3][].wc_facebook_product_catalog_id | select(type == "string" and length > 0)] | unique | length')
+
+            if [ "$ASSET_COUNT" -ge 3 ] && [ "$DISTINCT_CATALOG_COUNT" -eq 3 ]; then
+              echo "max-parallel=3" >> "$GITHUB_OUTPUT"
+              echo "use-parallel-assets=true" >> "$GITHUB_OUTPUT"
+              echo "✅ Three distinct catalogs found; E2E jobs will use three-way parallelism"
+            else
+              echo "::notice title=Sequential E2E mode::Found $ASSET_COUNT asset set(s) and $DISTINCT_CATALOG_COUNT distinct catalog(s) in the first three entries. E2E jobs will use the first catalog sequentially. Configure three distinct catalogs to enable parallel execution."
+            fi
           else
-            echo "configured=false" >> $GITHUB_OUTPUT
             # Fail if this is a scheduled run on the facebook repository
             if [ "$EVENT_NAME" = "schedule" ] && [ "$REPO_OWNER" = "facebook" ]; then
               echo "::error title=E2E Tests Failed::Scheduled run on facebook repository but required secrets (TEST_SITE_HOST, FB_TEST_META_BUSINESS_ASSETS) are not configured."
@@ -130,16 +152,20 @@ jobs:
     # never actually executing. The mysql:8.0 service container is multi-arch,
     # so this is no longer constrained to x86-only pools.
     runs-on: ubuntu-latest
-    # Fail fast instead of letting a stuck step (e.g. a hung browser install) run
-    # until GitHub's 6-hour default job timeout. plugin-events runs many browser
-    # projects sequentially, so it gets a larger budget.
-    timeout-minutes: ${{ matrix.test-group == 'plugin-events' && 90 || 45 }}
+    # Use explicit per-group budgets. Browser coverage and catalog stress/depth
+    # suites legitimately exceed 45 minutes when Facebook propagation is slow.
+    timeout-minutes: ${{ matrix.job_timeout }}
+
+    # With three distinct catalogs, run one shard per catalog in parallel. With
+    # fewer catalogs, every shard uses catalog 0 and runs sequentially. The
+    # concurrency group also protects each catalog across overlapping runs.
+    concurrency:
+      group: facebook-for-woocommerce-e2e-meta-asset-${{ needs.check-secrets.outputs.use-parallel-assets == 'true' && matrix.asset-slot || '0' }}
+      queue: max
 
     strategy:
       fail-fast: false
-      # Cap how many shards run concurrently within a run to keep shared-test-asset
-      # contention reasonable (all shards now share the ubuntu-latest pool).
-      max-parallel: 8
+      max-parallel: ${{ fromJSON(needs.check-secrets.outputs.max-parallel) }}
       matrix:
         test-group: ['plugin-events', 'product-crud', 'variable-product-depth', 'product-batch', 'product-category', 'performance-sync']
         version-set: ['supported', 'latest']
@@ -152,6 +178,24 @@ jobs:
             wp-version: 'latest'
             wc-version: 'latest'
             version-label: 'Latest'
+          - test-group: 'plugin-events'
+            job_timeout: 120
+            asset-slot: 0
+          - test-group: 'product-crud'
+            job_timeout: 90
+            asset-slot: 1
+          - test-group: 'variable-product-depth'
+            job_timeout: 90
+            asset-slot: 2
+          - test-group: 'product-batch'
+            job_timeout: 45
+            asset-slot: 0
+          - test-group: 'product-category'
+            job_timeout: 45
+            asset-slot: 1
+          - test-group: 'performance-sync'
+            job_timeout: 90
+            asset-slot: 2
 
     services:
       mysql:
@@ -289,6 +333,14 @@ jobs:
             --admin_password=admin \
             --admin_email=test@example.com \
             --allow-root
+
+          # Catalog E2E tests execute due sync events through the deterministic
+          # process-sync-jobs helper. Prevent request-triggered WP-Cron from
+          # racing that helper while unscheduling the same event. Plugin/events
+          # coverage keeps normal WP-Cron behavior.
+          if [ "${{ matrix.test-group }}" != "plugin-events" ]; then
+            wp config set DISABLE_WP_CRON true --raw --allow-root
+          fi
 
       - name: Install WooCommerce
         run: |
@@ -433,21 +485,23 @@ jobs:
           echo "✅ PASS: No errors found in logs"
 
       - name: Select Meta Business Assets
+        env:
+          META_BUSINESS_ASSETS: ${{ secrets.FB_TEST_META_BUSINESS_ASSETS }}
+          ASSET_INDEX: ${{ needs.check-secrets.outputs.use-parallel-assets == 'true' && matrix.asset-slot || 0 }}
         run: |
           # Parse the JSON array of business assets
-          ASSETS='${{ secrets.FB_TEST_META_BUSINESS_ASSETS }}'
+          ASSETS="$META_BUSINESS_ASSETS"
 
           # Get the array length
           ARRAY_LENGTH=$(echo "$ASSETS" | jq 'length')
           echo "Total available business asset sets: $ARRAY_LENGTH"
 
-          # Use run_number as selector - it's sequential (1, 2, 3, ...) across all workflow runs
-          # This ensures each concurrent run gets a different business asset set
-          SELECTOR="${{ github.run_number }}"
-          echo "Using GitHub Run Number as selector: $SELECTOR"
+          if [ "$ARRAY_LENGTH" -lt 1 ]; then
+            echo "::error title=Missing Meta test assets::Expected at least 1 business asset set, found $ARRAY_LENGTH."
+            exit 1
+          fi
 
-          # Calculate index using modulo
-          INDEX=$((SELECTOR % ARRAY_LENGTH))
+          INDEX="$ASSET_INDEX"
           echo "Selected asset set index: $INDEX"
 
           # Extract the selected asset set
@@ -517,8 +571,17 @@ jobs:
           wp option update wc_facebook_has_authorized_pages_read_engagement "yes" --allow-root
           wp option update wc_facebook_enable_product_sync "yes" --allow-root
 
+          # These suites exercise real-time Catalog Batch API sync. A legacy
+          # full-feed upload uses the same catalog, and Meta cannot fetch the
+          # private CI hostname, so keep it out of this run.
+          wp option update wc_facebook_legacy_feed_file_generation_enabled "no" --allow-root
+
           # Activate the plugin (this triggers automatic sync)
           wp plugin activate facebook-for-woocommerce --allow-root
+
+          # Remove a feed action if activation/heartbeat queued it before the
+          # settings above were observed.
+          wp eval "as_unschedule_all_actions('wc_facebook_regenerate_feed');" --allow-root
 
       - name: Verify no new errors after plugin activation
         run: |
@@ -1024,7 +1087,7 @@ jobs:
         if: matrix.test-group == 'product-crud'
         run: |
           cd ${{ env.PLUGIN_PATH }}
-          npx playwright test "product-(creation|modification|deletion).spec.js" --project=chromium-wp-admin --workers=2
+          npx playwright test "product-(creation|modification|deletion).spec.js" --project=chromium-wp-admin --workers=1
 
       - name: Run Variable Product Depth tests
         if: matrix.test-group == 'variable-product-depth'

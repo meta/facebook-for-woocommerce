@@ -572,7 +572,7 @@ test('Purchase - Variable Product', async ({ page }, testInfo) => {
 
       await clearCart(page);
       const targetVariation = fixture.variations.find(v => v.option === 'Large') || fixture.variations[0];
-      const { testId } = await TestSetup.init(page, 'Purchase', testInfo);
+      const { testId, pixelCapture } = await TestSetup.init(page, 'Purchase', testInfo);
 
       await page.goto(fixture.parentUrl);
       await TestSetup.waitForPageReady(page, TIMEOUTS.INSTANT);
@@ -590,7 +590,9 @@ test('Purchase - Variable Product', async ({ page }, testInfo) => {
       expect(cartItems.length).toBe(1);
       expect(String(cartItems[0].id)).toBe(String(targetVariation.id));
 
+      const eventPromise = pixelCapture.waitForEvent();
       await completeCheckoutFromCart(page);
+      await eventPromise;
 
       const validator = new EventValidator(testId);
       await validator.checkDebugLog();
@@ -598,10 +600,14 @@ test('Purchase - Variable Product', async ({ page }, testInfo) => {
       const result = ignoreKnownPurchaseUserDataGap(rawResult);
 
       const captured = await loadCapturedEvents(testId);
+      const pixelPurchase = getLatestEvent(captured.pixel, 'Purchase');
       const capiPurchase = getLatestEvent(captured.capi, 'Purchase');
+      const pixelContents = asArray(pixelPurchase?.custom_data?.contents);
       const contents = asArray(capiPurchase?.custom_data?.contents);
 
+      assertEventContainsRetailerId(pixelPurchase, targetVariation.retailer_id);
       assertEventContainsRetailerId(capiPurchase, targetVariation.retailer_id);
+      expect(pixelContents.some(item => String(item.id) === String(targetVariation.retailer_id) && Number(item.quantity) >= 1)).toBe(true);
       expect(contents.some(item => String(item.id) === String(targetVariation.retailer_id) && Number(item.quantity) >= 1)).toBe(true);
 
       TestSetup.logResult('Purchase (Variable Product)', result);
@@ -657,7 +663,7 @@ test('Purchase - Grouped Product', async ({ page }, testInfo) => {
 
       await clearCart(page);
       const child = fixture.children[0];
-      const { testId } = await TestSetup.init(page, 'Purchase', testInfo);
+      const { testId, pixelCapture } = await TestSetup.init(page, 'Purchase', testInfo);
 
       await page.goto(fixture.groupedUrl);
       await TestSetup.waitForPageReady(page, TIMEOUTS.INSTANT);
@@ -671,7 +677,9 @@ test('Purchase - Grouped Product', async ({ page }, testInfo) => {
       expect(cartItems.length).toBe(1);
       expect(String(cartItems[0].id)).toBe(String(child.id));
 
+      const eventPromise = pixelCapture.waitForEvent();
       await completeCheckoutFromCart(page);
+      await eventPromise;
 
       const validator = new EventValidator(testId);
       await validator.checkDebugLog();
@@ -679,10 +687,14 @@ test('Purchase - Grouped Product', async ({ page }, testInfo) => {
       const result = ignoreKnownPurchaseUserDataGap(rawResult);
 
       const captured = await loadCapturedEvents(testId);
+      const pixelPurchase = getLatestEvent(captured.pixel, 'Purchase');
       const capiPurchase = getLatestEvent(captured.capi, 'Purchase');
+      const pixelContents = asArray(pixelPurchase?.custom_data?.contents);
       const contents = asArray(capiPurchase?.custom_data?.contents);
 
+      assertEventContainsRetailerId(pixelPurchase, child.retailer_id);
       assertEventContainsRetailerId(capiPurchase, child.retailer_id);
+      expect(pixelContents.some(item => String(item.id) === String(child.retailer_id) && Number(item.quantity) >= 1)).toBe(true);
       expect(contents.some(item => String(item.id) === String(child.retailer_id) && Number(item.quantity) >= 1)).toBe(true);
 
       TestSetup.logResult('Purchase (Grouped Product)', result);
@@ -746,7 +758,7 @@ test('InitiateCheckout', async ({ page }, testInfo) => {
 });
 
 test('Purchase', async ({ page }, testInfo) => {
-    const { testId } = await TestSetup.init(page, 'Purchase',  testInfo);
+    const { testId, pixelCapture } = await TestSetup.init(page, 'Purchase',  testInfo);
 
     await page.goto(process.env.TEST_PRODUCT_URL);
     await TestSetup.waitForPageReady(page, TIMEOUTS.INSTANT);
@@ -756,7 +768,9 @@ test('Purchase', async ({ page }, testInfo) => {
     await page.waitForTimeout(TIMEOUTS.SHORT);
 
     console.log(`   💳 Completing checkout as guest`);
+    const eventPromise = pixelCapture.waitForEvent();
     await completeCheckoutFromCart(page);
+    await eventPromise;
 
     const validator = new EventValidator(testId);
     await validator.checkDebugLog();
@@ -768,7 +782,7 @@ test('Purchase', async ({ page }, testInfo) => {
 });
 
 test('Purchase - Multiple Place Order Clicks', async ({ page }, testInfo) => {
-    const { testId } = await TestSetup.init(page, 'Purchase',  testInfo);
+    const { testId, pixelCapture } = await TestSetup.init(page, 'Purchase',  testInfo);
 
     await page.goto(process.env.TEST_PRODUCT_URL);
     await TestSetup.waitForPageReady(page, TIMEOUTS.INSTANT);
@@ -853,6 +867,7 @@ test('Purchase - Multiple Place Order Clicks', async ({ page }, testInfo) => {
 
     // Click Place Order button 3 times rapidly
     const placeOrderButton = page.locator('.wc-block-components-checkout-place-order-button');
+    const eventPromise = pixelCapture.waitForEvent();
     console.log(`   🔄 Click #1`);
     await placeOrderButton.click();
     await page.waitForTimeout(100);
@@ -864,6 +879,7 @@ test('Purchase - Multiple Place Order Clicks', async ({ page }, testInfo) => {
 
     console.log(`   ⏳ Waiting for order to process...`);
     await page.waitForURL('**/checkout/order-received/**', { timeout: TIMEOUTS.EXTRA_LONG });
+    await eventPromise;
     await page.waitForTimeout(TIMEOUTS.NORMAL);
 
     const validator = new EventValidator(testId);
@@ -871,7 +887,7 @@ test('Purchase - Multiple Place Order Clicks', async ({ page }, testInfo) => {
     const rawResult = await validator.validate('Purchase', page);
     const result = ignoreKnownPurchaseUserDataGap(rawResult);
 
-    // Should still only have 1 Purchase event despite multiple clicks
+    // Multiple clicks must still produce exactly one Pixel and one CAPI Purchase event.
     TestSetup.logResult('Purchase (Deduplication)', result);
     expect(result.passed).toBe(true);
 });

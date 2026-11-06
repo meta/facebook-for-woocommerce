@@ -238,18 +238,8 @@ if ( ! class_exists( 'WC_Facebookcommerce_EventsTracker' ) ) :
 						}
 					}
 				} else {
-					$cookie_to_set = $param_builder->getCookiesToSet();
-
-					if ( ! headers_sent() ) {
-						foreach ( $cookie_to_set as $cookie ) {
-							setcookie(
-								$cookie->name,
-								$cookie->value,
-								time() + $cookie->max_age,
-								'/',
-								$cookie->domain
-							);
-						}
+					foreach ( $param_builder->getCookiesToSet() as $cookie ) {
+						$this->set_param_builder_cookie( $cookie );
 					}
 				}
 			} catch ( \Throwable $exception ) {
@@ -263,6 +253,30 @@ if ( ! class_exists( 'WC_Facebookcommerce_EventsTracker' ) ) :
 					)
 				);
 			}
+		}
+
+		/**
+		 * Writes one cookie the CAPI Parameter Builder asked for.
+		 *
+		 * Kept apart from param_builder_server_setup() so tests can record cookie writes, which
+		 * the CLI SAPI that PHPUnit runs under cannot observe.
+		 *
+		 * @since 3.7.9
+		 *
+		 * @param object $cookie a cookie from ParamBuilder::getCookiesToSet().
+		 */
+		protected function set_param_builder_cookie( $cookie ) {
+			if ( headers_sent() ) {
+				return;
+			}
+
+			setcookie(
+				$cookie->name,
+				$cookie->value,
+				time() + $cookie->max_age,
+				'/',
+				$cookie->domain
+			);
 		}
 
 

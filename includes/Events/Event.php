@@ -239,20 +239,49 @@ class Event {
 	 */
 	protected function get_current_url() {
 		if ( wp_doing_ajax() ) {
-			$url = wp_get_raw_referer();
-		} else {
-			/**
-			 * Instead of relying on the HTTP_HOST server var, we use home_url(),
-			 * so that we get the host configured in site options.
-			 * Additionally, this automatically uses the correct domain when
-			 * using Forward with the WooCommerce Dev Helper plugin.
-			 */
-			$url = home_url();
-			if ( isset( $_SERVER['REQUEST_URI'] ) ) {
-				$url .= esc_url_raw( wp_unslash( $_SERVER['REQUEST_URI'] ) );
-			}
+			return wp_get_raw_referer();
 		}
-		return $url;
+
+		/**
+		 * Only the scheme, host and port of home_url() are used, so that the host is the
+		 * one configured in site options rather than the HTTP_HOST server var. This also
+		 * uses the correct domain when using Forward with the WooCommerce Dev Helper plugin.
+		 *
+		 * The path of home_url() is added only when REQUEST_URI does not already start with it.
+		 * On a site installed in a subdirectory, or with WPML serving languages from directories
+		 * (/fr/), both carry that prefix, so appending home_url() as a whole repeats it
+		 * (https://example.com/fr//fr/page/). A reverse proxy serving the site from a subpath, or
+		 * a plugin rewriting REQUEST_URI, may have removed it though, and then it is put back.
+		 *
+		 * The query string of home_url() is always left out: WPML's ?lang= parameter is already
+		 * in REQUEST_URI.
+		 */
+		$home_url = home_url();
+		$home     = wp_parse_url( $home_url );
+		$request  = isset( $_SERVER['REQUEST_URI'] ) ? esc_url_raw( wp_unslash( $_SERVER['REQUEST_URI'] ) ) : '';
+
+		// Some servers put the absolute form of the request target (http://host/path) in REQUEST_URI.
+		if ( preg_match( '#^[a-z][a-z0-9+.-]*://#i', $request ) ) {
+			$parts   = wp_parse_url( $request );
+			$request = ( isset( $parts['path'] ) ? $parts['path'] : '/' ) . ( isset( $parts['query'] ) ? '?' . $parts['query'] : '' );
+		}
+
+		if ( empty( $home['host'] ) ) {
+			// A home URL without a host has no origin to keep, so it is used as it is.
+			return $home_url . $request;
+		}
+
+		$scheme    = isset( $home['scheme'] ) ? $home['scheme'] : ( is_ssl() ? 'https' : 'http' );
+		$port      = isset( $home['port'] ) ? ':' . $home['port'] : '';
+		$url       = $scheme . '://' . $home['host'] . $port;
+		$home_path = isset( $home['path'] ) ? untrailingslashit( $home['path'] ) : '';
+
+		// Matched on a path boundary, so /store does not match /storefront/, and case-insensitively, as WP::parse_request() does.
+		if ( '' !== $home_path && ! preg_match( '#^' . preg_quote( $home_path, '#' ) . '(?:/|\?|$)#i', $request ) ) {
+			$url .= $home_path;
+		}
+
+		return $url . $request;
 	}
 
 

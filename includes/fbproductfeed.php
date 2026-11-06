@@ -11,7 +11,6 @@
 defined( 'ABSPATH' ) || exit;
 
 use WooCommerce\Facebook\Framework\Plugin\Exception as PluginException;
-use WooCommerce\Facebook\Products;
 use WooCommerce\Facebook\Products\Feed;
 use WooCommerce\Facebook\Framework\Api\Exception as ApiException;
 use WooCommerce\Facebook\Framework\Logger;
@@ -533,11 +532,6 @@ class WC_Facebook_Product_Feed {
 			++$this->no_default_product_count;
 
 			$product_data['default_product'] = '';
-		}
-
-		// when dealing with the feed file, only set out-of-stock products as hidden
-		if ( Products::product_should_be_deleted( $woo_product->woo_product ) ) {
-			$product_data['visibility'] = \WC_Facebookcommerce_Integration::FB_SHOP_PRODUCT_HIDDEN;
 		}
 
 		// Sale price, only format if we have a sale price set for the product, else leave as empty ('').

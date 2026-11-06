@@ -123,8 +123,7 @@ class Products {
 	 * @since 3.5.1
 	 */
 	public static function get_product_sync_meta_key() {
-		$is_rolled_out = facebook_for_woocommerce()->get_integration()->is_woo_all_products_enabled();
-		if ( PluginRender::is_master_sync_on() && $is_rolled_out ) {
+		if ( PluginRender::is_master_sync_on() ) {
 			return self::OPTEN_IN_SYNC_ENABLED_META_KEY;
 		} else {
 			return self::SYNC_ENABLED_META_KEY;
@@ -243,16 +242,17 @@ class Products {
 	/**
 	 * Determines whether the given product should be removed from the catalog.
 	 *
-	 * A product should be removed if it is no longer in stock and the user has opted-in to hide products that are out of stock,
-	 * or belongs to an excluded category.
-	 *
 	 * @since 2.0.0
+	 * @deprecated 3.7.9 This only reported products in an excluded category or tag, and categories
+	 *             and tags can no longer be excluded from sync, so no product is removed for it.
 	 *
 	 * @param \WC_Product $product
 	 * @return bool
 	 */
-	public static function product_should_be_deleted( \WC_Product $product ) {
-		return ! facebook_for_woocommerce()->get_product_sync_validator( $product )->passes_product_terms_check();
+	public static function product_should_be_deleted( \WC_Product $product ) { // phpcs:ignore Generic.CodeAnalysis.UnusedFunctionParameter.Found -- signature kept for backwards compatibility.
+		wc_deprecated_function( __METHOD__, '3.7.9' );
+
+		return false;
 	}
 
 
@@ -279,13 +279,15 @@ class Products {
 	 *
 	 * @since 1.10.0
 	 *
-	 * @deprecated use \WooCommerce\Facebook\ProductSync\ProductValidator::passes_product_terms_check() instead
+	 * @deprecated 3.7.9 Categories and tags can no longer be excluded from sync, so no product is excluded by its terms.
 	 *
 	 * @param \WC_Product $product product object
 	 * @return bool if true, product should be excluded from sync, if false, product can be included in sync (unless manually excluded by individual product meta)
 	 */
-	public static function is_sync_excluded_for_product_terms( \WC_Product $product ) {
-		return ! facebook_for_woocommerce()->get_product_sync_validator( $product )->passes_product_terms_check();
+	public static function is_sync_excluded_for_product_terms( \WC_Product $product ) { // phpcs:ignore Generic.CodeAnalysis.UnusedFunctionParameter.Found -- signature kept for backwards compatibility.
+		wc_deprecated_function( __METHOD__, '3.7.9' );
+
+		return false;
 	}
 
 

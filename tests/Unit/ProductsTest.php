@@ -10,6 +10,7 @@ declare( strict_types=1 );
 
 namespace WooCommerce\Facebook\Tests\Unit;
 
+use WooCommerce\Facebook\Handlers\PluginRender;
 use WooCommerce\Facebook\Products;
 use WooCommerce\Facebook\Tests\AbstractWPUnitTestWithOptionIsolationAndSafeFiltering;
 
@@ -855,14 +856,27 @@ class ProductsTest extends AbstractWPUnitTestWithOptionIsolationAndSafeFiltering
 	}
 
 	/**
-	 * Test get_product_sync_meta_key returns expected key.
+	 * Test get_product_sync_meta_key uses the all-products key unless the store opted out, whatever
+	 * the retired woo_all_products_sync_enabled rollout switch still says.
 	 *
 	 * @covers \WooCommerce\Facebook\Products::get_product_sync_meta_key
 	 */
-	public function test_get_product_sync_meta_key(): void {
-		$meta_key = Products::get_product_sync_meta_key();
+	public function test_get_product_sync_meta_key_uses_the_all_products_key_without_an_opt_out(): void {
+		delete_option( PluginRender::MASTER_SYNC_OPT_OUT_TIME );
+		update_option( 'wc_facebook_for_woocommerce_rollout_switches', array( 'woo_all_products_sync_enabled' => 'no' ) );
 
-		$this->assertIsString( $meta_key, 'Should return a string' );
-		$this->assertNotEmpty( $meta_key, 'Should not be empty' );
+		$this->assertSame( Products::OPTEN_IN_SYNC_ENABLED_META_KEY, Products::get_product_sync_meta_key() );
+	}
+
+	/**
+	 * Test get_product_sync_meta_key keeps the per-product legacy key for stores that opted out of
+	 * syncing all products.
+	 *
+	 * @covers \WooCommerce\Facebook\Products::get_product_sync_meta_key
+	 */
+	public function test_get_product_sync_meta_key_uses_the_legacy_key_after_an_opt_out(): void {
+		update_option( PluginRender::MASTER_SYNC_OPT_OUT_TIME, '2025-06-01 10:00:00' );
+
+		$this->assertSame( Products::SYNC_ENABLED_META_KEY, Products::get_product_sync_meta_key() );
 	}
 }

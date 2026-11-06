@@ -190,7 +190,7 @@ class Background extends BackgroundJobHandler {
 		}
 
 		$request = null;
-		if ( ! Products::product_should_be_deleted( $product ) && Products::product_should_be_synced( $product ) ) {
+		if ( Products::product_should_be_synced( $product ) ) {
 
 			if ( $product->is_type( 'variation' ) ) {
 				$product_data = \WC_Facebookcommerce_Utils::prepare_product_variation_data_items_batch( $product );

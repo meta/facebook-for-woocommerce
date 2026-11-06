@@ -14,7 +14,6 @@ use WooCommerce\Facebook\Admin\Settings_Screens;
 use WooCommerce\Facebook\Framework\Helper;
 use WooCommerce\Facebook\Framework\Plugin\Compatibility;
 use WooCommerce\Facebook\Framework\Plugin\Exception as PluginException;
-use WooCommerce\Facebook\RolloutSwitches;
 use WooCommerce\Facebook\Framework\Logger;
 
 defined( 'ABSPATH' ) || exit;
@@ -62,29 +61,14 @@ class Enhanced_Settings {
 	 * @return array
 	 */
 	public function build_menu_item_array(): array {
-		$is_connected                     = $this->plugin->get_connection_handler()->is_connected();
-		$is_woo_all_products_sync_enabled = $this->plugin->get_rollout_switches()->is_switch_enabled(
-			RolloutSwitches::SWITCH_WOO_ALL_PRODUCTS_SYNC_ENABLED
-		);
+		$is_connected = $this->plugin->get_connection_handler()->is_connected();
 
 		if ( $is_connected ) {
-			if ( $is_woo_all_products_sync_enabled ) {
-				$screens = array(
-					Settings_Screens\Shops::ID         => new Settings_Screens\Shops(),
-					Settings_Screens\Product_Attributes::ID => new Settings_Screens\Product_Attributes(),
-					Settings_Screens\Configuration::ID => new Settings_Screens\Configuration(),
-				);
-			} else {
-				/**
-				 * If not enabled then the product sync tab should show itself
-				 */
-				$screens = array(
-					Settings_Screens\Shops::ID         => new Settings_Screens\Shops(),
-					Settings_Screens\Product_Sync::ID  => new Settings_Screens\Product_Sync(),
-					Settings_Screens\Product_Attributes::ID => new Settings_Screens\Product_Attributes(),
-					Settings_Screens\Configuration::ID => new Settings_Screens\Configuration(),
-				);
-			}
+			$screens = array(
+				Settings_Screens\Shops::ID              => new Settings_Screens\Shops(),
+				Settings_Screens\Product_Attributes::ID => new Settings_Screens\Product_Attributes(),
+				Settings_Screens\Configuration::ID      => new Settings_Screens\Configuration(),
+			);
 		} else {
 			$screens = [ Settings_Screens\Shops::ID => new Settings_Screens\Shops() ];
 		}

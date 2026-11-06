@@ -102,7 +102,7 @@ class Update {
 				'flow_step'  => 'send_plugin_updates',
 				'extra_data' => [
 					'is_multisite'                         => is_multisite(),
-					'is_product_sync_enabled'              => facebook_for_woocommerce()->get_integration()->is_product_sync_enabled(),
+					'is_product_sync_enabled'              => true,
 					'excluded_product_categories'          => wp_json_encode( $excluded_product_categories ),
 					'excluded_product_tags'                => wp_json_encode( $excluded_product_tags ),
 					'published_product_count'              => facebook_for_woocommerce()->get_integration()->get_product_count(),

@@ -140,7 +140,11 @@ abstract class AsyncRequest {
 	/**
 	 * Gets the ID of the user the async request is expected to be handled as.
 	 *
-	 * That is the user authenticated by the logged-in cookie of the current request, or 0 when there is no valid one.
+	 * That is the user the current request's cookies authenticate, checked in the order WordPress checks them when it
+	 * handles the request: the auth cookie (secure_auth over HTTPS) first, then the logged-in cookie, or 0 when neither
+	 * is valid. A request dispatched from wp-admin forwards both, and the auth cookie wins even when the logged-in one
+	 * is missing or belongs to someone else.
+	 *
 	 * This matches the handling side only while get_request_args() forwards the current request's cookies, since
 	 * wp_create_nonce() also reads the nonce's session token from them: a subclass that forwards other cookies has
 	 * to override create_nonce() as well.
@@ -152,7 +156,11 @@ abstract class AsyncRequest {
 	 * @return int
 	 */
 	protected function get_request_user_id() {
-		$user_id = wp_validate_auth_cookie( '', 'logged_in' );
+		$user_id = wp_validate_auth_cookie();
+
+		if ( ! $user_id ) {
+			$user_id = wp_validate_auth_cookie( '', 'logged_in' );
+		}
 
 		return $user_id ? (int) $user_id : 0;
 	}

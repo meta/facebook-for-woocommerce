@@ -10,6 +10,7 @@ namespace WooCommerce\Facebook\Tests\Admin\Settings_Screens;
 
 use PHPUnit\Framework\TestCase;
 use WooCommerce\Facebook\Admin\Settings_Screens\Product_Sync;
+use WooCommerce\Facebook\RolloutSwitches;
 use WooCommerce\Facebook\Tests\AbstractWPUnitTestWithOptionIsolationAndSafeFiltering;
 
 /**
@@ -244,5 +245,183 @@ class Product_SyncTest extends AbstractWPUnitTestWithOptionIsolationAndSafeFilte
         } catch (\Throwable $e) {
             $this->fail('save() should not throw, got: ' . $e->getMessage());
         }
+    }
+
+    /**
+     * Finds a settings field by its option id.
+     */
+    private function find_field( array $settings, string $id ): array {
+        foreach ( $settings as $field ) {
+            if ( isset( $field['id'] ) && $id === $field['id'] ) {
+                return $field;
+            }
+        }
+        $this->fail( "Field {$id} not found" );
+    }
+
+    /**
+     * Saved exclusions must be rendered even when a term query filter (a language plugin, for
+     * example) hides the terms, otherwise the multiselect drops them on the next save.
+     */
+    public function test_get_settings_keeps_saved_exclusions_hidden_by_a_term_query_filter() {
+        $category_id = wp_insert_term( 'Hidden category', 'product_cat' )['term_id'];
+        $tag_id      = wp_insert_term( 'Hidden tag', 'product_tag' )['term_id'];
+        $this->mock_set_option( \WC_Facebookcommerce_Integration::SETTING_EXCLUDED_PRODUCT_CATEGORY_IDS, array( (string) $category_id ) );
+        $this->mock_set_option( \WC_Facebookcommerce_Integration::SETTING_EXCLUDED_PRODUCT_TAG_IDS, array( (string) $tag_id ) );
+
+        // Hide both terms from every term query, the way a language plugin narrows results.
+        $this->add_filter_with_safe_teardown(
+            'get_terms',
+            static function ( $terms ) use ( $category_id, $tag_id ) {
+                if ( is_array( $terms ) ) {
+                    unset( $terms[ $category_id ], $terms[ $tag_id ] );
+                }
+                return $terms;
+            }
+        );
+
+        $settings = $this->product_sync->get_settings();
+
+        $categories = $this->find_field( $settings, \WC_Facebookcommerce_Integration::SETTING_EXCLUDED_PRODUCT_CATEGORY_IDS )['options'];
+        $tags       = $this->find_field( $settings, \WC_Facebookcommerce_Integration::SETTING_EXCLUDED_PRODUCT_TAG_IDS )['options'];
+        $this->assertSame( 'Hidden category', $categories[ $category_id ] ?? null );
+        $this->assertSame( 'Hidden tag', $tags[ $tag_id ] ?? null );
+    }
+
+    /** Polylang lifts its language filter when the query passes an empty lang. */
+    public function test_get_settings_queries_terms_without_a_polylang_language_filter() {
+        $seen_lang = array();
+        $this->add_filter_with_safe_teardown(
+            'get_terms_args',
+            static function ( $args ) use ( &$seen_lang ) {
+                $seen_lang[] = $args['lang'] ?? '(missing)';
+                return $args;
+            }
+        );
+
+        $this->product_sync->get_settings();
+
+        $this->assertNotEmpty( $seen_lang );
+        $this->assertSame( array( '' ), array_unique( $seen_lang ), 'Every term query must pass an empty lang so Polylang returns all languages.' );
+    }
+
+    /**
+     * Under WPML both term queries run with the language switched to all, inside a single switch
+     * that is undone afterwards.
+     */
+    public function test_get_settings_queries_all_languages_under_wpml() {
+        $this->add_filter_with_safe_teardown( 'wpml_current_language', static function () { return 'de'; } );
+        $language = 'de';
+        $switches = array();
+        $this->add_filter_with_safe_teardown(
+            'wpml_switch_language',
+            static function ( $switched_to ) use ( &$language, &$switches ) {
+                $language   = $switched_to;
+                $switches[] = $switched_to;
+            }
+        );
+        $query_languages = array();
+        $this->add_filter_with_safe_teardown(
+            'get_terms_args',
+            static function ( $args, $taxonomies ) use ( &$query_languages, &$language ) {
+                $query_languages[ implode( ',', (array) $taxonomies ) ] = $language;
+                return $args;
+            },
+            10,
+            2
+        );
+
+        $this->product_sync->get_settings();
+
+        $this->assertSame( array( 'product_cat' => 'all', 'product_tag' => 'all' ), $query_languages, 'Both term queries must run while WPML is on all languages.' );
+        $this->assertSame( array( 'all', 'de' ), $switches, 'One switch to all languages, undone once afterwards.' );
+        $this->assertSame( 'de', $language, 'The admin language is restored.' );
+    }
+
+    /**
+     * The fallback has to be seeded from the raw option. The integration getters return the IDs
+     * in effect, which is empty under the all-products rollout switch, while WooCommerce marks the
+     * multiselect's selection from the raw option, so seeding from the getters left those IDs unrendered.
+     */
+    public function test_get_settings_keeps_saved_exclusions_while_the_all_products_switch_is_on() {
+        $category_id = wp_insert_term( 'Hidden category', 'product_cat' )['term_id'];
+        $this->mock_set_option( \WC_Facebookcommerce_Integration::SETTING_EXCLUDED_PRODUCT_CATEGORY_IDS, array( (string) $category_id ) );
+        $this->mock_set_option( 'wc_facebook_for_woocommerce_rollout_switches', array( RolloutSwitches::SWITCH_WOO_ALL_PRODUCTS_SYNC_ENABLED => 'yes' ) );
+        $this->add_filter_with_safe_teardown(
+            'get_terms',
+            static function ( $terms ) use ( $category_id ) {
+                if ( is_array( $terms ) ) {
+                    unset( $terms[ $category_id ] );
+                }
+                return $terms;
+            }
+        );
+        $this->assertSame( array(), facebook_for_woocommerce()->get_integration()->get_excluded_product_category_ids(), 'Precondition: the switch makes the getter return nothing.' );
+
+        $categories = $this->find_field( $this->product_sync->get_settings(), \WC_Facebookcommerce_Integration::SETTING_EXCLUDED_PRODUCT_CATEGORY_IDS )['options'];
+
+        $this->assertSame( 'Hidden category', $categories[ $category_id ] ?? null );
+    }
+
+    /**
+     * Under WPML the saved-ID lookup has to run while the language is still 'all': WPML's
+     * "adjust IDs" option swaps a term for its current-language translation in AJAX and
+     * front-end requests, which would leave the saved ID unrendered.
+     */
+    public function test_get_settings_looks_up_missing_saved_terms_while_wpml_is_on_all_languages() {
+        $category_id = wp_insert_term( 'Hidden category', 'product_cat' )['term_id'];
+        $this->mock_set_option( \WC_Facebookcommerce_Integration::SETTING_EXCLUDED_PRODUCT_CATEGORY_IDS, array( (string) $category_id ) );
+        $this->add_filter_with_safe_teardown(
+            'get_terms',
+            static function ( $terms ) use ( $category_id ) {
+                if ( is_array( $terms ) ) {
+                    unset( $terms[ $category_id ] );
+                }
+                return $terms;
+            }
+        );
+        $this->add_filter_with_safe_teardown( 'wpml_current_language', static function () { return 'de'; } );
+        $language = 'de';
+        $this->add_filter_with_safe_teardown(
+            'wpml_switch_language',
+            static function ( $switched_to ) use ( &$language ) {
+                $language = $switched_to;
+            }
+        );
+        $lookups = array();
+        $this->add_filter_with_safe_teardown(
+            'get_term',
+            static function ( $term ) use ( &$lookups, &$language, $category_id ) {
+                if ( $term instanceof \WP_Term && $term->term_id === $category_id ) {
+                    $lookups[] = $language;
+                }
+                return $term;
+            }
+        );
+
+        $this->product_sync->get_settings();
+
+        $this->assertNotEmpty( $lookups, 'The hidden saved term must be looked up by ID.' );
+        $this->assertSame( array( 'all' ), array_unique( $lookups ), 'The lookup must run while WPML is switched to all languages.' );
+    }
+
+    /**
+     * A saved ID whose term no longer exists, or that belongs to the other taxonomy, is skipped:
+     * get_term() returns null or a WP_Error for it and neither may end up in the options.
+     */
+    public function test_get_settings_skips_saved_exclusions_that_are_not_terms_of_the_taxonomy() {
+        $deleted_id = wp_insert_term( 'Deleted category', 'product_cat' )['term_id'];
+        wp_delete_term( $deleted_id, 'product_cat' );
+        $tag_id = wp_insert_term( 'A tag', 'product_tag' )['term_id'];
+        $this->mock_set_option(
+            \WC_Facebookcommerce_Integration::SETTING_EXCLUDED_PRODUCT_CATEGORY_IDS,
+            array( (string) $deleted_id, (string) $tag_id, '0', 'not-an-id' )
+        );
+
+        $categories = $this->find_field( $this->product_sync->get_settings(), \WC_Facebookcommerce_Integration::SETTING_EXCLUDED_PRODUCT_CATEGORY_IDS )['options'];
+
+        $this->assertArrayNotHasKey( $deleted_id, $categories );
+        $this->assertArrayNotHasKey( $tag_id, $categories );
+        $this->assertContainsOnly( 'string', $categories, true, 'Options must hold term names only, never a WP_Error.' );
     }
 }

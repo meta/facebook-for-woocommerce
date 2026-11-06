@@ -200,6 +200,40 @@ class WPML extends Abstract_Localization_Integration {
 	}
 
 	/**
+	 * Runs a callback with WPML switched to a language, then switches back.
+	 *
+	 * WPML narrows term and post queries to its current language in every context: the
+	 * admin's language switcher selection on admin and admin-ajax requests, the default
+	 * language in WP-Cron. Pass a language code to pin a query to it, or 'all' to query
+	 * every language. Nothing is switched when WPML is not active, when no language is
+	 * given, or when WPML is already on that language, so the common case has no side
+	 * effects. The previous language is restored even if the callback throws. Polylang is
+	 * unaffected: it reads the query's own 'lang' argument instead.
+	 *
+	 * @since 3.7.9
+	 *
+	 * @param string|null $language WPML language code or 'all'; null or '' leaves the language alone
+	 * @param callable    $callback the work to run while switched
+	 * @return mixed the callback's return value
+	 */
+	public static function run_in_language( ?string $language, callable $callback ) {
+		$current = apply_filters( 'wpml_current_language', null );
+		$switch  = null !== $current && ! empty( $language ) && $language !== $current;
+
+		if ( $switch ) {
+			do_action( 'wpml_switch_language', $language );
+		}
+
+		try {
+			return $callback();
+		} finally {
+			if ( $switch ) {
+				do_action( 'wpml_switch_language', $current );
+			}
+		}
+	}
+
+	/**
 	 * Get the plugin-specific language identifier for a given locale
 	 *
 	 * Converts a full locale (e.g., 'es_ES') to WPML's language code.

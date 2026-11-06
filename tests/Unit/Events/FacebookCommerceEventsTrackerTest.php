@@ -40,12 +40,18 @@ class FacebookCommerceEventsTrackerTest extends AbstractWPUnitTestWithSafeFilter
 	private $original_user_agent;
 
 	/**
+	 * @var array Original $_GET and REQUEST_URI, which go_to() overwrites, to restore after each test.
+	 */
+	private $original_request;
+
+	/**
 	 * Set up before each test.
 	 */
 	public function setUp(): void {
 		parent::setUp();
 
 		$this->original_user_agent = $_SERVER['HTTP_USER_AGENT'] ?? null;
+		$this->original_request    = array( $_GET, $_SERVER['REQUEST_URI'] ?? null );
 
 		// Set a default browser User-Agent so tests are not blocked by crawler detection.
 		$_SERVER['HTTP_USER_AGENT'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
@@ -69,6 +75,14 @@ class FacebookCommerceEventsTrackerTest extends AbstractWPUnitTestWithSafeFilter
 			unset( $_SERVER['HTTP_USER_AGENT'] );
 		} else {
 			$_SERVER['HTTP_USER_AGENT'] = $this->original_user_agent;
+		}
+
+		// Restore the request go_to() replaced; later tests (the crash guard's self-check) read REQUEST_URI.
+		list( $_GET, $request_uri ) = $this->original_request;
+		if ( null === $request_uri ) {
+			unset( $_SERVER['REQUEST_URI'] );
+		} else {
+			$_SERVER['REQUEST_URI'] = $request_uri;
 		}
 
 		parent::tearDown();
@@ -434,9 +448,12 @@ class FacebookCommerceEventsTrackerTest extends AbstractWPUnitTestWithSafeFilter
 
 	/**
 	 * Puts the main query into a 404 state.
+	 *
+	 * The test site uses plain permalinks, so a pretty path like /no-such-url/ resolves to the
+	 * home page; a query for a post ID that cannot exist is a 404 either way.
 	 */
 	private function go_to_a_404(): void {
-		$this->go_to( home_url( '/no-such-url-' . uniqid() . '/' ) );
+		$this->go_to( home_url( '/?p=' . PHP_INT_MAX ) );
 
 		$this->assertTrue( is_404(), 'Expected the request to resolve to a 404.' );
 	}

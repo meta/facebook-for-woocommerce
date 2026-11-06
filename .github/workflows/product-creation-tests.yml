@@ -108,6 +108,7 @@ jobs:
     outputs:
       wp-supported: ${{ steps.versions.outputs.wp-supported }}
       wc-supported: ${{ steps.versions.outputs.wc-supported }}
+      playwright-version: ${{ steps.versions.outputs.playwright-version }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
@@ -121,6 +122,15 @@ jobs:
           echo "wc-supported=$WC_VERSION" >> $GITHUB_OUTPUT
           echo "Resolved versions — WP: $WP_VERSION, WC: $WC_VERSION"
 
+          # Keys the shared Playwright browser cache, so browsers are reused until Playwright changes.
+          PLAYWRIGHT_VERSION=$(jq -r '.packages["node_modules/@playwright/test"].version' package-lock.json)
+          if [ -z "$PLAYWRIGHT_VERSION" ] || [ "$PLAYWRIGHT_VERSION" = "null" ]; then
+            echo "::error::Could not read the @playwright/test version from package-lock.json"
+            exit 1
+          fi
+          echo "playwright-version=$PLAYWRIGHT_VERSION" >> $GITHUB_OUTPUT
+          echo "Playwright: $PLAYWRIGHT_VERSION"
+
   # Downloads every WordPress.org and WP-CLI dependency once and shares it with all E2E shards
   # as an artifact. When the runner cannot reach WordPress.org, this one job fails and the shards
   # are skipped, instead of random shards failing mid-setup with misleading errors.
@@ -129,7 +139,8 @@ jobs:
     needs: [check-secrets, resolve-versions]
     if: ${{ needs.check-secrets.outputs.secrets-configured == 'true' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # The browser install below takes about as long as it did in one shard.
+    timeout-minutes: 35
     steps:
       - name: Resolve and download WordPress, WooCommerce, themes, plugins and WP-CLI
         env:
@@ -220,6 +231,56 @@ jobs:
           cat versions.txt
           ls -lh
 
+      - name: Configure apt
+        run: |
+          # Retry a dropped download, and treat 30 seconds without data as a failed download to retry,
+          # so one stalled package cannot hold the step until its timeout.
+          printf 'Acquire::Retries "5";\nAcquire::http::Timeout "30";\nAcquire::https::Timeout "30";\n' \
+            | sudo tee /etc/apt/apt.conf.d/80-e2e-retries
+          # Keep downloaded packages in apt's cache so the step below can share them with the shards.
+          echo 'APT::Keep-Downloaded-Packages "true";' | sudo tee /etc/apt/apt.conf.d/81-e2e-keep-packages
+          # Same as in the shards: the runner's packages.microsoft.com sources periodically serve
+          # invalid metadata and fail `apt-get update`, and nothing here needs them.
+          sudo grep -rlZ 'packages\.microsoft\.com' /etc/apt/sources.list.d/ 2>/dev/null \
+            | sudo xargs -0 -r rm -f || true
+
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: ms-playwright-${{ runner.os }}-${{ runner.arch }}-${{ needs.resolve-versions.outputs.playwright-version }}
+
+      - name: Download browsers and their system packages
+        env:
+          DEBIAN_FRONTEND: noninteractive
+          PLAYWRIGHT_VERSION: ${{ needs.resolve-versions.outputs.playwright-version }}
+        run: |
+          set -euo pipefail
+          sudo rm -f /var/cache/apt/archives/*.deb
+
+          # Every browser any shard uses. Browsers land in the Playwright cache saved by the step above
+          # (and are skipped when it was restored); --with-deps apt-installs their system packages,
+          # which stay in apt's cache. The runner image is the shards' image, so these are exactly
+          # the packages a shard is missing.
+          for attempt in 1 2; do
+            if timeout 15m npx --yes "playwright@${PLAYWRIGHT_VERSION}" install --with-deps chromium chrome webkit firefox; then
+              break
+            fi
+            if [ "$attempt" = 2 ]; then
+              echo "::error::Installing the Playwright browsers failed twice"
+              exit 1
+            fi
+            echo "::warning::Installing the Playwright browsers failed (attempt $attempt), retrying in 10 seconds"
+            sleep 10
+          done
+
+          # Packages the plugin-events shards install from the Ubuntu archive for Xvfb and Opera.
+          sudo apt-get install -y --download-only xvfb gsettings-desktop-schemas dbus-x11 libglib2.0-bin
+
+          mkdir -p "$WP_DEPS_DIR/browser-packages"
+          find /var/cache/apt/archives -maxdepth 1 -name '*.deb' -exec cp {} "$WP_DEPS_DIR/browser-packages/" \;
+          echo "✅ $(find "$WP_DEPS_DIR/browser-packages" -name '*.deb' | wc -l) system packages ready for the shards"
+
       - name: Share dependencies with the E2E shards
         uses: actions/upload-artifact@v5
         with:
@@ -286,6 +347,26 @@ jobs:
         with:
           name: wp-dependencies
           path: ${{ env.WP_DEPS_DIR }}
+
+      - name: Configure apt
+        run: |
+          # Retry a dropped download, and treat 30 seconds without data as a failed download to retry,
+          # so one stalled package cannot hold the step until its timeout.
+          printf 'Acquire::Retries "5";\nAcquire::http::Timeout "30";\nAcquire::https::Timeout "30";\n' \
+            | sudo tee /etc/apt/apt.conf.d/80-e2e-retries
+
+          # The browsers' system packages were downloaded once by the prepare-dependencies job.
+          # Seed apt's cache with them so apt installs them from disk; a package that has since
+          # moved to a newer version is still fetched from the mirror.
+          if [ -d "${{ env.WP_DEPS_DIR }}/browser-packages" ]; then
+            sudo find "${{ env.WP_DEPS_DIR }}/browser-packages" -maxdepth 1 -name '*.deb' -exec cp {} /var/cache/apt/archives/ \;
+          fi
+
+      - name: Restore Playwright browsers
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: ms-playwright-${{ runner.os }}-${{ runner.arch }}-${{ needs.resolve-versions.outputs.playwright-version }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v4

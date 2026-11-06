@@ -59,8 +59,6 @@ jQuery( document ).ready( ( $ ) => {
 		globalsHolder() {
 			if(typeof(facebook_for_woocommerce_product_categories) !== 'undefined'){
 				return facebook_for_woocommerce_product_categories;
-			} else if(typeof(facebook_for_woocommerce_settings_sync) !== 'undefined'){
-				return facebook_for_woocommerce_settings_sync;
 			} else {
 				return facebook_for_woocommerce_products_admin;
 			}

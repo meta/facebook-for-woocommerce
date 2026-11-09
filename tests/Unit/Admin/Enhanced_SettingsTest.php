@@ -13,7 +13,6 @@ namespace WooCommerce\Facebook\Tests\Admin;
 use WooCommerce\Facebook\Admin\Enhanced_Settings;
 use WooCommerce\Facebook\Admin\Settings_Screens\Configuration;
 use WooCommerce\Facebook\Admin\Settings_Screens\Product_Attributes;
-use WooCommerce\Facebook\Admin\Settings_Screens\Product_Sync;
 use WooCommerce\Facebook\Admin\Settings_Screens\Shops;
 use WooCommerce\Facebook\Handlers\Connection;
 use WooCommerce\Facebook\RolloutSwitches;
@@ -38,24 +37,17 @@ class Enhanced_SettingsTest extends AbstractWPUnitTestWithOptionIsolationAndSafe
 	/**
 	 * Provides the supported settings-screen combinations.
 	 *
-	 * @return array<string, array{bool, bool, string[]}>
+	 * @return array<string, array{bool, string[]}>
 	 */
 	public static function screen_configuration_provider(): array {
 		return array(
 			'disconnected merchants see Shops only' => array(
 				false,
-				false,
 				array( Shops::ID ),
 			),
-			'all-products sync merchants see Shops and attributes' => array(
-				true,
+			'connected merchants see Shops, attributes and configuration' => array(
 				true,
 				array( Shops::ID, Product_Attributes::ID, Configuration::ID ),
-			),
-			'rollout fallback retains Product Sync' => array(
-				true,
-				false,
-				array( Shops::ID, Product_Sync::ID, Product_Attributes::ID, Configuration::ID ),
 			),
 		);
 	}
@@ -67,8 +59,9 @@ class Enhanced_SettingsTest extends AbstractWPUnitTestWithOptionIsolationAndSafe
 	 */
 	public static function removed_tab_provider(): array {
 		return array(
-			'legacy Connection tab' => array( 'connection' ),
-			'legacy Advertise tab'  => array( 'advertise' ),
+			'legacy Connection tab'   => array( 'connection' ),
+			'legacy Advertise tab'    => array( 'advertise' ),
+			'retired Product sync tab' => array( 'product_sync' ),
 		);
 	}
 
@@ -92,7 +85,7 @@ class Enhanced_SettingsTest extends AbstractWPUnitTestWithOptionIsolationAndSafe
 	public static function non_shops_request_provider(): array {
 		return array(
 			'another admin page' => array( 'another-page', Shops::ID ),
-			'Product Sync tab'   => array( Enhanced_Settings::PAGE_ID, Product_Sync::ID ),
+			'Configuration tab'  => array( Enhanced_Settings::PAGE_ID, Configuration::ID ),
 		);
 	}
 
@@ -118,15 +111,13 @@ class Enhanced_SettingsTest extends AbstractWPUnitTestWithOptionIsolationAndSafe
 	 * @dataProvider screen_configuration_provider
 	 *
 	 * @param bool     $is_connected Whether the merchant is connected.
-	 * @param bool     $all_products_sync_enabled Whether all-products sync is enabled.
 	 * @param string[] $expected_screen_ids Expected screen IDs.
 	 */
 	public function test_build_menu_item_array_uses_current_settings_experience(
 		bool $is_connected,
-		bool $all_products_sync_enabled,
 		array $expected_screen_ids
 	): void {
-		$settings = $this->create_settings( $is_connected, $all_products_sync_enabled );
+		$settings = $this->create_settings( $is_connected );
 
 		$this->assertSame( $expected_screen_ids, array_keys( $settings->build_menu_item_array() ) );
 	}
@@ -142,7 +133,7 @@ class Enhanced_SettingsTest extends AbstractWPUnitTestWithOptionIsolationAndSafe
 		string $expected_menu
 	): void {
 		$settings = $this->getMockBuilder( Enhanced_Settings::class )
-			->setConstructorArgs( array( $this->create_plugin( true, true ) ) )
+			->setConstructorArgs( array( $this->create_plugin( true ) ) )
 			->onlyMethods( array( 'is_marketing_enabled' ) )
 			->getMock();
 		$settings->method( 'is_marketing_enabled' )->willReturn( $marketing_enabled );
@@ -162,7 +153,7 @@ class Enhanced_SettingsTest extends AbstractWPUnitTestWithOptionIsolationAndSafe
 			}
 		);
 
-		$screens = $this->create_settings( true, true )->get_screens();
+		$screens = $this->create_settings( true )->get_screens();
 
 		$this->assertSame( array( Shops::ID, Product_Attributes::ID, Configuration::ID ), array_keys( $screens ) );
 	}
@@ -179,7 +170,7 @@ class Enhanced_SettingsTest extends AbstractWPUnitTestWithOptionIsolationAndSafe
 			}
 		);
 
-		$tabs = $this->create_settings( false, false )->get_tabs();
+		$tabs = $this->create_settings( false )->get_tabs();
 
 		$this->assertArrayHasKey( 'extension_tab', $tabs );
 		$this->assertSame( 'Extension tab', $tabs['extension_tab'] );
@@ -189,7 +180,7 @@ class Enhanced_SettingsTest extends AbstractWPUnitTestWithOptionIsolationAndSafe
 	 * Verifies that unknown screens cannot be selected for rendering or saving.
 	 */
 	public function test_get_screen_rejects_unknown_screen(): void {
-		$this->assertNull( $this->create_settings( true, true )->get_screen( 'unknown' ) );
+		$this->assertNull( $this->create_settings( true )->get_screen( 'unknown' ) );
 	}
 
 	/**
@@ -246,7 +237,7 @@ class Enhanced_SettingsTest extends AbstractWPUnitTestWithOptionIsolationAndSafe
 		$_GET['tab']  = $removed_tab;
 		$_REQUEST      = array_merge( $_REQUEST, $_GET );
 
-		$settings = $this->create_settings( false, false );
+		$settings = $this->create_settings( false );
 		$settings->normalize_requested_tab();
 
 		$this->assertSame( Shops::ID, $_REQUEST['tab'] );
@@ -272,28 +263,23 @@ class Enhanced_SettingsTest extends AbstractWPUnitTestWithOptionIsolationAndSafe
 	 * No persistent entities are required for these tests, so a data preparer is unnecessary.
 	 *
 	 * @param bool $is_connected Whether the merchant is connected.
-	 * @param bool $all_products_sync_enabled Whether all-products sync is enabled.
 	 * @return Enhanced_Settings
 	 */
-	private function create_settings( bool $is_connected, bool $all_products_sync_enabled ): Enhanced_Settings {
-		return new Enhanced_Settings( $this->create_plugin( $is_connected, $all_products_sync_enabled ) );
+	private function create_settings( bool $is_connected ): Enhanced_Settings {
+		return new Enhanced_Settings( $this->create_plugin( $is_connected ) );
 	}
 
 	/**
 	 * Creates a plugin double for the requested settings state.
 	 *
 	 * @param bool $is_connected Whether the merchant is connected.
-	 * @param bool $all_products_sync_enabled Whether all-products sync is enabled.
 	 * @return \WC_Facebookcommerce
 	 */
-	private function create_plugin( bool $is_connected, bool $all_products_sync_enabled ): \WC_Facebookcommerce {
+	private function create_plugin( bool $is_connected ): \WC_Facebookcommerce {
 		$connection = $this->createMock( Connection::class );
 		$connection->method( 'is_connected' )->willReturn( $is_connected );
 
 		$rollout_switches = $this->createMock( RolloutSwitches::class );
-		$rollout_switches->method( 'is_switch_enabled' )
-			->with( RolloutSwitches::SWITCH_WOO_ALL_PRODUCTS_SYNC_ENABLED )
-			->willReturn( $all_products_sync_enabled );
 
 		$plugin = $this->getMockBuilder( \WC_Facebookcommerce::class )
 			->disableOriginalConstructor()

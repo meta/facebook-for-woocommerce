@@ -26,7 +26,6 @@ class RolloutSwitches {
 
 	public const SWITCH_ROLLOUT_FEATURES                 = 'rollout_enabled';
 	public const SWITCH_PRODUCT_SETS_SYNC_ENABLED        = 'product_sets_sync_enabled';
-	public const SWITCH_WOO_ALL_PRODUCTS_SYNC_ENABLED    = 'woo_all_products_sync_enabled';
 	public const SWITCH_OFFER_MANAGEMENT_ENABLED         = 'offer_management_enabled';
 	public const SWITCH_MULTIPLE_IMAGES_ENABLED          = 'woo_variant_multiple_images_enabled';
 	public const SWITCH_CONTENT_ID_MIGRATION_ENABLED     = 'enable_woocommerce_content_id_migration';
@@ -40,7 +39,6 @@ class RolloutSwitches {
 
 	private const ACTIVE_SWITCHES = array(
 		self::SWITCH_ROLLOUT_FEATURES,
-		self::SWITCH_WOO_ALL_PRODUCTS_SYNC_ENABLED,
 		self::SWITCH_OFFER_MANAGEMENT_ENABLED,
 		self::SWITCH_MULTIPLE_IMAGES_ENABLED,
 		self::CAPI_EVENT_LOGGING_ENABLED,

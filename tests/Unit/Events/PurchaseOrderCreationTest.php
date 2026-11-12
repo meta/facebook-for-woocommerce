@@ -269,10 +269,6 @@ class PurchaseOrderCreationTest extends AbstractWPUnitTestWithSafeFiltering {
 	}
 
 	public function test_new_order_passes_complete_quantities_to_cogs(): void {
-		update_option(
-			'wc_facebook_for_woocommerce_rollout_switches',
-			array( \WooCommerce\Facebook\RolloutSwitches::SWITCH_VALUE_OPTIMIZATION_ENABLED => 'yes' )
-		);
 		$provider = new class() {
 			/** @var array */
 			public $quantities = array();

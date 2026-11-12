@@ -1699,8 +1699,8 @@ class FacebookCommerceEventsTrackerTest extends AbstractWPUnitTestWithSafeFilter
 	/**
 	 * Builds a Purchase payload through inject_purchase_event() and returns its custom_data.
 	 *
-	 * Value Optimization is switched on, and the COGS provider is replaced with a stub so
-	 * the test does not depend on a Cost of Goods integration being installed.
+	 * The COGS provider is replaced with a stub so the test does not depend on a
+	 * Cost of Goods integration being installed.
 	 *
 	 * @param float      $shipping_total Shipping cost excluding tax.
 	 * @param float      $cart_tax       Tax on the items.
@@ -1710,11 +1710,6 @@ class FacebookCommerceEventsTrackerTest extends AbstractWPUnitTestWithSafeFilter
 	 * @return array The event's custom_data.
 	 */
 	private function build_purchase_custom_data( float $shipping_total, float $cart_tax, float $shipping_tax, $cogs, float $product_price = 100.0 ): array {
-		update_option(
-			'wc_facebook_for_woocommerce_rollout_switches',
-			array( \WooCommerce\Facebook\RolloutSwitches::SWITCH_VALUE_OPTIMIZATION_ENABLED => 'yes' )
-		);
-
 		// Purchases are not tracked for users who can manage WooCommerce.
 		wp_set_current_user( 0 );
 

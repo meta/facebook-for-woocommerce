@@ -35,7 +35,6 @@ class RolloutSwitches {
 	private const SETTINGS_KEY                           = 'wc_facebook_for_woocommerce_rollout_switches';
 	public const CAPI_EVENT_LOGGING_ENABLED              = 'enable_woocommerce_capi_event_logging';
 	public const SWITCH_WA_CUSTOMER_EVENTS_GATING_ENABLED = 'enable_woocommerce_wa_customer_events_gating';
-	public const SWITCH_VALUE_OPTIMIZATION_ENABLED        = 'woocommerce_vo_switch';
 
 	private const ACTIVE_SWITCHES = array(
 		self::SWITCH_ROLLOUT_FEATURES,
@@ -47,7 +46,6 @@ class RolloutSwitches {
 		self::SWITCH_ISOLATED_PIXEL_EXECUTION_ENABLED,
 		self::SWITCH_COMPAT_CHECK_ENABLED,
 		self::SWITCH_WA_CUSTOMER_EVENTS_GATING_ENABLED,
-		self::SWITCH_VALUE_OPTIMIZATION_ENABLED,
 	);
 
 	public function __construct( \WC_Facebookcommerce $plugin ) {

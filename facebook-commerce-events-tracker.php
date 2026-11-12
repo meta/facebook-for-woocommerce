@@ -1396,28 +1396,6 @@ if ( ! class_exists( 'WC_Facebookcommerce_EventsTracker' ) ) :
 		}
 
 		/**
-		 * Determines whether Value Optimization is enabled for this store.
-		 *
-		 * VO is gated on a rollout switch rather than shipped on, so net revenue is
-		 * only attached to Purchase events once Meta enables it for the store.
-		 *
-		 * @since 3.7.7
-		 *
-		 * @return bool
-		 */
-		private function is_value_optimization_enabled(): bool {
-			$plugin = facebook_for_woocommerce();
-
-			if ( ! $plugin || ! $plugin->get_rollout_switches() ) {
-				return false;
-			}
-
-			return (bool) $plugin->get_rollout_switches()->is_switch_enabled(
-				\WooCommerce\Facebook\RolloutSwitches::SWITCH_VALUE_OPTIMIZATION_ENABLED
-			);
-		}
-
-		/**
 		 * Determines whether a given order should be reported as an offline (physical store) event.
 		 *
 		 * We check if any of the supported POS integrations can detect this order.
@@ -1945,31 +1923,29 @@ if ( ! class_exists( 'WC_Facebookcommerce_EventsTracker' ) ) :
 				'event_id'    => $event_id,
 			);
 
-			if ( $this->is_value_optimization_enabled() ) {
-				$products = array();
-				foreach ( $order->get_items() as $item ) {
-					$product = $item->get_product();
+			$products = array();
+			foreach ( $order->get_items() as $item ) {
+				$product = $item->get_product();
 
-					if ( $product ) {
-						$products[] = array(
-							'product' => $product,
-							'qty'     => $item->get_quantity(),
-						);
-					}
+				if ( $product ) {
+					$products[] = array(
+						'product' => $product,
+						'qty'     => $item->get_quantity(),
+					);
 				}
-				$cogs = $this->cogs_provider->calculate_cogs_for_products( $products );
+			}
+			$cogs = $this->cogs_provider->calculate_cogs_for_products( $products );
 
-				if ( false !== $cogs ) {
-					// get_total_tax() is already cart tax + shipping tax, so shipping tax
-					// must not be subtracted a second time.
-					$order_value_excluding_tax_including_discounts = $order->get_total()
-						- $order->get_total_tax()
-						- $order->get_shipping_total();
+			if ( false !== $cogs ) {
+				// get_total_tax() is already cart tax + shipping tax, so shipping tax
+				// must not be subtracted a second time.
+				$order_value_excluding_tax_including_discounts = $order->get_total()
+					- $order->get_total_tax()
+					- $order->get_shipping_total();
 
-					$net_profit = $order_value_excluding_tax_including_discounts - $cogs;
-					if ( $net_profit > 0 ) {
-						$event_data['custom_data']['net_revenue'] = \WC_Facebookcommerce_Utils::truncate_float_number( $net_profit, 2 );
-					}
+				$net_profit = $order_value_excluding_tax_including_discounts - $cogs;
+				if ( $net_profit > 0 ) {
+					$event_data['custom_data']['net_revenue'] = \WC_Facebookcommerce_Utils::truncate_float_number( $net_profit, 2 );
 				}
 			}
 

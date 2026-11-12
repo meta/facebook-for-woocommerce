@@ -40,6 +40,15 @@ class WC_Facebookcommerce_Pixel {
 		const NO_SCRIPT_RENDER = 'no_script_render';
 
 		/**
+		 * How many fired cart fragment event IDs a browser session keeps.
+		 *
+		 *  WC_Facebookcommerce_Pixel::guard_once_per_browser_session()
+		 *
+		 *  int
+		 */
+		const FRAGMENT_EVENT_IDS_LIMIT = 50;
+
+		/**
 		 * Script render memoization helper.
 		 *
 		 * @var array Cache array.
@@ -999,15 +1008,22 @@ JS;
 		 */
 	public function get_conditional_one_time_event_script( $event_name, $params, $listened_event ) {
 
+		// This script travels in a cart fragment that WooCommerce replays on later page
+		// loads, re-registering the listener with a stale event ID: the guard makes the
+		// replayed handler a no-op once its event has fired.
+		$event_id = isset( $params['event_id'] ) ? (string) $params['event_id'] : '';
+
 		// When signals are held, queue via FacebookSignals.trackEvent().
 		if ( FacebookSignalsState::is_held() ) {
 			$this->last_event = $event_name;
+			$code             = sprintf( 'FacebookSignals.trackEvent(%s, %s);', wp_json_encode( $event_name ), wp_json_encode( $params ) );
+			$code             = self::guard_once_per_browser_session( $event_id, $code );
 			ob_start();
 			?>
 			<!-- Facebook Pixel Event Code -->
 			<script <?php echo self::get_script_attributes(); ?>>
 				function handle<?php echo $event_name; ?>Event() {
-					FacebookSignals.trackEvent(<?php echo wp_json_encode( $event_name ); ?>, <?php echo wp_json_encode( $params ); ?>);
+					<?php echo $code; ?>
 					jQuery( document.body ).off( '<?php echo esc_js( $listened_event ); ?>', handle<?php echo $event_name; ?>Event );
 				}
 				jQuery( document.body ).one( '<?php echo esc_js( $listened_event ); ?>', handle<?php echo $event_name; ?>Event );
@@ -1017,7 +1033,7 @@ JS;
 			return ob_get_clean();
 		}
 
-		$code = $this->get_event_code( $event_name, $params );
+		$code = self::guard_once_per_browser_session( $event_id, $this->get_event_code( $event_name, $params ) );
 
 		ob_start();
 
@@ -1036,6 +1052,100 @@ JS;
 			<?php
 
 			return ob_get_clean();
+	}
+
+
+	/**
+	 * Gets the JavaScript code to track an event that travels in a WooCommerce cart fragment.
+	 *
+	 * WooCommerce keeps the fragments of an AJAX add to cart in sessionStorage and replays
+	 * them on every later page load (cart-fragments.js), which re-executes any inline script
+	 * they carry. The page-level guard in {@see build_event()} cannot see across page loads,
+	 * so the event code is wrapped in a check against the event IDs already fired in this
+	 * browser session: the event fires once, on the add to cart response, and the replays
+	 * do nothing.
+	 *
+	 * Only for scripts that travel in fragments. Page-rendered events keep the
+	 * {@see build_event()} behaviour, where a cached page may legitimately fire its baked-in
+	 * event ID again on a later visit.
+	 *
+	 * @since 3.7.9
+	 *
+	 * @param string $event_name The name of the event to track.
+	 * @param array  $params     Custom event parameters, including the event_id.
+	 * @param string $method     Name of the pixel's fbq() function to call.
+	 * @return string
+	 *
+	 * phpcs:disable WordPress.Security.EscapeOutput.OutputNotEscaped
+	 */
+	public function get_cart_fragment_event_script( $event_name, $params, $method = 'track' ) {
+
+		$event_id = isset( $params['event_id'] ) ? (string) $params['event_id'] : '';
+
+		if ( FacebookSignalsState::is_held() ) {
+			$code = $this->get_queued_event_code( $event_name, $params, $method );
+		} else {
+			$code = $this->get_event_code( $event_name, $params, $method );
+		}
+
+		$code = self::guard_once_per_browser_session( $event_id, $code );
+
+		ob_start();
+
+		?>
+			<!-- Facebook Pixel Event Code -->
+			<script <?php echo self::get_script_attributes(); ?>>
+			<?php echo $code; ?>
+			</script>
+			<!-- End Facebook Pixel Event Code -->
+			<?php
+
+			return ob_get_clean();
+	}
+
+
+	/**
+	 * Wraps event code so it runs at most once per event ID in a browser session.
+	 *
+	 * The IDs already fired are kept in sessionStorage, which is per tab and survives page
+	 * loads, exactly like the cart fragments WooCommerce replays. The ID is recorded after
+	 * the code has run: if the code throws (for example a consent tool blocked the base pixel
+	 * and fbq is undefined) nothing is recorded and the next replay retries. The wrapper is
+	 * synchronous, so there is no window for a double fire. Without an event ID, or when
+	 * sessionStorage is unavailable, the code runs as it did before.
+	 *
+	 * This store is separate from the wc_facebook_signals_seen_event_ids store that
+	 * FacebookSignals keeps for queued events: that one is consulted only while signals
+	 * are held, and FacebookSignals may not be loaded at all. This guard has to work in
+	 * both states and without it, so the two are not meant to be unified.
+	 *
+	 * @since 3.7.9
+	 *
+	 * @param string $event_id The event ID, or an empty string.
+	 * @param string $code     JavaScript statements that fire the event.
+	 * @return string
+	 */
+	public static function guard_once_per_browser_session( $event_id, $code ) {
+
+		if ( '' === $event_id ) {
+			return $code;
+		}
+
+		return sprintf(
+			"(function() {\n" .
+			"var key = 'wc_facebook_pixel_fired_fragment_events', id = %s, seen = {};\n" .
+			"try { seen = JSON.parse(window.sessionStorage.getItem(key) || '{}') || {}; } catch (e) {}\n" .
+			"if (seen[id]) { return; }\n" .
+			"%s\n" .
+			"seen[id] = 1;\n" .
+			"var ids = Object.keys(seen);\n" .
+			"for (var i = 0; i < ids.length - %d; i++) { delete seen[ids[i]]; }\n" .
+			"try { window.sessionStorage.setItem(key, JSON.stringify(seen)); } catch (e) {}\n" .
+			'})();',
+			wp_json_encode( $event_id ),
+			$code,
+			self::FRAGMENT_EVENT_IDS_LIMIT
+		);
 	}
 
 

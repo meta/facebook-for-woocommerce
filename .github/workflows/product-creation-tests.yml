@@ -111,7 +111,7 @@ jobs:
       playwright-version: ${{ steps.versions.outputs.playwright-version }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - name: Read tested up to versions from plugin file
         id: versions
@@ -340,7 +340,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - name: Download WordPress dependencies
         uses: actions/download-artifact@v5
@@ -369,7 +369,7 @@ jobs:
           key: ms-playwright-${{ runner.os }}-${{ runner.arch }}-${{ needs.resolve-versions.outputs.playwright-version }}
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version-file: 'package.json'
           cache: 'npm'
@@ -1376,7 +1376,7 @@ jobs:
           echo "✅ No credentials found in any artifact path"
 
       - name: Upload test results
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         if: always()
         with:
           name: playwright-report-${{ matrix.version-label }}-${{ matrix.test-group }}
@@ -1384,7 +1384,7 @@ jobs:
           retention-days: 7
 
       - name: Upload captured events
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         if: always()
         with:
           name: captured-events-${{ matrix.version-label }}-${{ matrix.test-group }}
@@ -1406,7 +1406,7 @@ jobs:
       # They are the artifacts that leaked a live token in T286988560, so their
       # exposure window is kept as small as is still useful for debugging.
       - name: Upload PHP logs
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         if: failure()
         with:
           name: php-debug-logs-${{ matrix.version-label }}-${{ matrix.test-group }}
@@ -1414,7 +1414,7 @@ jobs:
           retention-days: 2
 
       - name: Upload WooCommerce logs
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         if: failure()
         with:
           name: woocommerce-logs-${{ matrix.version-label }}-${{ matrix.test-group }}
@@ -1422,7 +1422,7 @@ jobs:
           retention-days: 2
 
       - name: Upload test videos/screenshots
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         if: failure()
         with:
           name: test-failures-${{ matrix.version-label }}-${{ matrix.test-group }}

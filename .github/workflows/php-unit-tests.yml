@@ -25,7 +25,7 @@ jobs:
         run: sudo apt-get install subversion -y
 
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - name: Prepare PHP
         uses: woocommerce/grow/prepare-php@actions-v1
@@ -81,7 +81,7 @@ jobs:
 
       - name: Upload coverage reports
         if: steps.phpunit.outputs.test_status == 'passed'
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: php-coverage-report PHP - ${{ matrix.php }}, WP - ${{ matrix.wp-version }} , WC - ${{ matrix.wc-version }}
           path: coverage.xml

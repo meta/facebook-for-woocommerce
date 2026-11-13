@@ -136,7 +136,7 @@ abstract class AbstractFeed {
 
 	/**
 	 * The feed should be skipped if there isn't a Commerce Partner Integration ID set as the ID is required for
-	 * calls to the GraphCommercePartnerIntegrationFileUpdatePost endpoint.
+	 * calls to the POST /{commerce_partner_integration_id}/file_update endpoint.
 	 * Overwrite this function if your feed upload uses a different endpoint with different requirements.
 	 *
 	 * @since 3.5.0
@@ -146,7 +146,9 @@ abstract class AbstractFeed {
 		$cpi_id             = $connection_handler->get_commerce_partner_integration_id();
 		$cms_id             = $connection_handler->get_commerce_merchant_settings_id();
 
-		return empty( $cpi_id ) || empty( $cms_id );
+		// Without an access token the upload cannot authenticate, e.g. after a rejected
+		// finalize clears the token but leaves the stored IDs in place.
+		return ! $connection_handler->is_connected() || empty( $cpi_id ) || empty( $cms_id );
 	}
 
 	/**
@@ -154,6 +156,7 @@ abstract class AbstractFeed {
 	 * Once feed regenerated, trigger upload via create_upload API
 	 * This will hit the url defined in the class and trigger handle_feed_data_request
 	 *
+	 * @throws \Exception If Meta rejects the upload; caught and logged here.
 	 * @since 3.5.0
 	 */
 	public function send_request_to_upload_feed(): void {
@@ -165,10 +168,16 @@ abstract class AbstractFeed {
 		);
 
 		try {
-			$cpi_id = facebook_for_woocommerce()->get_connection_handler()->get_commerce_partner_integration_id();
-			facebook_for_woocommerce()->
+			$cpi_id   = facebook_for_woocommerce()->get_connection_handler()->get_commerce_partner_integration_id();
+			$response = facebook_for_woocommerce()->
 			get_api()->
 			create_common_data_feed_upload( $cpi_id, $data );
+
+			// Graph errors come back as a response rather than an exception; surface them so
+			// a rejected upload is logged like any other failure.
+			if ( $response->has_api_error() ) {
+				throw new \Exception( esc_html( $response->get_api_error_message() ), (int) $response->get_api_error_code() );
+			}
 		} catch ( \Exception $exception ) {
 			Logger::log(
 				'Abstract feed upload failed.',
@@ -229,7 +238,7 @@ abstract class AbstractFeed {
 	}
 
 	/**
-	 * Callback function that streams the feed file to the GraphPartnerIntegrationFileUpdatePost
+	 * Callback function that streams the feed file to POST /{commerce_partner_integration_id}/file_update.
 	 * Ex: https://your-site-url.com/?wc-api=wc_facebook_get_feed_data_example&secret=your_generated_secret
 	 * The above WooC Legacy REST API will trigger the handle_feed_data_request method
 	 * See LegacyRequestApiStub.php for more details
@@ -252,20 +261,23 @@ abstract class AbstractFeed {
 		$file_path = $this->feed_writer->get_file_path();
 		$file      = false;
 
-		// regenerate if the file doesn't exist using the legacy flow.
-		if ( ! file_exists( $file_path ) ) {
-			$this->feed_handler->generate_feed_file();
-		}
-
 		try {
 			// bail early if the feed secret is not included or is not valid.
-			if ( self::get_feed_secret() !== Helper::get_requested_value( 'secret' ) ) {
+			$requested_secret = Helper::get_requested_value( 'secret' );
+			if ( ! is_string( $requested_secret ) || ! hash_equals( self::get_feed_secret(), $requested_secret ) ) {
 				throw new PluginException( "{$name} feed: Invalid secret provided.", 401 );
+			}
+
+			// Meta fetches the file in response to an upload, so rebuild a missing file in
+			// place without announcing a new feed: generate_feed_file() would upload again
+			// and loop whenever the write keeps failing.
+			if ( ! file_exists( $file_path ) ) {
+				$this->feed_writer->write_feed_file( $this->feed_handler->get_feed_data() );
 			}
 
 			// bail early if the file can't be read.
 			if ( ! is_readable( $file_path ) ) {
-				throw new PluginException( "{$name}: File at path ' . $file_path . ' is not readable.", 404 );
+				throw new PluginException( "{$name}: File at path {$file_path} is not readable.", 404 );
 			}
 
 			if ( $this->feed_writer instanceof JsonFeedFileWriter ) {
@@ -320,7 +332,8 @@ abstract class AbstractFeed {
 					],
 				),
 				array(
-					'should_send_log_to_meta'        => true,
+					// Anyone can hit this URL; invalid-secret requests must not flood the Meta log queue.
+					'should_send_log_to_meta'        => 401 !== $exception->getCode(),
 					'should_save_log_in_woocommerce' => false,
 					'woocommerce_log_level'          => \WC_Log_Levels::DEBUG,
 				),

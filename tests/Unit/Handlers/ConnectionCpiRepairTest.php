@@ -38,7 +38,7 @@ class ConnectionCpiRepairTest extends AbstractWPUnitTestWithOptionIsolationAndSa
 		delete_option( Connection::OPTION_COMMERCE_PARTNER_INTEGRATION_ID );
 		delete_transient( '_wc_facebook_for_woocommerce_refresh_installation_data' );
 
-		// 404 the STEFI lookup: only "no integration exists" may fall through to repair,
+		// 404 the Commerce Integration API lookup: only "no integration exists" may fall through to repair,
 		// so this is the one reason that legitimately reaches the repair rung.
 		$this->add_filter_with_safe_teardown(
 			'pre_http_request',
@@ -126,7 +126,7 @@ class ConnectionCpiRepairTest extends AbstractWPUnitTestWithOptionIsolationAndSa
 		delete_option( Connection::OPTION_COMMERCE_PARTNER_INTEGRATION_ID );
 		delete_transient( '_wc_facebook_for_woocommerce_refresh_installation_data' );
 
-		// 404 the STEFI lookup: only "no integration exists" may fall through to repair,
+		// 404 the Commerce Integration API lookup: only "no integration exists" may fall through to repair,
 		// so this is the one reason that legitimately reaches the repair rung.
 		$this->add_filter_with_safe_teardown(
 			'pre_http_request',
@@ -226,5 +226,65 @@ class ConnectionCpiRepairTest extends AbstractWPUnitTestWithOptionIsolationAndSa
 			get_option( Connection::OPTION_COMMERCE_PARTNER_INTEGRATION_ID ),
 			'A transient lookup failure must not mint a Commerce Partner Integration.'
 		);
+	}
+
+	/**
+	 * A numeric ID in the repair response must neither throw a TypeError nor abort the
+	 * configuration push that follows it in the same daily run.
+	 *
+	 * @return void
+	 */
+	public function test_repair_accepts_numeric_integration_id(): void {
+		update_option( Connection::OPTION_ACCESS_TOKEN, 'access-token' );
+		update_option( Connection::OPTION_EXTERNAL_BUSINESS_ID, wp_generate_uuid4() );
+		delete_option( Connection::OPTION_COMMERCE_PARTNER_INTEGRATION_ID );
+		delete_transient( '_wc_facebook_for_woocommerce_refresh_installation_data' );
+
+		$this->add_filter_with_safe_teardown(
+			'pre_http_request',
+			function () {
+				return array(
+					'headers'  => array(),
+					'body'     => wp_json_encode( array( 'title' => 'Commerce Partner Integration not found' ) ),
+					'response' => array(
+						'code'    => 404,
+						'message' => 'Not Found',
+					),
+					'cookies'  => array(),
+				);
+			}
+		);
+
+		$api = $this->createMock( API::class );
+		$api->method( 'get_installation_ids' )
+			->willReturn( new InstallationResponse( wp_json_encode( array( 'data' => array( array() ) ) ) ) );
+		$api->expects( $this->once() )
+			->method( 'repair_commerce_integration' )
+			->willReturn(
+				new RepairResponse(
+					wp_json_encode(
+						array(
+							'success' => true,
+							'id'      => 1234567890123,
+						)
+					)
+				)
+			);
+		$api->expects( $this->once() )
+			->method( 'update_commerce_integration' )
+			->with( '1234567890123' )
+			->willReturn( new UpdateResponse( wp_json_encode( array( 'success' => true ) ) ) );
+
+		$plugin = $this->getMockBuilder( \WC_Facebookcommerce::class )
+			->disableOriginalConstructor()
+			->onlyMethods( array( 'get_api', 'get_version', 'log' ) )
+			->getMock();
+		$plugin->method( 'get_api' )->willReturn( $api );
+		$plugin->method( 'get_version' )->willReturn( 'test-version' );
+
+		$connection = new Connection( $plugin );
+		$connection->refresh_installation_data();
+
+		$this->assertSame( '1234567890123', get_option( Connection::OPTION_COMMERCE_PARTNER_INTEGRATION_ID ) );
 	}
 }

@@ -11,6 +11,7 @@
 namespace WooCommerce\Facebook\Events;
 
 use WooCommerce\Facebook\Framework\Api\Exception as ApiException;
+use WooCommerce\Facebook\Signals;
 
 defined( 'ABSPATH' ) || exit;
 
@@ -78,6 +79,13 @@ class ReleaseSignalsAjax {
 			wp_send_json_error( array( 'message' => 'Missing signal state.' ), 403 );
 		}
 
+		// The browser writes `active` before it posts the queue. A `held` cookie
+		// here means the visitor withdrew after asking for the release, so the
+		// queued events must not be sent.
+		if ( ! self::is_releasable_state( $signal_state ) ) {
+			wp_send_json_error( array( 'message' => 'Signals are held.' ), 403 );
+		}
+
 		$events      = isset( $body['events'] ) && is_array( $body['events'] ) ? $body['events'] : array();
 		$attribution = isset( $body['attribution'] ) && is_array( $body['attribution'] ) ? $body['attribution'] : array();
 		$fbc         = $this->sanitize_attribution_value( $attribution, 'fbc' );
@@ -102,8 +110,9 @@ class ReleaseSignalsAjax {
 
 		$events = array_slice( $events, 0, self::MAX_EVENTS );
 
-		$sent_count = 0;
-		$now        = time();
+		$sent_count     = 0;
+		$sent_event_ids = array();
+		$now            = time();
 
 		try {
 			$pixel_id = facebook_for_woocommerce()->get_integration()->get_facebook_pixel_id();
@@ -140,7 +149,8 @@ class ReleaseSignalsAjax {
 		if ( ! empty( $valid_events ) ) {
 			try {
 				$api->send_pixel_events( $pixel_id, $valid_events );
-				$sent_count = count( $valid_events );
+				$sent_count     = count( $valid_events );
+				$sent_event_ids = self::get_event_ids( $valid_events );
 			} catch ( ApiException $e ) {
 				facebook_for_woocommerce()->log( 'Release signals: could not send events: ' . $e->getMessage() );
 			}
@@ -161,14 +171,44 @@ class ReleaseSignalsAjax {
 
 		wp_send_json_success(
 			array(
-				'fbp'        => $fbp,
-				'fbc'        => $fbc,
-				'fbp_domain' => $cookie_domains['fbp'],
-				'fbc_domain' => $cookie_domains['fbc'],
-				'sent_count' => $sent_count,
-				'user_info'  => $user_info,
+				'fbp'            => $fbp,
+				'fbc'            => $fbc,
+				'fbp_domain'     => $cookie_domains['fbp'],
+				'fbc_domain'     => $cookie_domains['fbc'],
+				'sent_count'     => $sent_count,
+				// The browser drops exactly these from its queue. Events over the
+				// MAX_EVENTS cap or rejected by validate_event() are not listed, so
+				// a later release can still deliver them.
+				'sent_event_ids' => $sent_event_ids,
+				'user_info'      => $user_info,
 			)
 		);
+	}
+
+	/**
+	 * Lists the event IDs of the given events, skipping any without one.
+	 *
+	 * @param Event[] $events Events that were handed to the API.
+	 * @return string[]
+	 */
+	public static function get_event_ids( array $events ) {
+		$ids = array();
+		foreach ( $events as $event ) {
+			if ( $event instanceof Event && '' !== $event->get_id() ) {
+				$ids[] = $event->get_id();
+			}
+		}
+		return $ids;
+	}
+
+	/**
+	 * Whether a signal-state cookie value allows queued events to be released.
+	 *
+	 * @param string $signal_state Cookie value.
+	 * @return bool
+	 */
+	public static function is_releasable_state( $signal_state ) {
+		return '' !== $signal_state && Signals::STATE_HELD !== $signal_state;
 	}
 
 	/**

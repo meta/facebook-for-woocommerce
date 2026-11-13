@@ -55,12 +55,23 @@
 	}
 
 	/**
+	 * Sequence number of the most recent state request, and the state it asked
+	 * for. The server answers each request with a Set-Cookie for the state it
+	 * applied, so when responses arrive out of order the older one would leave
+	 * the cookie on a state the visitor has since changed.
+	 */
+	var latestRequest = 0;
+	var latestState = null;
+
+	/**
 	 * Update the stored signal state and sync it to PHP.
 	 *
 	 * @param {string} state `active` or `held`.
 	 * @return {Promise} Resolves with the backend response.
 	 */
 	function updateState( state ) {
+		var sequence = ++latestRequest;
+		latestState = state;
 		setCookie( COOKIE_NAME, state, 365 );
 
 		var params = wc_facebook_signals_params; // localized by PHP.
@@ -73,6 +84,13 @@
 				'application/x-www-form-urlencoded; charset=UTF-8'
 			);
 			xhr.onload = function () {
+				// A newer state was requested while this request was in flight.
+				// The browser has just applied this response's Set-Cookie, so put
+				// the newer state back before anything reads the cookie.
+				if ( sequence !== latestRequest && latestState ) {
+					setCookie( COOKIE_NAME, latestState, 365 );
+				}
+
 				if ( xhr.status >= 200 && xhr.status < 300 ) {
 					try {
 						var data = JSON.parse( xhr.responseText );
@@ -104,6 +122,16 @@
 	 * @return {Promise}
 	 */
 	function hold() {
+		// Revoke browser consent right away, before the state update
+		// round-trip, so nothing fires in the meantime and a release that
+		// is still in flight is discarded when it returns.
+		if (
+			window.FacebookSignals &&
+			typeof window.FacebookSignals.hold === 'function'
+		) {
+			window.FacebookSignals.hold();
+		}
+
 		return updateState( STATE_HELD );
 	}
 
@@ -113,11 +141,25 @@
 	 * @return {Promise}
 	 */
 	function release() {
+		// Remember which hold generation this release belongs to. A hold that
+		// lands while the state update is in flight bumps it, and the queue
+		// must then stay where it is.
+		var generation = window.FacebookSignals
+			? window.FacebookSignals._holdGeneration
+			: null;
+
 		return updateState( STATE_ACTIVE ).then( function ( data ) {
 			if (
 				window.FacebookSignals &&
 				window.FacebookSignals._held
 			) {
+				if (
+					null !== generation &&
+					window.FacebookSignals._holdGeneration !== generation
+				) {
+					return data;
+				}
+
 				return window.FacebookSignals.release().then(
 					function () {
 						return data;

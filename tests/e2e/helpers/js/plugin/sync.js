@@ -16,6 +16,7 @@ const path = require('path');
 const execAsync = promisify(exec);
 
 let connectionPreflightChecked = false;
+let pendingSyncDrainPromise = null;
 
 async function ensureFacebookConnectionConfigured() {
   if (connectionPreflightChecked) {
@@ -149,6 +150,152 @@ async function validateFacebookSync(productId, productName, waitSeconds = 10, ma
 }
 
 /**
+ * Check whether any synced item belongs to the expected category-backed set.
+ *
+ * Variable products return one Facebook item per variation, so membership is
+ * satisfied when at least one returned item has the expected set.
+ *
+ * @param {Object} result - Product sync validation result
+ * @param {number|string} productSetRetailerId - Category term taxonomy ID
+ * @param {number|string|null} facebookProductSetId - Facebook product set ID
+ * @returns {'present'|'absent'|'unknown'} Observed membership state
+ */
+function getProductSetMembershipState(result, productSetRetailerId, facebookProductSetId = null) {
+  const facebookProducts = result?.raw_data?.facebook_data;
+  if (!Array.isArray(facebookProducts) || facebookProducts.length === 0) {
+    return 'unknown';
+  }
+
+  let allMembershipDataInspectable = true;
+  for (const product of facebookProducts) {
+    const productSets = product?.product_sets;
+    if (!Array.isArray(productSets)) {
+      allMembershipDataInspectable = false;
+      continue;
+    }
+
+    const membershipFound = productSets.some(productSet => {
+      const categoryMatches = String(productSet?.retailer_id) === String(productSetRetailerId);
+      const productSetMatches = facebookProductSetId === null
+        || String(productSet?.id) === String(facebookProductSetId);
+
+      return categoryMatches && productSetMatches;
+    });
+
+    if (membershipFound) {
+      return 'present';
+    }
+  }
+
+  return allMembershipDataInspectable ? 'absent' : 'unknown';
+}
+
+/**
+ * Check whether any synced item belongs to the expected category-backed set.
+ *
+ * @param {Object} result - Product sync validation result
+ * @param {number|string} productSetRetailerId - Category term taxonomy ID
+ * @param {number|string|null} facebookProductSetId - Facebook product set ID
+ * @returns {boolean} Whether the expected membership exists
+ */
+function hasProductSetMembership(result, productSetRetailerId, facebookProductSetId = null) {
+  return getProductSetMembershipState(result, productSetRetailerId, facebookProductSetId) === 'present';
+}
+
+/**
+ * Wait for a synced product to gain or lose a category-backed product set.
+ *
+ * Meta catalog writes are asynchronous. Poll the exact state the category
+ * tests assert instead of retrying the entire browser test or relying on a
+ * fixed sleep. Each probe performs one remote read so the interval controls
+ * the request rate and the total wait remains bounded.
+ *
+ * @param {Object} options - Product identity, expected set, and polling options
+ * @returns {Promise<Object>} Last successful product validation result
+ */
+async function waitForProductSetMembership({
+  productId,
+  productName,
+  productSetRetailerId,
+  facebookProductSetId = null,
+  expectedMembership = true,
+  timeoutMs = 360000,
+  pollIntervalMs = 20000,
+  drainPendingJobs = drainPendingSyncJobs,
+  validateProduct = validateFacebookSync,
+  wait = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds)),
+  now = Date.now,
+}) {
+  const drainResult = await drainPendingJobs();
+  if (!drainResult?.success) {
+    throw new Error(
+      `Failed to process pending sync jobs before validating product ${productId}: ${drainResult?.error || drainResult?.message || 'unknown error'}`
+    );
+  }
+
+  const deadline = now() + timeoutMs;
+  const expectedState = expectedMembership ? 'present' : 'absent';
+  let attempt = 0;
+  let lastResult = null;
+  let membershipState = 'unknown';
+
+  do {
+    attempt++;
+    lastResult = await validateProduct(productId, productName, 0, 1);
+    membershipState = getProductSetMembershipState(
+      lastResult,
+      productSetRetailerId,
+      facebookProductSetId
+    );
+
+    if (lastResult?.success && membershipState === expectedState) {
+      console.log(
+        `✅ Product ${productId} reached expected product set membership after ${attempt} attempt(s)`
+      );
+      return lastResult;
+    }
+
+    const remainingMs = deadline - now();
+    if (remainingMs <= 0) {
+      break;
+    }
+
+    console.log(
+      `⏳ Product ${productId} is not yet ${expectedMembership ? 'in' : 'out of'} category set ${productSetRetailerId}; retrying...`
+    );
+    await wait(Math.min(pollIntervalMs, remainingMs));
+  } while (now() < deadline);
+
+  const syncStatus = lastResult?.sync_status ?? 'unavailable';
+  throw new Error(
+    `Timed out waiting for product ${productId} to be synced ${expectedMembership ? 'with' : 'without'} category set ${productSetRetailerId}. Last sync status: ${syncStatus}; membership state: ${membershipState}.`
+  );
+}
+
+/**
+ * Drain pending sync jobs once for concurrent catalog validators.
+ *
+ * Product category tests often validate multiple products with Promise.all().
+ * Reuse the same in-flight drain so the validators do not process the local
+ * queue concurrently. A later validation phase starts a fresh drain because a
+ * product or category mutation may have enqueued more work.
+ *
+ * @param {Function} processJobs - Queue processor override for tests
+ * @returns {Promise<Object>} Processing result
+ */
+async function drainPendingSyncJobs(processJobs = processPendingSyncJobs) {
+  if (!pendingSyncDrainPromise) {
+    pendingSyncDrainPromise = Promise.resolve()
+      .then(() => processJobs())
+      .finally(() => {
+        pendingSyncDrainPromise = null;
+      });
+  }
+
+  return pendingSyncDrainPromise;
+}
+
+/**
  * Validate category sync to Facebook product set
  * @param {number} categoryId - Category ID to validate
  * @param {string} categoryName - Category name for display
@@ -218,12 +365,12 @@ async function processPendingSyncJobs() {
 
   try {
     const phpDir = path.resolve(__dirname, '../../php');
-    const { stdout, stderr } = await execAsync(
+    const { stdout } = await execAsync(
       'php process-sync-jobs.php',
       { cwd: phpDir, timeout: 120000 }
     );
 
-    const result = JSON.parse(stdout);
+    const result = parseJsonFromOutput(stdout);
     if (result.success) {
       console.log(`✅ Processed ${result.jobs_processed} sync job(s)`);
     } else {
@@ -239,6 +386,10 @@ async function processPendingSyncJobs() {
 
 module.exports = {
   validateFacebookSync,
+  getProductSetMembershipState,
+  hasProductSetMembership,
+  waitForProductSetMembership,
+  drainPendingSyncJobs,
   processPendingSyncJobs,
   validateCategorySync
 };

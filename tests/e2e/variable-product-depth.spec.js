@@ -19,7 +19,6 @@ const {
   logTestStart,
   logTestEnd,
   validateFacebookSync,
-  processPendingSyncJobs,
   execWP,
   setProductTitle,
   setProductDescription,
@@ -416,7 +415,6 @@ test.describe('Variable Product Depth Tests', () => {
 
     for (let attempt = 1; attempt <= attempts; attempt++) {
       await forceEnqueueVariableProductSync(productId);
-      await processPendingSyncJobs().catch(() => {});
 
       const result = await validateFacebookSync(
         productId,

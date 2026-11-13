@@ -50,15 +50,18 @@ class WC_Facebookcommerce_Iframe_Whatsapp_Utility_Event {
 			return;
 		}
 
-		wc_get_logger()->info(
-			sprintf(
-			/* translators: %s $order_id */
-				__( 'Processing Order id %1$s to send Whatsapp Utility messages', 'facebook-for-woocommerce' ),
-				$order_id,
-			)
-		);
-		$event              = self::ORDER_STATUS_TO_EVENT_MAPPING[ $new_status ];
-		$order              = wc_get_order( $order_id );
+		// A store that never connected WhatsApp utility messaging has nothing to send.
+		// Leave without logging: otherwise every order writes WhatsApp lines that
+		// merchants read as the Purchase event failing (see issue #4019).
+		if ( ! $this->plugin->get_whatsapp_connection_handler()->is_connected() ) {
+			return;
+		}
+
+		$event = self::ORDER_STATUS_TO_EVENT_MAPPING[ $new_status ];
+		$order = wc_get_order( $order_id );
+		if ( ! $order instanceof \WC_Order ) {
+			return;
+		}
 		$order_details_link = $order->get_checkout_order_received_url();
 		// Get WhatsApp Phone number from entered Billing and Shipping phone number
 		$billing_phone_number  = $order->get_billing_phone();
@@ -79,8 +82,8 @@ class WC_Facebookcommerce_Iframe_Whatsapp_Utility_Event {
 		if ( empty( $phone_number ) || empty( $event ) || empty( $first_name ) ) {
 			wc_get_logger()->info(
 				sprintf(
-				/* translators: %s $order_id */
-					__( 'Customer Events Post API call for Order id %1$s skipped due to missing Order info', 'facebook-for-woocommerce' ),
+				/* translators: %1$s order ID */
+					__( 'WhatsApp utility message for order %1$s not sent: the order has no phone number or customer first name.', 'facebook-for-woocommerce' ),
 					$order_id,
 				)
 			);

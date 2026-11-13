@@ -163,6 +163,46 @@ describe('Signals hold/release browser runtime', function () {
         clearStateCookie();
     });
 
+    describe('FacebookSignals.queueEvent() across page loads', function () {
+        const event = { event_name: 'PageView', event_id: 'cached-page-a', event_time: Math.floor(Date.now() / 1000) };
+
+        it('fires a cached page after a held visit was left without releasing', function () {
+            bootPage('held').queueEvent(event);
+            const signals = bootPage('active');
+
+            signals.queueEvent(event);
+
+            expect(fbqCalls('track')).toEqual([
+                ['track', 'PageView', {}, { eventID: event.event_id }],
+            ]);
+        });
+
+        it('releases a revisited held page once despite repeated inline scripts', async function () {
+            const firstVisit = bootPage('held');
+            firstVisit.queueEvent(event);
+            const firstId = firstVisit._queue[0].event_id;
+            const signals = bootPage('held');
+            signals.queueEvent(event);
+            signals.queueEvent(event);
+            expect(fbqCalls('track')).toHaveLength(0);
+
+            setStateCookie('active');
+            const pending = signals.release();
+            const request = releaseRequests()[0];
+            const posted = JSON.parse(request.body).events;
+            expect(posted).toHaveLength(1);
+            expect(posted[0].event_name).toBe('PageView');
+            expect(posted[0].event_id).not.toBe(firstId);
+            request.respond(200, { success: true, data: { sent_count: 1 } });
+            await pending;
+
+            expect(fbqCalls('track')).toEqual([
+                ['track', 'PageView', {}, { eventID: posted[0].event_id }],
+            ]);
+            expect(signals._queue).toHaveLength(0);
+        });
+    });
+
     describe('FacebookSignals.release()', function () {
         it('grants consent and replays the queue after an uninterrupted round-trip', async function () {
             const signals = bootPage('held');

@@ -10,6 +10,7 @@
  */
 
 const { TIMEOUTS } = require('../constants/timeouts');
+const { execWP } = require('../wordpress/exec');
 
 /**
  * Complete a purchase flow from product to order confirmation
@@ -28,7 +29,9 @@ async function completePurchaseFlow(page, productUrl = null) {
   await page.waitForTimeout(TIMEOUTS.SHORT);
 
   console.log(`   💳 Navigating to checkout`);
-  await page.goto('/checkout', { waitUntil: 'domcontentloaded', timeout: TIMEOUTS.EXTRA_LONG });
+  const { stdout } = await execWP('echo wp_json_encode(wc_get_checkout_url());');
+  const checkoutUrl = JSON.parse(stdout.trim());
+  await page.goto(checkoutUrl, { waitUntil: 'domcontentloaded', timeout: TIMEOUTS.EXTRA_LONG });
   await page.evaluate(() => window.scrollBy(0, 400));
 
   console.log(`   📝 Filling billing address from environment variables`);
@@ -74,13 +77,19 @@ async function completePurchaseFlow(page, productUrl = null) {
 
   console.log(`   ⏳ Waiting for order to process...`);
   await page.click('.wc-block-components-checkout-place-order-button');
-  await page.waitForURL(/\/checkout\/order-received\/\d+/, { timeout: TIMEOUTS.EXTRA_LONG });
+  await page.waitForURL(url => (
+    /\/checkout\/order-received\/\d+/.test(url.pathname)
+      || /^\d+$/.test(url.searchParams.get('order-received') || '')
+  ), { timeout: TIMEOUTS.EXTRA_LONG });
 
   const orderReceivedUrl = page.url();
   console.log(`   ✅ Order completed: ${orderReceivedUrl}`);
 
-  const orderIdMatch = orderReceivedUrl.match(/order-received\/(\d+)/);
-  const orderId = orderIdMatch ? orderIdMatch[1] : null;
+  const parsedOrderUrl = new URL(orderReceivedUrl);
+  const orderIdMatch = parsedOrderUrl.pathname.match(/order-received\/(\d+)/);
+  const orderId = orderIdMatch
+    ? orderIdMatch[1]
+    : parsedOrderUrl.searchParams.get('order-received');
 
   return { orderReceivedUrl, orderId };
 }

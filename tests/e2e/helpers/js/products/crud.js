@@ -15,6 +15,10 @@ const path = require('path');
 
 const execAsync = promisify(exec);
 const { execWP } = require('../wordpress/exec');
+const {
+  getProductCatalogRequestIds,
+  processPendingSyncJobs,
+} = require('../plugin/sync');
 
 function shellEscape(value) {
   return `'${String(value).replace(/'/g, `'"'"'`)}'`;
@@ -114,10 +118,25 @@ async function cleanupProduct(productId) {
   if (!productId) return;
 
   console.log(`🧹 Cleaning up product ${productId}...`);
+  let requestIds = [];
+
+  try {
+    requestIds = await getProductCatalogRequestIds(productId, 'DELETE');
+  } catch (error) {
+    console.log(`⚠️ Could not resolve catalog deletion IDs for product ${productId}: ${error.message}`);
+  }
 
   try {
     const startTime = new Date();
     await execWP(`wp_delete_post(${productId}, true);`);
+    const syncResult = await processPendingSyncJobs({
+      waitForBatchCompletion: true,
+      requestIds,
+      actions: ['DELETE'],
+    });
+    if (!syncResult.success) {
+      throw new Error(syncResult.error || 'Meta product deletion did not complete');
+    }
     const endTime = new Date();
     console.log(`⏱️ Cleanup took ${endTime - startTime}ms`);
     console.log(`✅ Product ${productId} deleted from WooCommerce`);
@@ -137,11 +156,26 @@ async function cleanupProducts(productIds) {
   if (validIds.length === 0) return;
 
   console.log(`🧹 Batch cleaning up ${validIds.length} products...`);
+  let requestIds = [];
+
+  try {
+    requestIds = await getProductCatalogRequestIds(validIds, 'DELETE');
+  } catch (error) {
+    console.log(`⚠️ Could not resolve catalog deletion IDs: ${error.message}`);
+  }
 
   try {
     const startTime = new Date();
     const idsPhp = validIds.join(',');
     await execWP(`foreach ([${idsPhp}] as \\$id) { wp_delete_post(\\$id, true); }`);
+    const syncResult = await processPendingSyncJobs({
+      waitForBatchCompletion: true,
+      requestIds,
+      actions: ['DELETE'],
+    });
+    if (!syncResult.success) {
+      throw new Error(syncResult.error || 'Meta product deletions did not complete');
+    }
     const endTime = new Date();
     console.log(`⏱️ Batch cleanup took ${endTime - startTime}ms`);
     console.log(`✅ ${validIds.length} products deleted from WooCommerce`);

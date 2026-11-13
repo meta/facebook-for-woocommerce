@@ -72,11 +72,13 @@ const {
 const {
   validateFacebookSync,
   processPendingSyncJobs,
-  validateCategorySync
+  validateCategorySync,
+  getProductCatalogRequestIds
 } = require('./plugin/sync');
 
 const {
   getConnectionStatus,
+  assertFacebookReconnectCredentialsConfigured,
   disconnectAndVerify,
   reconnectAndVerify,
   verifyProductsFacebookFieldsCleared
@@ -241,7 +243,9 @@ const facebook = {
   validateFacebookSync,
   processPendingSyncJobs,
   validateCategorySync,
+  getProductCatalogRequestIds,
   getConnectionStatus,
+  assertFacebookReconnectCredentialsConfigured,
   disconnectAndVerify,
   reconnectAndVerify,
   verifyProductsFacebookFieldsCleared,
@@ -369,9 +373,11 @@ module.exports = {
   validateFacebookSync,
   processPendingSyncJobs,
   validateCategorySync,
+  getProductCatalogRequestIds,
 
   // Facebook - Connection
   getConnectionStatus,
+  assertFacebookReconnectCredentialsConfigured,
   disconnectAndVerify,
   reconnectAndVerify,
   verifyProductsFacebookFieldsCleared,

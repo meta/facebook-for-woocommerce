@@ -339,7 +339,9 @@ abstract class AbstractFeed {
 				),
 				$exception,
 			);
-			status_header( $exception->getCode() );
+			// The in-place rebuild can throw with code 0, which status_header() ignores (a 200 with an empty body).
+			$code = (int) $exception->getCode();
+			status_header( $code >= 400 && $code < 600 ? $code : 500 );
 		} finally {
 			if ( $file ) {
 				// phpcs:ignore -- use php file i/o functions

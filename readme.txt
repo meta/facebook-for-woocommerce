@@ -3,7 +3,7 @@ Contributors: facebook
 Tags: meta, facebook, whatsapp, conversions api, catalog sync
 Requires at least: 5.6
 Tested up to: 7.1
-Stable tag: 3.7.8
+Stable tag: 3.7.9
 Requires PHP: 7.4
 MySQL: 5.6 or greater
 License: GPLv2 or later

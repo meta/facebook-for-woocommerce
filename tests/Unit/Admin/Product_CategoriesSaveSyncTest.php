@@ -127,4 +127,19 @@ class Product_CategoriesSaveSyncTest extends AbstractWPUnitTestWithOptionIsolati
 
 		$this->assertSame( $this->sorted( $expected ), $this->save_category_and_get_queued_ids( $term_id ) );
 	}
+
+	/**
+	 * Terms of other taxonomies are left alone, even when a product category shares their slug.
+	 */
+	public function test_saving_term_of_other_taxonomy_does_not_sync_products() {
+		$category_id = $this->create_category( 'QA shared' );
+		$this->add_to_category( \WC_Helper_Product::create_simple_product(), $category_id );
+
+		$tag_id = (int) wp_insert_term( 'QA shared', 'product_tag' )['term_id'];
+		$this->assertSame( get_term( $category_id )->slug, get_term( $tag_id )->slug );
+
+		$this->sync_handler->expects( $this->never() )->method( 'create_or_update_products' );
+
+		$this->save_term( $tag_id, 'product_tag' );
+	}
 }

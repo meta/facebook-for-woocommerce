@@ -374,6 +374,11 @@ class Product_Categories {
 	 */
 	public function save_google_product_category_and_enhanced_attributes( $term_id, $tt_id, $taxonomy ) {
 
+		// created_term and edit_term fire for every taxonomy; the fields saved here only exist on product categories.
+		if ( 'product_cat' !== $taxonomy ) {
+			return;
+		}
+
 		$google_product_category_id = wc_clean( Helper::get_posted_value( self::FIELD_GOOGLE_PRODUCT_CATEGORY_ID ) );
 
 		\WooCommerce\Facebook\Product_Categories::update_google_product_category_id( $term_id, $google_product_category_id );

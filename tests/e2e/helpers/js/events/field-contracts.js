@@ -122,8 +122,15 @@ const EVENT_OVERLAYS = {
   },
 
   Purchase: {
-    channels: ['capi'],
+    channels: ['pixel', 'capi'],
+    // The browser Purchase hit carries the shared _fbp identifier, while checkout
+    // PII is attached to the server event and is not serialized into the Pixel
+    // request on the thank-you page.
+    user_data: {
+      pixel: ['fbp']
+    },
     custom_data: {
+      pixel: ['content_ids', 'content_type', 'content_name', 'value', 'currency', 'contents', 'order_id'],
       capi: ['content_ids', 'content_type', 'content_name', 'value', 'currency', 'contents', 'order_id']
     }
   },

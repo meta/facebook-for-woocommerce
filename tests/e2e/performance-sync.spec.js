@@ -11,6 +11,7 @@ const {
   baseURL,
   safeScreenshot,
   cleanupProduct,
+  cleanupProducts,
   generateProductName,
   generateUniqueSKU,
   extractProductIdFromUrl,
@@ -231,7 +232,7 @@ test.describe('Meta for WooCommerce - Performance Sync E2E Tests', () => {
     return lastResult;
   }
 
-  async function createAndPublishSimpleProduct(page, { titleSuffix, descriptionRepeat = 20 }) {
+  async function createAndPublishSimpleProduct(page, { titleSuffix, descriptionRepeat = 20, validateSync = true }) {
     let productId = null;
 
     try {
@@ -263,13 +264,15 @@ test.describe('Meta for WooCommerce - Performance Sync E2E Tests', () => {
       await publishProduct(page);
 
       productId = await resolveProductId(page);
-      await assertNoFatalAndSync(
-        page,
-        productId,
-        productName,
-        PERFORMANCE_CONFIG.simpleBatch.waitSeconds,
-        PERFORMANCE_CONFIG.simpleBatch.maxRetries
-      );
+      if (validateSync) {
+        await assertNoFatalAndSync(
+          page,
+          productId,
+          productName,
+          PERFORMANCE_CONFIG.simpleBatch.waitSeconds,
+          PERFORMANCE_CONFIG.simpleBatch.maxRetries
+        );
+      }
 
       return { productId, productName, sku };
     } catch (error) {
@@ -372,20 +375,35 @@ test.describe('Meta for WooCommerce - Performance Sync E2E Tests', () => {
         const product = await createAndPublishSimpleProduct(page, {
           titleSuffix: `Batch-${i + 1}`,
           descriptionRepeat: PERFORMANCE_CONFIG.simpleBatch.descriptionRepeat,
+          validateSync: false,
         });
         created.push(product);
       }
 
       expect(created.length).toBe(PERFORMANCE_CONFIG.simpleBatch.count);
+      await checkForPhpErrors(page);
+
+      // Validate the batch together. Serial propagation windows made this
+      // single test exceed Playwright's per-test timeout before the batch was
+      // even created, and did not exercise queue buildup as intended.
+      const results = await Promise.all(created.map(item => validateFacebookSync(
+        item.productId,
+        item.productName,
+        PERFORMANCE_CONFIG.simpleBatch.waitSeconds,
+        PERFORMANCE_CONFIG.simpleBatch.maxRetries
+      )));
+      for (const result of results) {
+        expect(result?.success).toBe(true);
+      }
+
       logTestEnd(testInfo, true);
     } catch (error) {
       logTestEnd(testInfo, false);
       throw error;
     } finally {
-      for (const item of created) {
-        if (item.productId) {
-          await cleanupProduct(item.productId);
-        }
+      const productIds = created.map(item => item.productId).filter(Boolean);
+      if (productIds.length > 0) {
+        await cleanupProducts(productIds);
       }
     }
   });

@@ -455,11 +455,12 @@ class API extends Base {
 	 *
 	 * @param string $product_group_id product group ID
 	 * @param int    $limit max number of results returned per page of data
+	 * @param string $fields_string comma-separated fields to request for each product
 	 * @return API\Response|API\ProductCatalog\ProductGroups\Read\Response
 	 * @throws ApiException In case of a general API error or rate limit error.
 	 */
-	public function get_product_group_products( string $product_group_id, int $limit = 1000 ): API\ProductCatalog\ProductGroups\Read\Response {
-		$request = new API\ProductCatalog\ProductGroups\Read\Request( $product_group_id, $limit );
+	public function get_product_group_products( string $product_group_id, int $limit = 1000, string $fields_string = 'id,retailer_id' ): API\ProductCatalog\ProductGroups\Read\Response {
+		$request = new API\ProductCatalog\ProductGroups\Read\Request( $product_group_id, $limit, $fields_string );
 		$this->set_response_handler( API\ProductCatalog\ProductGroups\Read\Response::class );
 		return $this->perform_request( $request );
 	}

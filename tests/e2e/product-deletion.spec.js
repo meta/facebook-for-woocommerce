@@ -15,6 +15,7 @@ const {
   logTestStart,
   logTestEnd,
   validateFacebookSync,
+  getProductCatalogRequestIds,
   processPendingSyncJobs,
   createTestProduct,
   filterProducts,
@@ -68,6 +69,14 @@ test.describe('Meta for WooCommerce - Product Deletion E2E Tests', () => {
       expect(simpleProductPreDeleteResult['success']).toBe(true);
       expect(variableProductPreDeleteResult['success']).toBe(true);
       console.log('✅ Initial sync validation successful. Both products are synced to Facebook.')
+
+      // Capture DELETE identifiers while the variable parent still exposes
+      // its variations. WooCommerce no longer returns those children after
+      // the parent is moved to trash.
+      const [simpleDeleteRequestIds, variableDeleteRequestIds] = await Promise.all([
+        getProductCatalogRequestIds(simpleProductId, 'DELETE'),
+        getProductCatalogRequestIds(variableProductId, 'DELETE')
+      ]);
 
       // Navigate to Products page
       console.log('📋 Navigating to Products page...');
@@ -138,15 +147,13 @@ test.describe('Meta for WooCommerce - Product Deletion E2E Tests', () => {
       await page.waitForLoadState('networkidle', { timeout: TIMEOUTS.MAX });
       console.log('✅ Products moved to trash');
 
-      // Process the pending DELETE sync jobs directly.
-      // The background job handler dispatches via a loopback HTTP request which
-      // doesn't work on single-threaded PHP servers (like the built-in dev
-      // server used in CI), so we invoke the job handler directly via CLI.
-      await processPendingSyncJobs();
-
       const [simpleProductValidationResult, variableProductValidationResult] = await Promise.all([
-        validateFacebookSync(simpleProductId, simpleProduct.productName, 30, 0),
-        validateFacebookSync(variableProductId, variableProduct.productName, 30, 0)
+        validateFacebookSync(simpleProductId, simpleProduct.productName, 30, 0, {
+          requestIds: simpleDeleteRequestIds
+        }),
+        validateFacebookSync(variableProductId, variableProduct.productName, 30, 0, {
+          requestIds: variableDeleteRequestIds
+        })
       ]);
       expect(simpleProductValidationResult['success']).toBe(false);
       expect(variableProductValidationResult['success']).toBe(false);

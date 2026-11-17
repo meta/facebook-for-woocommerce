@@ -24,8 +24,15 @@ class Request extends ApiRequest {
 	/**
 	 * @param string $product_group_id Facebook Product Group ID.
 	 * @param int    $limit Limit.
+	 * @param string $fields_string Comma-separated fields to request for each product.
 	 */
-	public function __construct( string $product_group_id, int $limit ) {
-		parent::__construct( "/{$product_group_id}/products?fields=id,retailer_id&limit={$limit}", 'GET' );
+	public function __construct( string $product_group_id, int $limit, string $fields_string = 'id,retailer_id' ) {
+		parent::__construct( "/{$product_group_id}/products", 'GET' );
+		$this->set_params(
+			[
+				'fields' => $fields_string,
+				'limit'  => $limit,
+			]
+		);
 	}
 }

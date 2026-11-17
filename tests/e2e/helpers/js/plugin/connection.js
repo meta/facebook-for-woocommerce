@@ -12,6 +12,41 @@
 const { TIMEOUTS } = require('../constants/timeouts');
 const { execWP } = require('../wordpress/exec');
 
+const REQUIRED_RECONNECT_CREDENTIALS = {
+  FB_ACCESS_TOKEN: 'accessToken',
+  FB_BUSINESS_MANAGER_ID: 'businessManagerId',
+  FB_EXTERNAL_BUSINESS_ID: 'externalBusinessId',
+  FB_PRODUCT_CATALOG_ID: 'productCatalogId',
+  FB_PIXEL_ID: 'pixelId',
+  FB_PAGE_ID: 'pageId',
+};
+
+function isUsableCredential(value) {
+  return typeof value === 'string'
+    && value.trim() !== ''
+    && !['undefined', 'null'].includes(value.trim().toLowerCase());
+}
+
+function getReconnectCredentials() {
+  const missing = Object.keys(REQUIRED_RECONNECT_CREDENTIALS)
+    .filter(name => !isUsableCredential(process.env[name]));
+
+  if (missing.length > 0) {
+    throw new Error(
+      `Refusing to change the Facebook connection because required credentials are missing: ${missing.join(', ')}`
+    );
+  }
+
+  return Object.fromEntries(
+    Object.entries(REQUIRED_RECONNECT_CREDENTIALS)
+      .map(([environmentName, credentialName]) => [credentialName, process.env[environmentName]])
+  );
+}
+
+function assertFacebookReconnectCredentialsConfigured() {
+  getReconnectCredentials();
+}
+
 /**
  * Get connection status from Meta for WooCommerce
  * @returns {Promise<Object>} Connection status details
@@ -51,6 +86,9 @@ async function getConnectionStatus() {
  * @returns {Promise<Object>} Disconnection result
  */
 async function disconnectAndVerify() {
+  // Every current caller reconnects immediately afterwards. Fail before the
+  // destructive disconnect if the environment cannot restore the connection.
+  assertFacebookReconnectCredentialsConfigured();
   console.log('🔌 Disconnecting from Facebook...');
 
   const before = await getConnectionStatus();
@@ -107,14 +145,7 @@ async function reconnectAndVerify(options = {}) {
     return { before, after: before, success: true, skipped: true };
   }
 
-  const creds = {
-    accessToken: process.env.FB_ACCESS_TOKEN,
-    businessManagerId: process.env.FB_BUSINESS_MANAGER_ID,
-    externalBusinessId: process.env.FB_EXTERNAL_BUSINESS_ID,
-    productCatalogId: process.env.FB_PRODUCT_CATALOG_ID,
-    pixelId: process.env.FB_PIXEL_ID,
-    pageId: process.env.FB_PAGE_ID
-  };
+  const creds = getReconnectCredentials();
 
   console.log('   Deactivating plugin...');
   await execWP(`deactivate_plugins('facebook-for-woocommerce/facebook-for-woocommerce.php');`);
@@ -227,6 +258,7 @@ async function verifyProductsFacebookFieldsCleared() {
 
 module.exports = {
   getConnectionStatus,
+  assertFacebookReconnectCredentialsConfigured,
   disconnectAndVerify,
   reconnectAndVerify,
   verifyProductsFacebookFieldsCleared

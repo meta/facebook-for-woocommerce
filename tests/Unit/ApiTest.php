@@ -380,8 +380,17 @@ class ApiTest extends \WooCommerce\Facebook\Tests\AbstractWPUnitTestWithSafeFilt
 		$limit                     = 999;
 
 		$response = function( $result, $parsed_args, $url ) use ( $facebook_product_group_id, $limit ) {
+			$expected_query = http_build_query(
+				[
+					'fields' => 'id,retailer_id',
+					'limit'  => $limit,
+				],
+				'',
+				'&'
+			);
+
 			$this->assertEquals( 'GET', $parsed_args['method'] );
-			$this->assertEquals( "{$this->endpoint}{$this->version}/{$facebook_product_group_id}/products?fields=id,retailer_id&limit={$limit}", $url );
+			$this->assertEquals( "{$this->endpoint}{$this->version}/{$facebook_product_group_id}/products?{$expected_query}", $url );
 			return [
 				'body'     => '{"data":[{"id":"5678482592202667","retailer_id":"woo-vneck-tee-blue_107"},{"id":"5575513012507086","retailer_id":"woo-vneck-tee-green_106"},{"id":"5454083851373820","retailer_id":"woo-vneck-tee-red_105"}],"paging":{"cursors":{"before":"QVFIUmt2N3lKdWUycEM1c1ZA3eXF5YnJoeWxJZAFFMZAW1OVDZAieG4ycU5mMmV6NV9NY2syaWVxRnZAtRnpwOTVETVZANR21VTzUtZAXBLb25TcmNaaVpYTEYyMVJ3","after":"QVFIUmxJVmYwQUdmay1YUnRPdXROMjN5a3EyZAGhIVm1NX2VpVjBiMFRBMncxSjZAYWXowOVhYTjQ0VzY4X2tlQ2VIZAFNyT3ZARbk5LeWRPM242d2JFazZA4QVZA3"},"next":"https:\/\/graph.facebook.com\/' . $this->version . '\/5427299404026432\/products?fields=id\u00252Cretailer_id&limit=1000&after=QVFIUmxJVmYwQUdmay1YUnRPdXROMjN5a3EyZAGhIVm1NX2VpVjBiMFRBMncxSjZAYWXowOVhYTjQ0VzY4X2tlQ2VIZAFNyT3ZARbk5LeWRPM242d2JFazZA4QVZA3","previous":"https:\/\/graph.facebook.com\/' . $this->version . '\/5427299404026432\/products?fields=id\u00252Cretailer_id&limit=1000&before=QVFIUmt2N3lKdWUycEM1c1ZA3eXF5YnJoeWxJZAFFMZAW1OVDZAieG4ycU5mMmV6NV9NY2syaWVxRnZAtRnpwOTVETVZANR21VTzUtZAXBLb25TcmNaaVpYTEYyMVJ3"}}',
 				'response' => [

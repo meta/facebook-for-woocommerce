@@ -16,6 +16,7 @@ const {
   checkForPhpErrors,
   checkForJsErrors,
   completePurchaseFlow,
+  assertFacebookReconnectCredentialsConfigured,
   disconnectAndVerify,
   reconnectAndVerify,
   verifyProductsFacebookFieldsCleared,
@@ -500,6 +501,10 @@ test.describe('WooCommerce Plugin level tests', () => {
 
   test('Reset connection settings via WooCommerce Status Tools', async ({ page }) => {
     console.log('🔄 Testing Reset connection settings...');
+
+    // This test clears the live connection and restores it in finally. Refuse
+    // to start unless the restore credentials are actually available.
+    assertFacebookReconnectCredentialsConfigured();
 
     const legacyPageAccessTokenOption = 'wc_facebook_page_access_token';
     const deprecatedOptions = [

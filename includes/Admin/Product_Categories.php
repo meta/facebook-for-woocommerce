@@ -395,10 +395,11 @@ class Product_Categories {
 				$sync_product_ids = array();
 
 				/**
-				 * @var int $product_id
+				 * The result is a list, so its keys are positions, not product IDs.
+				 *
 				 * @var \WC_Product $product
 				 */
-				foreach ( $products as $product_id => $product ) {
+				foreach ( $products as $product ) {
 
 					if ( $product instanceof \WC_Product_Variable ) {
 
@@ -407,7 +408,7 @@ class Product_Categories {
 
 					} else {
 
-						$sync_product_ids[] = $product_id;
+						$sync_product_ids[] = $product->get_id();
 					}
 				}
 

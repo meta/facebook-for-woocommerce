@@ -328,7 +328,6 @@ public function render_message_handler() {
                     access_token: message.access_token,
                     product_catalog_id: message.catalog_id,
                     pixel_id: message.pixel_id,
-                    page_id: message.page_id,
                     // Additional parameters...
                 };
 

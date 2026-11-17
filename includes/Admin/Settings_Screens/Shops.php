@@ -192,18 +192,13 @@ class Shops extends Abstract_Settings_Screen {
 					const installed_features = Array.isArray(message.installed_features) ? message.installed_features : [];
 					const cms_id = installed_features.find( ( f ) => 'fb_shop' === f.feature_type )?.connected_assets?.commerce_merchant_settings_id ||
 						installed_features.find( ( f ) => 'ig_shopping' === f.feature_type )?.connected_assets?.commerce_merchant_settings_id || '';
-					const ad_account_id = installed_features.find( ( f ) => 'ads' === f.feature_type )?.connected_assets?.ad_account_id || '';
 
 					const requestBody = {
 						access_token: message.access_token,
 						product_catalog_id: message.catalog_id,
 						pixel_id: message.pixel_id,
-						page_id: message.page_id,
-						business_manager_id: message.business_manager_id,
 						commerce_merchant_settings_id: cms_id,
-						ad_account_id: ad_account_id,
 						commerce_partner_integration_id: message.commerce_partner_integration_id || '',
-						profiles: message.profiles,
 						installed_features: installed_features
 					};
 					Object.keys(requestBody).forEach(function(key) {

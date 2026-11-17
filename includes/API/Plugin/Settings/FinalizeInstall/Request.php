@@ -72,28 +72,12 @@ class Request extends RESTRequest {
 				'type'     => 'string',
 				'required' => false,
 			],
-			'page_id'                         => [
-				'type'     => 'string',
-				'required' => false,
-			],
-			'business_manager_id'             => [
-				'type'     => 'string',
-				'required' => false,
-			],
 			'commerce_merchant_settings_id'   => [
-				'type'     => 'string',
-				'required' => false,
-			],
-			'ad_account_id'                   => [
 				'type'     => 'string',
 				'required' => false,
 			],
 			'commerce_partner_integration_id' => [
 				'type'     => 'string',
-				'required' => false,
-			],
-			'profiles'                        => [
-				'type'     => 'array',
 				'required' => false,
 			],
 			'installed_features'              => [

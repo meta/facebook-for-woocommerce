@@ -263,22 +263,6 @@ class API extends Base {
 
 
 	/**
-	 * Gets a Page object from Facebook.
-	 *
-	 * @since 2.0.0
-	 *
-	 * @param string $page_id page ID
-	 * @return API\Response|API\Pages\Read\Response
-	 * @throws ApiException In case of a general API error or rate limit error.
-	 */
-	public function get_page( $page_id ): API\Pages\Read\Response {
-		$request = new API\Pages\Read\Request( $page_id );
-		$this->set_response_handler( API\Pages\Read\Response::class );
-		return $this->perform_request( $request );
-	}
-
-
-	/**
 	 * Gets a Catalog object from Facebook.
 	 *
 	 * @param string $catalog_id Facebook catalog id.
@@ -288,20 +272,6 @@ class API extends Base {
 	public function get_catalog( string $catalog_id ): API\Catalog\Response {
 		$request = new API\Catalog\Request( $catalog_id );
 		$this->set_response_handler( API\Catalog\Response::class );
-		return $this->perform_request( $request );
-	}
-
-
-	/**
-	 * Gets a user object from Facebook.
-	 *
-	 * @param string $user_id user ID. Defaults to the currently authenticated user
-	 * @return API\Response|API\User\Response
-	 * @throws ApiException In case of a general API error or rate limit error.
-	 */
-	public function get_user( string $user_id = '' ): API\User\Response {
-		$request = new API\User\Request( $user_id );
-		$this->set_response_handler( API\User\Response::class );
 		return $this->perform_request( $request );
 	}
 

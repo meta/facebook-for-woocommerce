@@ -279,7 +279,7 @@ class Connection {
 	/**
 	 * Refreshes the Meta-managed asset mapping with CPI preferred.
 	 *
-	 * Tries the STEFI integration read first, then the legacy FBE install read.
+	 * Tries the Commerce Integration API read first, then the legacy FBE install read.
 	 * Each rung logs which source supplied the mapping so fallback usage stays
 	 * measurable while FBE is retired.
 	 *
@@ -388,7 +388,7 @@ class Connection {
 	/**
 	 * Retrieves and stores the connected installation data.
 	 *
-	 * Last-resort rung of the asset-mapping ladder; the STEFI integration read
+	 * Last-resort rung of the asset-mapping ladder; the Commerce Integration API read
 	 * and the legacy Graph node are tried first.
 	 *
 	 * @since 2.0.0
@@ -398,6 +398,16 @@ class Connection {
 	private function update_installation_data() {
 
 		$response = $this->get_plugin()->get_api()->get_installation_ids( $this->get_external_business_id() );
+
+		// Graph errors come back as a response rather than an exception, so surface them
+		// here; otherwise the caller would report a refresh that never happened.
+		if ( $response->has_api_error() ) {
+			throw new ApiException( esc_html( $response->get_api_error_message() ), (int) $response->get_api_error_code() );
+		}
+
+		if ( empty( $response->get_data() ) ) {
+			throw new ApiException( 'FBE install read returned no installation.' );
+		}
 
 		if ( $response->get_pixel_id() ) {
 			update_option( \WC_Facebookcommerce_Integration::SETTING_FACEBOOK_PIXEL_ID, sanitize_text_field( $response->get_pixel_id() ) );

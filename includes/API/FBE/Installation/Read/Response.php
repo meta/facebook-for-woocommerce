@@ -73,7 +73,10 @@ class Response extends API\Response {
 	 * @return string
 	 */
 	public function get_catalog_id(): string {
-		return $this->get_data()['catalog_id'] ?? '';
+		// A numeric ID would throw a TypeError under strict_types and abort the caller.
+		$catalog_id = $this->get_data()['catalog_id'] ?? '';
+
+		return is_string( $catalog_id ) || is_int( $catalog_id ) ? (string) $catalog_id : '';
 	}
 
 

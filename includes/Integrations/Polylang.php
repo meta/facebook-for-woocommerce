@@ -322,12 +322,12 @@ class Polylang extends Abstract_Localization_Integration {
 			// Get translated product ID using Polylang function
 			$translated_id = pll_get_post( $product_id, $polylang_slug );
 
-			if ( $translated_id && $translated_id !== $product_id ) {
+			if ( $translated_id && $translated_id !== $product_id && 'publish' === get_post_status( $translated_id ) ) {
 				// Store using the full locale as the key
 				$details['translations'][ $full_locale ] = $translated_id;
 
 				// Polylang doesn't have built-in translation status like WPML
-				// We'll mark as 'complete' if translation exists
+				// We'll mark as 'complete' if the translation is published
 				$details['translation_status'][ $full_locale ] = 'complete';
 
 				// Get which fields are translated

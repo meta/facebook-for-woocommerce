@@ -10,7 +10,9 @@ declare( strict_types=1 );
 
 namespace WooCommerce\Facebook\Tests\Integration\Feed\Localization;
 
+use WooCommerce\Facebook\Feed\Localization\LanguageFeedData;
 use WooCommerce\Facebook\Integrations\IntegrationRegistry;
+use WooCommerce\Facebook\Integrations\Polylang;
 use WooCommerce\Facebook\Tests\Integration\IntegrationTestCase;
 
 /**
@@ -65,6 +67,79 @@ class LocalizationIntegrationTest extends IntegrationTestCase {
 				$detected_plugin ? strtoupper( $detected_plugin ) : 'no plugin'
 			)
 		);
+	}
+
+	/**
+	 * Only published translations should contribute language override rows.
+	 *
+	 * @dataProvider unpublished_translation_statuses
+	 * @param string $status Translation post status.
+	 */
+	public function test_unpublished_polylang_translations_are_excluded( string $status ): void {
+		$polylang = new Polylang();
+		if ( ! $polylang->is_available() ) {
+			$this->markTestSkipped( 'An active Polylang integration is required.' );
+		}
+
+		$product    = $this->create_simple_product( [ 'name' => 'Original product' ] );
+		$product_id = $product->get_id();
+		$spanish_id = $polylang->create_product_translation( $product_id, 'es_ES', [ 'name' => 'Producto traducido' ] );
+		$french_id  = $polylang->create_product_translation( $product_id, 'fr_FR', [ 'name' => 'Produit traduit' ] );
+		$this->assertNotNull( $spanish_id );
+		$this->assertNotNull( $french_id );
+		pll_save_post_translations( [ 'en' => $product_id, 'es' => $spanish_id, 'fr' => $french_id ] );
+
+		$feed_data = new LanguageFeedData();
+		$this->assertCount( 1, $feed_data->get_language_csv_data( 'es_ES', -1 )['data'] );
+
+		if ( 'trash' === $status ) {
+			wp_trash_post( $spanish_id );
+		} else {
+			wp_update_post( [
+				'ID'            => $spanish_id,
+				'post_status'   => $status,
+				'post_date'     => '2099-01-01 00:00:00',
+				'post_date_gmt' => '2099-01-01 00:00:00',
+			] );
+		}
+		$this->assertSame( $status, get_post_status( $spanish_id ) );
+		$this->assertSame( $spanish_id, pll_get_post( $product_id, 'es' ), 'Polylang still resolves the unpublished translation.' );
+
+		$details = $polylang->get_product_translation_details( $product_id );
+		$this->assertArrayNotHasKey( 'es_ES', $details['translations'] );
+		$this->assertArrayNotHasKey( 'es_ES', $details['translation_status'] );
+		$this->assertArrayNotHasKey( 'es_ES', $details['translated_fields'] ?? [] );
+		$this->assertSame( $french_id, $details['translations']['fr_FR'] );
+		$this->assertSame( 'complete', $details['translation_status']['fr_FR'] );
+		$this->assertSame( [], $feed_data->get_language_csv_data( 'es_ES', -1 )['data'] );
+		$this->assertCount( 1, $feed_data->get_language_csv_data( 'fr_FR', -1 )['data'] );
+
+		if ( 'trash' === $status ) {
+			wp_untrash_post( $spanish_id );
+		}
+		wp_update_post( [
+			'ID'            => $spanish_id,
+			'post_status'   => 'publish',
+			'post_date'     => current_time( 'mysql' ),
+			'post_date_gmt' => current_time( 'mysql', true ),
+		] );
+		$details = $polylang->get_product_translation_details( $product_id );
+		$this->assertSame( $spanish_id, $details['translations']['es_ES'] );
+		$this->assertSame( 'complete', $details['translation_status']['es_ES'] );
+		$this->assertCount( 1, $feed_data->get_language_csv_data( 'es_ES', -1 )['data'] );
+	}
+
+	/**
+	 * @return array Unpublished translation statuses.
+	 */
+	public function unpublished_translation_statuses(): array {
+		return [
+			'trashed'   => [ 'trash' ],
+			'draft'     => [ 'draft' ],
+			'pending'   => [ 'pending' ],
+			'private'   => [ 'private' ],
+			'scheduled' => [ 'future' ],
+		];
 	}
 
 	/**

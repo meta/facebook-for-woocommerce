@@ -994,4 +994,21 @@ class API extends Base {
 		$this->set_response_handler( API\CommerceIntegration\Configuration\Update\Response::class );
 		return $this->perform_request( $request );
 	}
+
+	/**
+	 * Sets the checkout URL for one country and publishes the shop.
+	 *
+	 * @since 3.7.8
+	 *
+	 * @param string $commerce_merchant_settings_id Commerce Merchant Settings ID.
+	 * @param string $checkout_url Base checkout URL; Meta appends the cart parameters.
+	 * @param string $country_code ISO country code the checkout URL applies to.
+	 * @return API\Response
+	 * @throws ApiException In case of a general API error or rate limit error.
+	 */
+	public function set_up_checkout( string $commerce_merchant_settings_id, string $checkout_url, string $country_code ): API\Response {
+		$request = new API\CommerceMerchantSettings\Checkout\Request( $commerce_merchant_settings_id, $checkout_url, $country_code );
+		$this->set_response_handler( API\Response::class );
+		return $this->perform_request( $request );
+	}
 }

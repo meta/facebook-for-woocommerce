@@ -381,41 +381,68 @@ class Product_Categories {
 
 		$term = get_term( $term_id, $taxonomy );
 
-		if ( $term instanceof \WP_Term ) {
+		if ( ! $term instanceof \WP_Term ) {
+			return;
+		}
 
-			// get the products in the category being saved
-			$products = wc_get_products(
-				array(
-					'category' => array( $term->slug ),
-					'limit'    => -1,
-				)
-			);
+		$sync_product_ids = $this->get_product_ids_to_sync_for_category( $term );
 
-			if ( ! empty( $products ) ) {
+		if ( ! empty( $sync_product_ids ) ) {
+			facebook_for_woocommerce()->get_products_sync_handler()->create_or_update_products( $sync_product_ids );
+		}
+	}
 
-				$sync_product_ids = array();
+	/**
+	 * Gets the IDs of the products in a category that should be re-synced: simple products by their own ID,
+	 * and products with variations by the IDs of those variations.
+	 *
+	 * Works on IDs only, so a category with thousands of products is not loaded into memory while the
+	 * category is being saved; the background sync loads each product when it sends it. Parents are told
+	 * apart by having variations rather than by product type, the same way the full catalog sync does,
+	 * so variable subscriptions and other types built on variable products are covered.
+	 *
+	 * @see \WC_Facebookcommerce_Utils::get_all_product_ids_for_sync()
+	 *
+	 * @since 3.7.10
+	 *
+	 * @param \WP_Term $term Product category.
+	 * @return int[]
+	 */
+	private function get_product_ids_to_sync_for_category( \WP_Term $term ) {
+		$product_ids = wc_get_products(
+			array(
+				'category' => array( $term->slug ),
+				'limit'    => -1,
+				'return'   => 'ids',
+			)
+		);
 
-				/**
-				 * The result is a list, so its keys are positions, not product IDs.
-				 *
-				 * @var \WC_Product $product
-				 */
-				foreach ( $products as $product ) {
+		if ( empty( $product_ids ) ) {
+			return array();
+		}
 
-					if ( $product instanceof \WC_Product_Variable ) {
+		$product_ids = array_map( 'intval', $product_ids );
 
-						// should sync the variations, not the variable product
-						$sync_product_ids = array_merge( $sync_product_ids, $product->get_children() );
+		// variation ID => parent ID, matching the statuses WC_Product_Variable::get_children() returns
+		$variations = get_posts(
+			array(
+				'post_type'       => 'product_variation',
+				'post_parent__in' => $product_ids,
+				'post_status'     => array( 'publish', 'private' ),
+				'fields'          => 'id=>parent',
+				'posts_per_page'  => -1,
+			)
+		);
 
-					} else {
+		$parent_ids = array_unique( array_map( 'intval', array_values( $variations ) ) );
 
-						$sync_product_ids[] = $product->get_id();
-					}
-				}
-
-				facebook_for_woocommerce()->get_products_sync_handler()->create_or_update_products( $sync_product_ids );
-			}//end if
-		}//end if
+		// parents can't be represented as product items, so their variations are synced instead
+		return array_values(
+			array_merge(
+				array_diff( $product_ids, $parent_ids ),
+				array_map( 'intval', array_keys( $variations ) )
+			)
+		);
 	}
 
 	/**

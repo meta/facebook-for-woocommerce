@@ -86,20 +86,16 @@ class LanguageOverrideFeed {
 		}
 		set_transient( $flag_name, 'yes', HOUR_IN_SECONDS );
 
-		$integration        = facebook_for_woocommerce()->get_integration();
 		$connection_handler = facebook_for_woocommerce()->get_connection_handler();
 		// Language feeds only require an active connection, not a Facebook Page ID
 		$is_connected = $connection_handler && $connection_handler->is_connected();
-
-		// Only schedule feed job if store has not opted out of product sync.
-		$store_allows_sync = ( $is_connected && $integration->is_product_sync_enabled() ) || $integration->is_woo_all_products_enabled();
 
 		// Only schedule if has not opted out of language override feed generation.
 		$store_allows_language_feeds = $is_connected && $this->is_language_override_feed_generation_enabled();
 
 		$schedule_action_hook_name = self::GENERATE_FEED_ACTION . static::get_data_stream_name();
 
-		if ( ! $store_allows_sync || ! $store_allows_language_feeds || $this->should_skip_feed() ) {
+		if ( ! $store_allows_language_feeds || $this->should_skip_feed() ) {
 			as_unschedule_all_actions( $schedule_action_hook_name );
 
 			$message = '';
@@ -107,8 +103,6 @@ class LanguageOverrideFeed {
 				$message = 'Integration not configured.';
 			} elseif ( ! $store_allows_language_feeds ) {
 				$message = 'Store does not allow language override feeds.';
-			} elseif ( ! $store_allows_sync ) {
-				$message = 'Store does not allow sync.';
 			} elseif ( $this->should_skip_feed() ) {
 				$message = 'Feed should be skipped.';
 			}

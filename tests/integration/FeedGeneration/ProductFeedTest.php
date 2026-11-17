@@ -98,48 +98,6 @@ class ProductFeedTest extends IntegrationTestCase {
 	}
 
 	/**
-	 * Test feed generation with category exclusions
-	 */
-	public function test_feed_generation_with_exclusions(): void {
-		$this->enable_facebook_sync();
-
-		// Create categories
-		$allowed_category = $this->create_category( 'Electronics' );
-		$excluded_category = $this->create_category( 'Restricted' );
-
-		// Set exclusions
-		$this->set_excluded_categories( [ $excluded_category->term_id ] );
-
-		// Create products in different categories
-		$allowed_product = $this->create_simple_product([
-			'name' => 'Allowed Product',
-			'regular_price' => '25.00',
-			'status' => 'publish'
-		]);
-		wp_set_object_terms( $allowed_product->get_id(), [ $allowed_category->term_id ], 'product_cat' );
-		
-		// Refresh the product to get updated category data
-		$allowed_product = wc_get_product( $allowed_product->get_id() );
-
-		$excluded_product = $this->create_simple_product([
-			'name' => 'Excluded Product', 
-			'regular_price' => '30.00',
-			'status' => 'publish'
-		]);
-		wp_set_object_terms( $excluded_product->get_id(), [ $excluded_category->term_id ], 'product_cat' );
-		
-		// Refresh the product to get updated category data
-		$excluded_product = wc_get_product( $excluded_product->get_id() );
-
-		// Generate feed
-		$feed_data = $this->generate_facebook_feed( [ $allowed_product, $excluded_product ] );
-
-		// Should only include allowed product
-		$this->assertCount( 1, $feed_data, 'Feed should exclude restricted products' );
-		$this->assertEquals( $allowed_product->get_id(), $feed_data[0]['id'], 'Feed should contain allowed product' );
-	}
-
-	/**
 	 * Test large catalog feed generation performance
 	 */
 	public function test_large_catalog_feed_generation(): void {

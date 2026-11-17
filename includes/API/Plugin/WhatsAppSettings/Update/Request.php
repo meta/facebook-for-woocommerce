@@ -99,7 +99,7 @@ class Request extends RESTRequest {
 	public function validate() {
 
 		if ( empty( $this->get_param( 'access_token' ) ) ) {
-			wc_get_logger()->info(
+			wc_get_logger()->warning(
 				sprintf(
 					__( 'Failed to updateWhatsAppSettings since access_token param is missing.', 'facebook-for-woocommerce' ),
 				)
@@ -112,7 +112,7 @@ class Request extends RESTRequest {
 		}
 
 		if ( empty( $this->get_param( 'business_id' ) ) ) {
-			wc_get_logger()->info(
+			wc_get_logger()->warning(
 				sprintf(
 					__( 'Failed to updateWhatsAppSettings since business_id param is missing.', 'facebook-for-woocommerce' ),
 				)
@@ -125,7 +125,7 @@ class Request extends RESTRequest {
 		}
 
 		if ( empty( $this->get_param( 'phone_number_id' ) ) ) {
-			wc_get_logger()->info(
+			wc_get_logger()->warning(
 				sprintf(
 					__( 'Failed to updateWhatsAppSettings since phone_number_id param is missing.', 'facebook-for-woocommerce' ),
 				)
@@ -138,7 +138,7 @@ class Request extends RESTRequest {
 		}
 
 		if ( empty( $this->get_param( 'waba_id' ) ) ) {
-			wc_get_logger()->info(
+			wc_get_logger()->warning(
 				sprintf(
 					__( 'Failed to updateWhatsAppSettings since waba_id param is missing.', 'facebook-for-woocommerce' ),
 				)
@@ -151,7 +151,7 @@ class Request extends RESTRequest {
 		}
 
 		if ( empty( $this->get_param( 'wa_installation_id' ) ) ) {
-			wc_get_logger()->info(
+			wc_get_logger()->warning(
 				sprintf(
 					__( 'Failed to updateWhatsAppSettings since wa_installation_id param is missing.', 'facebook-for-woocommerce' ),
 				)

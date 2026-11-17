@@ -25,7 +25,7 @@ jobs:
         run: sudo apt-get install subversion -y
 
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - name: Prepare PHP
         uses: woocommerce/grow/prepare-php@actions-v1
@@ -33,8 +33,15 @@ jobs:
           php-version: "${{ matrix.php }}"
           coverage: xdebug
 
+      # Not using woocommerce/grow/prepare-mysql: it writes
+      # default_authentication_plugin=mysql_native_password to my.cnf, an option
+      # MySQL 8.4 (ubuntu-26.04 runners) removed, so mysqld fails to start.
+      # PHP 7.4+ supports MySQL's default caching_sha2_password, so no auth
+      # change is needed. The runner's MySQL root password is "root".
       - name: Prepare MySQL
-        uses: woocommerce/grow/prepare-mysql@actions-v1
+        run: |
+          sudo systemctl start mysql.service
+          mysql --version
 
       - name: Install WP tests
         env:
@@ -81,7 +88,7 @@ jobs:
 
       - name: Upload coverage reports
         if: steps.phpunit.outputs.test_status == 'passed'
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: php-coverage-report PHP - ${{ matrix.php }}, WP - ${{ matrix.wp-version }} , WC - ${{ matrix.wc-version }}
           path: coverage.xml

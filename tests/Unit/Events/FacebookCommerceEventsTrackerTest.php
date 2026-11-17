@@ -40,12 +40,18 @@ class FacebookCommerceEventsTrackerTest extends AbstractWPUnitTestWithSafeFilter
 	private $original_user_agent;
 
 	/**
+	 * @var array Original $_GET and REQUEST_URI, which go_to() overwrites, to restore after each test.
+	 */
+	private $original_request;
+
+	/**
 	 * Set up before each test.
 	 */
 	public function setUp(): void {
 		parent::setUp();
 
 		$this->original_user_agent = $_SERVER['HTTP_USER_AGENT'] ?? null;
+		$this->original_request    = array( $_GET, $_SERVER['REQUEST_URI'] ?? null );
 
 		// Set a default browser User-Agent so tests are not blocked by crawler detection.
 		$_SERVER['HTTP_USER_AGENT'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
@@ -69,6 +75,14 @@ class FacebookCommerceEventsTrackerTest extends AbstractWPUnitTestWithSafeFilter
 			unset( $_SERVER['HTTP_USER_AGENT'] );
 		} else {
 			$_SERVER['HTTP_USER_AGENT'] = $this->original_user_agent;
+		}
+
+		// Restore the request go_to() replaced; later tests (the crash guard's self-check) read REQUEST_URI.
+		list( $_GET, $request_uri ) = $this->original_request;
+		if ( null === $request_uri ) {
+			unset( $_SERVER['REQUEST_URI'] );
+		} else {
+			$_SERVER['REQUEST_URI'] = $request_uri;
 		}
 
 		parent::tearDown();
@@ -101,6 +115,7 @@ class FacebookCommerceEventsTrackerTest extends AbstractWPUnitTestWithSafeFilter
 		remove_action( 'woocommerce_process_shop_order_meta', array( $this->instance, 'inject_purchase_event' ), 20 );
 		remove_action( 'woocommerce_checkout_update_order_meta', array( $this->instance, 'inject_purchase_event' ), 30 );
 		remove_action( 'woocommerce_thankyou', array( $this->instance, 'inject_purchase_event' ), 40 );
+		remove_action( 'shutdown', array( $this->instance, 'inject_deferred_purchase_events' ), 5 );
 	}
 
 	/**
@@ -334,6 +349,114 @@ class FacebookCommerceEventsTrackerTest extends AbstractWPUnitTestWithSafeFilter
 		$this->instance->inject_page_view_event();
 
 		$this->assertTrue( true, 'inject_page_view_event should handle disabled pixel' );
+	}
+
+	/**
+	 * Regression: WordPress renders its 404 template for any URL it cannot resolve, including
+	 * requests for missing files that the rewrite rules hand to index.php. Reporting those as
+	 * PageViews inflates the metric and attributes traffic to URLs that do not exist.
+	 *
+	 * @covers WC_Facebookcommerce_EventsTracker::inject_page_view_event
+	 */
+	public function test_inject_page_view_event_reports_nothing_on_a_404(): void {
+		$this->instance = $this->create_tracker_with_pixel_enabled();
+
+		$this->go_to_a_404();
+
+		$this->instance->inject_page_view_event();
+
+		$this->assertEmpty( $this->instance->get_tracked_events(), 'A 404 response should not report a PageView.' );
+	}
+
+	/**
+	 * The control for the case above: ordinary pages still report.
+	 *
+	 * @covers WC_Facebookcommerce_EventsTracker::inject_page_view_event
+	 */
+	public function test_inject_page_view_event_still_reports_on_an_ordinary_page(): void {
+		$this->instance = $this->create_tracker_with_pixel_enabled();
+
+		$this->go_to( home_url( '/' ) );
+		$this->assertFalse( is_404(), 'The home page should not be a 404 in this environment.' );
+
+		$this->instance->inject_page_view_event();
+
+		$events = $this->instance->get_tracked_events();
+		$this->assertCount( 1, $events );
+		$this->assertSame( 'PageView', $events[0]->get_name() );
+	}
+
+	/**
+	 * Stores that deliberately track 404s can have them back.
+	 *
+	 * @covers WC_Facebookcommerce_EventsTracker::inject_page_view_event
+	 */
+	public function test_pageview_on_a_404_can_be_restored_with_a_filter(): void {
+		$this->instance = $this->create_tracker_with_pixel_enabled();
+
+		$this->add_filter_with_safe_teardown(
+			'wc_facebook_should_report_page_view',
+			function () {
+				return true;
+			}
+		);
+
+		$this->go_to_a_404();
+
+		$this->instance->inject_page_view_event();
+
+		$this->assertCount( 1, $this->instance->get_tracked_events() );
+	}
+
+	/**
+	 * The noscript image requests ev=PageView, so it has to be held back on a 404 too — otherwise
+	 * visitors without JavaScript keep reporting the page views the CAPI event no longer does.
+	 *
+	 * @covers WC_Facebookcommerce_EventsTracker::inject_base_pixel_noscript
+	 */
+	public function test_inject_base_pixel_noscript_outputs_nothing_on_a_404(): void {
+		$this->instance = $this->create_tracker_with_pixel_enabled();
+
+		\WC_Facebookcommerce_Pixel::set_pixel_id( 'test_pixel_123' );
+
+		// The noscript block renders at most once per request, so start from a clean slate;
+		// otherwise an earlier render would make this pass without proving anything.
+		$original_render_cache                    = \WC_Facebookcommerce_Pixel::$render_cache;
+		\WC_Facebookcommerce_Pixel::$render_cache = array();
+
+		try {
+			$this->go_to( home_url( '/' ) );
+
+			ob_start();
+			$this->instance->inject_base_pixel_noscript();
+			$ordinary_page = ob_get_clean();
+
+			$this->assertStringContainsString( 'ev=PageView', $ordinary_page, 'Ordinary pages should still print the noscript pixel.' );
+
+			\WC_Facebookcommerce_Pixel::$render_cache = array();
+
+			$this->go_to_a_404();
+
+			ob_start();
+			$this->instance->inject_base_pixel_noscript();
+			$not_found = ob_get_clean();
+
+			$this->assertEmpty( $not_found, 'A 404 response should not print the noscript PageView pixel.' );
+		} finally {
+			\WC_Facebookcommerce_Pixel::$render_cache = $original_render_cache;
+		}
+	}
+
+	/**
+	 * Puts the main query into a 404 state.
+	 *
+	 * The test site uses plain permalinks, so a pretty path like /no-such-url/ resolves to the
+	 * home page; a query for a post ID that cannot exist is a 404 either way.
+	 */
+	private function go_to_a_404(): void {
+		$this->go_to( home_url( '/?p=' . PHP_INT_MAX ) );
+
+		$this->assertTrue( is_404(), 'Expected the request to resolve to a 404.' );
 	}
 
 	/**
@@ -610,8 +733,12 @@ class FacebookCommerceEventsTrackerTest extends AbstractWPUnitTestWithSafeFilter
 		$this->instance = $this->create_tracker_with_pixel_enabled();
 		$this->remove_purchase_hooks();
 
-		// Create a valid order with processing status
+		// Create a valid order with processing status and a line item.
+		$product = new \WC_Product_Simple();
+		$product->set_regular_price( 100 );
+		$product->save();
 		$order = wc_create_order();
+		$order->add_product( $product, 1 );
 		$order->set_status( 'processing' );
 		$order->set_total( 100 );
 		$order->save();
@@ -691,8 +818,12 @@ class FacebookCommerceEventsTrackerTest extends AbstractWPUnitTestWithSafeFilter
 
 		// Server hook first, fired by WooCommerce while it creates the order (as in a
 		// real checkout). Tracking metadata is saved once that save has finished.
+		$product = new \WC_Product_Simple();
+		$product->set_regular_price( 100 );
+		$product->save();
 		add_action( 'woocommerce_new_order', array( $this->instance, 'inject_purchase_event' ), 10, 2 );
 		$order = new \WC_Order();
+		$order->add_product( $product, 1 );
 		$order->set_status( 'processing' );
 		$order->set_total( 100 );
 		$order->save();
@@ -716,11 +847,13 @@ class FacebookCommerceEventsTrackerTest extends AbstractWPUnitTestWithSafeFilter
 	}
 
 	/**
-	 * Test that renewal-order meta copy excludes Purchase tracking keys.
+	 * Test that subscription-generated orders do not inherit Purchase tracking keys.
 	 *
+	 * @dataProvider subscription_order_copy_hooks
+	 * @param string $hook Subscription order data-copy filter.
 	 * @covers WC_Facebookcommerce_EventsTracker::exclude_purchase_tracking_meta_from_renewal_orders
 	 */
-	public function test_exclude_purchase_tracking_meta_from_renewal_orders_removes_tracking_keys(): void {
+	public function test_exclude_purchase_tracking_meta_from_renewal_orders_removes_tracking_keys( string $hook ): void {
 		$this->instance = $this->create_tracker_with_pixel_enabled();
 
 		$data = array(
@@ -742,12 +875,21 @@ class FacebookCommerceEventsTrackerTest extends AbstractWPUnitTestWithSafeFilter
 			->getMock();
 		$from_subscription->method( 'get_type' )->willReturn( 'shop_subscription' );
 
-		$result = $this->instance->exclude_purchase_tracking_meta_from_renewal_orders( $data, $to_order, $from_subscription );
+		$result = apply_filters( $hook, $data, $to_order, $from_subscription );
 
 		$this->assertArrayNotHasKey( '_meta_purchase_tracked_server', $result );
 		$this->assertArrayNotHasKey( '_meta_purchase_tracked_browser', $result );
 		$this->assertArrayNotHasKey( '_meta_event_id', $result );
 		$this->assertArrayHasKey( '_subscription_renewal', $result );
+	}
+
+	/** @return array */
+	public function subscription_order_copy_hooks(): array {
+		return array(
+			'renewal'     => array( 'wc_subscriptions_renewal_order_data' ),
+			'resubscribe' => array( 'wc_subscriptions_resubscribe_order_data' ),
+			'parent'      => array( 'wc_subscriptions_parent_data' ),
+		);
 	}
 
 	/**
@@ -1441,6 +1583,32 @@ class FacebookCommerceEventsTrackerTest extends AbstractWPUnitTestWithSafeFilter
 		$product->delete( true );
 	}
 	/**
+	 * Test that the add to cart fragment script is guarded against WooCommerce replaying it.
+	 *
+	 * @covers WC_Facebookcommerce_EventsTracker::add_add_to_cart_event_fragment
+	 */
+	public function test_add_add_to_cart_event_fragment_fires_once_per_browser_session(): void {
+		$this->instance = $this->create_tracker_with_pixel_enabled();
+
+		$product = \WC_Helper_Product::create_simple_product();
+		WC()->session->set( 'facebook_for_woocommerce_add_to_cart_event_id', 'atc-event-123' );
+		$_POST['product_id'] = $product->get_id();
+		$_POST['quantity']   = 2;
+
+		$fragments = $this->instance->add_add_to_cart_event_fragment( array() );
+		$script    = $fragments['div.wc-facebook-pixel-event-placeholder'];
+
+		$this->assertStringContainsString( "'wc_facebook_pixel_fired_fragment_events'", $script );
+		$this->assertStringContainsString( 'id = "atc-event-123"', $script );
+		$this->assertStringContainsString( "fbq('track', 'AddToCart'", $script );
+
+		// Clean up
+		unset( $_POST['product_id'], $_POST['quantity'] );
+		WC()->session->set( 'facebook_for_woocommerce_add_to_cart_event_id', null );
+		$product->delete( true );
+	}
+
+	/**
 	 * Test that is_crawler_request detects known crawler user agents.
 	 *
 	 * @covers WC_Facebookcommerce_EventsTracker::is_crawler_request
@@ -1699,8 +1867,8 @@ class FacebookCommerceEventsTrackerTest extends AbstractWPUnitTestWithSafeFilter
 	/**
 	 * Builds a Purchase payload through inject_purchase_event() and returns its custom_data.
 	 *
-	 * Value Optimization is switched on, and the COGS provider is replaced with a stub so
-	 * the test does not depend on a Cost of Goods integration being installed.
+	 * The COGS provider is replaced with a stub so the test does not depend on a
+	 * Cost of Goods integration being installed.
 	 *
 	 * @param float      $shipping_total Shipping cost excluding tax.
 	 * @param float      $cart_tax       Tax on the items.
@@ -1710,11 +1878,6 @@ class FacebookCommerceEventsTrackerTest extends AbstractWPUnitTestWithSafeFilter
 	 * @return array The event's custom_data.
 	 */
 	private function build_purchase_custom_data( float $shipping_total, float $cart_tax, float $shipping_tax, $cogs, float $product_price = 100.0 ): array {
-		update_option(
-			'wc_facebook_for_woocommerce_rollout_switches',
-			array( \WooCommerce\Facebook\RolloutSwitches::SWITCH_VALUE_OPTIMIZATION_ENABLED => 'yes' )
-		);
-
 		// Purchases are not tracked for users who can manage WooCommerce.
 		wp_set_current_user( 0 );
 

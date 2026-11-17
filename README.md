@@ -1,6 +1,8 @@
 # Meta for WooCommerce, formerly Facebook for WooCommerce, is now an official plugin from Meta.
 
-[![PHP Coding Standards](https://github.com/woocommerce/facebook-for-woocommerce/actions/workflows/php-cs-on-changes.yml/badge.svg)](https://github.com/woocommerce/facebook-for-woocommerce/actions/workflows/php-coding-standards.yml)
+[![PHP Coding Standards](https://github.com/meta/facebook-for-woocommerce/actions/workflows/php-cs-on-changes.yml/badge.svg)](https://github.com/meta/facebook-for-woocommerce/actions/workflows/php-cs-on-changes.yml)
+[![E2E Tests](https://github.com/meta/facebook-for-woocommerce/actions/workflows/product-creation-tests.yml/badge.svg?branch=main&event=schedule)](https://github.com/meta/facebook-for-woocommerce/actions/workflows/product-creation-tests.yml?query=branch%3Amain+event%3Aschedule)
+[![Integration Tests](https://github.com/meta/facebook-for-woocommerce/actions/workflows/integration-tests.yml/badge.svg?branch=main&event=push)](https://github.com/meta/facebook-for-woocommerce/actions/workflows/integration-tests.yml?query=branch%3Amain+event%3Apush)
 
 **We're excited to announce that the plugin is is now owned by Meta, and we invite the developer community to join us in shaping its future through contributions.**
 

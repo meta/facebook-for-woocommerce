@@ -17,7 +17,6 @@ const jQueryUIAdminFileNames = [
 	'product-categories',
 	'products-admin',
 	'settings-commerce',
-	'settings-sync',
 	'enhanced-settings-sync',
 	'plugin-rendering'
 ];

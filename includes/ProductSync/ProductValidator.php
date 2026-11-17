@@ -118,11 +118,9 @@ class ProductValidator {
 	 * @throws ProductExcludedException If product should not be synced.
 	 */
 	public function validate() {
-		$this->validate_sync_enabled_globally();
 		$this->validate_product_sync_field();
 		$this->validate_product_status();
 		$this->validate_product_visibility();
-		$this->validate_product_terms();
 		$this->validate_product_language();
 	}
 
@@ -134,10 +132,8 @@ class ProductValidator {
 	 * @throws ProductExcludedException If product should not be synced.
 	 */
 	public function validate_but_skip_status_check() {
-		$this->validate_sync_enabled_globally();
 		$this->validate_product_sync_field();
 		$this->validate_product_visibility();
-		$this->validate_product_terms();
 	}
 
 	/**
@@ -147,9 +143,7 @@ class ProductValidator {
 	 * @throws ProductExcludedException|ProductInvalidException If product should not be synced.
 	 */
 	public function validate_but_skip_sync_field() {
-		$this->validate_sync_enabled_globally();
 		$this->validate_product_visibility();
-		$this->validate_product_terms();
 	}
 
 	/**
@@ -172,16 +166,12 @@ class ProductValidator {
 	/**
 	 * Check if the product's terms (categories and tags) allow it to sync.
 	 *
+	 * @deprecated 3.7.9 Categories and tags can no longer be excluded from sync, so every product passes.
+	 *
 	 * @return bool
 	 */
 	public function passes_product_terms_check(): bool {
-		try {
-			$this->validate_product_terms();
-		} catch ( ProductExcludedException $e ) {
-			return false;
-		} catch ( ProductInvalidException $e ) {
-			return false;
-		}
+		wc_deprecated_function( __METHOD__, '3.7.9' );
 
 		return true;
 	}
@@ -218,21 +208,6 @@ class ProductValidator {
 		}
 
 		return true;
-	}
-
-	/**
-	 * Check whether product sync is globally disabled.
-	 *
-	 * @throws ProductExcludedException If product should not be synced.
-	 */
-	protected function validate_sync_enabled_globally() {
-		if ( $this->integration->is_woo_all_products_enabled() ) {
-			return true;
-		}
-
-		if ( ! $this->integration->is_product_sync_enabled() ) {
-			throw new ProductExcludedException( esc_html__( 'Product sync is globally disabled.', 'facebook-for-woocommerce' ) );
-		}
 	}
 
 	/**
@@ -283,34 +258,6 @@ class ProductValidator {
 
 		if ( ! $visible ) {
 			throw new ProductExcludedException( esc_html__( 'This product cannot be synced to Facebook because it is hidden from your store catalog.', 'facebook-for-woocommerce' ) );
-		}
-	}
-
-	/**
-	 * Check whether the product's categories or tags (terms) exclude it from sync.
-	 *
-	 * @throws ProductExcludedException If product should not be synced.
-	 */
-	protected function validate_product_terms() {
-
-		if ( $this->integration->is_woo_all_products_enabled() ) {
-			return;
-		}
-
-		$product = $this->product_parent ? $this->product_parent : $this->product;
-
-		$excluded_categories = $this->integration->get_excluded_product_category_ids();
-		if ( $excluded_categories ) {
-			if ( ! empty( array_intersect( $product->get_category_ids(), $excluded_categories ) ) ) {
-				throw new ProductExcludedException( esc_html__( 'Product excluded because of categories.', 'facebook-for-woocommerce' ) );
-			}
-		}
-
-		$excluded_tags = $this->integration->get_excluded_product_tag_ids();
-		if ( $excluded_tags ) {
-			if ( ! empty( array_intersect( $product->get_tag_ids(), $excluded_tags ) ) ) {
-				throw new ProductExcludedException( esc_html__( 'Product excluded because of tags.', 'facebook-for-woocommerce' ) );
-			}
 		}
 	}
 

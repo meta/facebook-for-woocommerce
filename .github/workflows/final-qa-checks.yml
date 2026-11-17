@@ -14,7 +14,7 @@ jobs:
     environment: Deployment
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Get NPM Version
         id: package-version
@@ -118,7 +118,7 @@ jobs:
 
       - name: Upload diff output
         if: steps.compare.outputs.match == 'false'
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         continue-on-error: true
         with:
           name: plugin-diff-output

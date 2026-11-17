@@ -69,12 +69,6 @@ abstract class IntegrationTestCase extends WP_UnitTestCase {
 		$this->integration->update_option( 'access_token', 'test_access_token' );
 		$this->integration->update_option( 'product_catalog_id', 'test_catalog_id' );
 		$this->integration->update_option( 'pixel_id', 'test_pixel_id' );
-		
-		// Disable the "woo all products sync" rollout switch to ensure 
-		// category/tag exclusions work properly in tests
-		$rollout_switches = get_option( 'wc_facebook_for_woocommerce_rollout_switches', [] );
-		$rollout_switches['woo_all_products_sync_enabled'] = 'no';
-		update_option( 'wc_facebook_for_woocommerce_rollout_switches', $rollout_switches );
 	}
 
 	/**
@@ -202,41 +196,6 @@ abstract class IntegrationTestCase extends WP_UnitTestCase {
 		$this->integration->update_option( 'is_enabled', 'yes' );
 		$this->integration->update_option( 'sync_enabled', 'yes' );
 		$this->integration->update_option( 'product_sync_enabled', 'yes' );
-		
-		// Set the specific option that the validator checks
-		update_option( 'wc_facebook_enable_product_sync', 'yes' );
-	}
-
-	/**
-	 * Disable Facebook sync for the plugin
-	 */
-	protected function disable_facebook_sync(): void {
-		$this->integration->update_option( 'is_enabled', 'no' );
-		$this->integration->update_option( 'sync_enabled', 'no' );
-		$this->integration->update_option( 'product_sync_enabled', 'no' );
-		
-		// Set the specific option that the validator checks
-		update_option( 'wc_facebook_enable_product_sync', 'no' );
-	}
-
-	/**
-	 * Set excluded categories
-	 */
-	protected function set_excluded_categories( array $category_ids ): void {
-		$this->integration->update_option( 'excluded_product_category_ids', $category_ids );
-		
-		// Set the specific option that the validator checks
-		update_option( 'wc_facebook_excluded_product_category_ids', $category_ids );
-	}
-
-	/**
-	 * Set excluded tags  
-	 */
-	protected function set_excluded_tags( array $tag_ids ): void {
-		$this->integration->update_option( 'excluded_product_tag_ids', $tag_ids );
-		
-		// Set the specific option that the validator checks
-		update_option( 'wc_facebook_excluded_product_tag_ids', $tag_ids );
 	}
 
 	/**
@@ -269,13 +228,5 @@ abstract class IntegrationTestCase extends WP_UnitTestCase {
 	protected function assertProductShouldNotSync( WC_Product $product, string $message = '' ): void {
 		$should_sync = Products::product_should_be_synced( $product );
 		$this->assertFalse( $should_sync, $message ?: "Product {$product->get_id()} should not be synced to Facebook" );
-	}
-
-	/**
-	 * Assert that a product should be deleted from Facebook
-	 */
-	protected function assertProductShouldBeDeleted( WC_Product $product, string $message = '' ): void {
-		$should_delete = Products::product_should_be_deleted( $product );
-		$this->assertTrue( $should_delete, $message ?: "Product {$product->get_id()} should be deleted from Facebook" );
 	}
 } 

@@ -15,7 +15,6 @@ defined( 'ABSPATH' ) || exit;
 use WooCommerce\Facebook\Framework\Plugin\Compatibility;
 use WooCommerce\Facebook\Products\Sync;
 use WooCommerce\Facebook\Framework\Plugin\Exception;
-use WooCommerce\Facebook\RolloutSwitches;
 
 /**
  * PluginRender
@@ -71,7 +70,6 @@ class PluginRender {
 			'facebook_for_woocommerce_plugin_update',
 			array(
 				'ajax_url'                        => admin_url( 'admin-ajax.php' ),
-				'set_excluded_terms_prompt_nonce' => wp_create_nonce( 'set-excluded-terms-prompt' ),
 				'opt_out_of_sync'                 => wp_create_nonce( self::ACTION_OPT_OUT_OF_SYNC ),
 				'banner_close'                    => wp_create_nonce( self::ACTION_CLOSE_BANNER ),
 				'sync_back_in'                    => wp_create_nonce( self::ACTION_SYNC_BACK_IN ),
@@ -100,7 +98,6 @@ class PluginRender {
 
 	public function should_show_banners() {
 		$current_version = $this->plugin->get_version();
-		$is_rolled_out   = $this->plugin->get_rollout_switches()->is_switch_enabled( RolloutSwitches::SWITCH_WOO_ALL_PRODUCTS_SYNC_ENABLED );
 
 		/**
 		 * Case when current version is less or equal to latest
@@ -112,7 +109,7 @@ class PluginRender {
 				return;
 			}
 			add_action( 'admin_notices', [ __CLASS__, 'upcoming_woo_all_products_banner' ], 0, 1 );
-		} elseif ( version_compare( $current_version, self::ALL_PRODUCTS_PLUGIN_VERSION, '>=' ) && $is_rolled_out ) {
+		} else {
 			add_action( 'admin_notices', [ __CLASS__, 'plugin_updated_banner' ], 0, 1 );
 		}
 	}

@@ -38,7 +38,6 @@ abstract class CogsIntegrationTestsBase extends IntegrationTestCase {
 	 */
 	public function setUp(): void {
 		parent::setUp();
-		$this->disable_facebook_sync();
 		$this->original_active_plugins = get_option('active_plugins', []);
 		require_once ABSPATH . 'wp-admin/includes/plugin-install.php';
 		$this->mark_plugin_as_active(self::WOOCOMMERCE_PLUGIN_FILE_PATH);
@@ -152,7 +151,6 @@ abstract class CogsIntegrationTestsBase extends IntegrationTestCase {
 		// Clear any test data
 		$this->clear_products();
 		$this->reset_plugin_settings();
-		$this->enable_facebook_sync();
 		update_option('active_plugins', $this->original_active_plugins);
 		parent::tearDown();
 	}

@@ -182,49 +182,6 @@ class ProductDataPreparationTest extends IntegrationTestCase {
 	}
 
 	/**
-	 * Test product transformation with category exclusions
-	 */
-	public function test_product_transformation_with_category_exclusions(): void {
-		$this->enable_facebook_sync();
-
-		// Create categories
-		$allowed_category = $this->create_category( 'Electronics' );
-		$excluded_category = $this->create_category( 'Restricted Items' );
-
-		// Set category exclusions
-		$this->set_excluded_categories( [ $excluded_category->term_id ] );
-
-		// Create products in different categories
-		$allowed_product = $this->create_simple_product([
-			'name' => 'Allowed Product',
-			'regular_price' => '25.00',
-			'status' => 'publish'
-		]);
-		wp_set_object_terms( $allowed_product->get_id(), [ $allowed_category->term_id ], 'product_cat' );
-		
-		// Refresh the product to get updated category data
-		$allowed_product = wc_get_product( $allowed_product->get_id() );
-
-		$excluded_product = $this->create_simple_product([
-			'name' => 'Excluded Product',
-			'regular_price' => '30.00',
-			'status' => 'publish'
-		]);
-		wp_set_object_terms( $excluded_product->get_id(), [ $excluded_category->term_id ], 'product_cat' );
-		
-		// Refresh the product to get updated category data
-		$excluded_product = wc_get_product( $excluded_product->get_id() );
-
-		// Test transformation pipeline respects exclusions
-		$this->assertProductShouldSync( $allowed_product, 'Product in allowed category should sync' );
-		$this->assertProductShouldNotSync( $excluded_product, 'Product in excluded category should not sync' );
-
-		// Only allowed product should be transformable
-		$allowed_facebook_data = $this->transform_product_for_facebook( $allowed_product );
-		$this->assertNotEmpty( $allowed_facebook_data, 'Allowed product should transform successfully' );
-	}
-
-	/**
 	 * Test product transformation error handling
 	 */
 	public function test_product_transformation_error_handling(): void {

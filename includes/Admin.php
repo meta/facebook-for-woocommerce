@@ -201,7 +201,6 @@ class Admin {
 						'is_sync_enabled_for_product'     => $this->is_sync_enabled_for_current_product(),
 						'set_product_visibility_nonce'    => wp_create_nonce( 'set-products-visibility' ),
 						'set_product_sync_prompt_nonce'   => wp_create_nonce( 'set-product-sync-prompt' ),
-						'set_product_sync_bulk_action_prompt_nonce' => wp_create_nonce( 'set-product-sync-bulk-action-prompt' ),
 						'product_not_ready_modal_message' => $this->get_product_not_ready_modal_message(),
 						'product_not_ready_modal_buttons' => $this->get_product_not_ready_modal_buttons(),
 						'product_removed_from_sync_field_id' => '#' . \WC_Facebook_Product::FB_REMOVE_FROM_SYNC,
@@ -536,8 +535,6 @@ class Admin {
 			);
 		}
 
-		// check whether the product belongs to an excluded product category or tag
-		$query_vars = $this->maybe_add_tax_query_for_excluded_taxonomies( $query_vars );
 		return $query_vars;
 	}
 
@@ -570,52 +567,6 @@ class Admin {
 		return $query_vars;
 	}
 
-
-	/**
-	 * Adds a tax query to filter in/out products in excluded product categories and product tags.
-	 *
-	 * @since 1.10.0
-	 *
-	 * @param array $query_vars product query vars for the edit screen
-	 * @param bool  $in whether we want to return products in excluded categories and tags or not
-	 * @return array
-	 */
-	private function maybe_add_tax_query_for_excluded_taxonomies( $query_vars, $in = false ) {
-		$integration = facebook_for_woocommerce()->get_integration();
-		if ( $integration ) {
-			$tax_query               = [];
-			$excluded_categories_ids = $integration->get_excluded_product_category_ids();
-			if ( $excluded_categories_ids ) {
-				$tax_query[] = array(
-					'taxonomy' => 'product_cat',
-					'terms'    => $excluded_categories_ids,
-					'field'    => 'term_id',
-					'operator' => $in ? 'IN' : 'NOT IN',
-				);
-			}
-			$excluded_tags_ids = $integration->get_excluded_product_tag_ids();
-			if ( $excluded_tags_ids ) {
-				$tax_query[] = array(
-					'taxonomy' => 'product_tag',
-					'terms'    => $excluded_tags_ids,
-					'field'    => 'term_id',
-					'operator' => $in ? 'IN' : 'NOT IN',
-				);
-			}
-
-			if ( count( $tax_query ) > 1 ) {
-				$tax_query['relation'] = $in ? 'OR' : 'AND';
-			}
-
-			if ( $tax_query && empty( $query_vars['tax_query'] ) ) {
-				$query_vars['tax_query'] = $tax_query; // phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_tax_query
-			} elseif ( $tax_query && is_array( $query_vars ) ) {
-				$query_vars['tax_query'][] = $tax_query;
-			}
-		}//end if
-
-		return $query_vars;
-	}
 
 	/**
 	 * Adds bulk actions in the products edit screen.
@@ -729,12 +680,8 @@ class Admin {
 
 			} elseif ( $integration->product_should_be_synced( $product ) ) {
 
-				// schedule simple products to be updated or deleted from the catalog in the background
-				if ( Products::product_should_be_deleted( $product ) ) {
-					facebook_for_woocommerce()->get_products_sync_handler()->delete_products( array( $product->get_id() ) );
-				} else {
-					facebook_for_woocommerce()->get_products_sync_handler()->create_or_update_products( array( $product->get_id() ) );
-				}
+				// schedule simple products to be updated in the catalog in the background
+				facebook_for_woocommerce()->get_products_sync_handler()->create_or_update_products( array( $product->get_id() ) );
 			}
 		}
 	}

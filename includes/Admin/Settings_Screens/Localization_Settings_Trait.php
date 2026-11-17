@@ -51,9 +51,7 @@ trait Localization_Settings_Trait {
 		// Initialize the setting on first load based on availability
 		if ( false === $current_value ) {
 			// First time - set default based on whether we have an available AND eligible integration
-			// and main product sync is enabled
-			$product_sync_enabled = facebook_for_woocommerce()->get_integration()->is_product_sync_enabled();
-			$default_value        = ( $is_eligible && $product_sync_enabled ) ? 'yes' : 'no';
+			$default_value = $is_eligible ? 'yes' : 'no';
 			update_option( \WC_Facebookcommerce_Integration::OPTION_LANGUAGE_OVERRIDE_FEED_GENERATION_ENABLED, $default_value );
 			$current_value = $default_value;
 		}

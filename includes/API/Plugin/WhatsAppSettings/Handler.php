@@ -113,7 +113,7 @@ class Handler extends AbstractRESTEndpoint {
 				]
 			);
 		} catch ( \Exception $e ) {
-			wc_get_logger()->info(
+			wc_get_logger()->error(
 				sprintf(
 					/* translators: %s $error_message */
 					__( 'Failed to handle_onboarding_complete for WhatsApp Utility Messages Integration. Exception: %s', 'facebook-for-woocommerce' ),
@@ -165,10 +165,10 @@ class Handler extends AbstractRESTEndpoint {
 				]
 			);
 		} catch ( \Exception $e ) {
-			wc_get_logger()->info(
+			wc_get_logger()->error(
 				sprintf(
 					/* translators: %s $error_message */
-					__( 'Failed to handle_update for WhatsApp Utility Messages Integration. Exception: %1%s', 'facebook-for-woocommerce' ),
+					__( 'Failed to handle_update for WhatsApp Utility Messages Integration. Exception: %1$s', 'facebook-for-woocommerce' ),
 					$e->getMessage(),
 				)
 			);
@@ -215,7 +215,7 @@ class Handler extends AbstractRESTEndpoint {
 				]
 			);
 		} catch ( \Exception $e ) {
-			wc_get_logger()->info(
+			wc_get_logger()->error(
 				sprintf(
 					/* translators: %s $error_message */
 					__( 'Failed to handle_update_integration_config for WhatsApp Utility Messages Integration. Exception: %s', 'facebook-for-woocommerce' ),
@@ -323,10 +323,10 @@ class Handler extends AbstractRESTEndpoint {
 			$validation_result = $request->validate();
 
 			if ( is_wp_error( $validation_result ) ) {
-				wc_get_logger()->info(
+				wc_get_logger()->error(
 					sprintf(
 						/* translators: %s $error_message */
-						__( 'Failed to handle_uninstall for WhatsApp Utility Messages Integration. Exception: %1%s', 'facebook-for-woocommerce' ),
+						__( 'Failed to handle_uninstall for WhatsApp Utility Messages Integration. Exception: %1$s', 'facebook-for-woocommerce' ),
 						$validation_result->get_error_message(),
 					)
 				);
@@ -351,10 +351,10 @@ class Handler extends AbstractRESTEndpoint {
 				]
 			);
 		} catch ( \Exception $e ) {
-			wc_get_logger()->info(
+			wc_get_logger()->error(
 				sprintf(
 					/* translators: %s $error_message */
-					__( 'Failed to handle_uninstall for WhatsApp Utility Messages Integration. Exception: %1%s', 'facebook-for-woocommerce' ),
+					__( 'Failed to handle_uninstall for WhatsApp Utility Messages Integration. Exception: %1$s', 'facebook-for-woocommerce' ),
 					$e->getMessage(),
 				)
 			);

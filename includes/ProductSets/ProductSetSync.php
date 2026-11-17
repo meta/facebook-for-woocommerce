@@ -12,6 +12,7 @@ namespace WooCommerce\Facebook\ProductSets;
 
 defined( 'ABSPATH' ) || exit;
 
+use WooCommerce\Facebook\Integrations\WPML;
 use WooCommerce\Facebook\RolloutSwitches;
 use WooCommerce\Facebook\Utilities\Heartbeat;
 use WC_Facebookcommerce_Utils;
@@ -141,26 +142,20 @@ class ProductSetSync {
 	 * @return \WP_Term[]
 	 */
 	private function get_all_wc_product_categories() {
-		$wpml_language         = apply_filters( 'wpml_current_language', null );
-		$wpml_default_language = apply_filters( 'wpml_default_language', null );
-		$pin_wpml_language     = $wpml_default_language && $wpml_language !== $wpml_default_language;
-		if ( $pin_wpml_language ) {
-			do_action( 'wpml_switch_language', $wpml_default_language );
-		}
-
-		$wc_product_categories = get_terms(
-			array(
-				'taxonomy'   => self::WC_PRODUCT_CATEGORY_TAXONOMY,
-				'hide_empty' => false,
-				'orderby'    => 'ID',
-				'order'      => 'ASC',
-				'lang'       => '',
-			)
+		$wc_product_categories = WPML::run_in_language(
+			apply_filters( 'wpml_default_language', null ),
+			static function () {
+				return get_terms(
+					array(
+						'taxonomy'   => self::WC_PRODUCT_CATEGORY_TAXONOMY,
+						'hide_empty' => false,
+						'orderby'    => 'ID',
+						'order'      => 'ASC',
+						'lang'       => '',
+					)
+				);
+			}
 		);
-
-		if ( $pin_wpml_language ) {
-			do_action( 'wpml_switch_language', $wpml_language );
-		}
 
 		return is_array( $wc_product_categories ) ? $wc_product_categories : array();
 	}

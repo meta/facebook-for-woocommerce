@@ -266,51 +266,33 @@ class FacebookCommerceTest extends \WooCommerce\Facebook\Tests\AbstractWPUnitTes
 	}
 
 	/**
-	 * Tests is_product_sync_enabled returns default value with no option.
+	 * Tests is_product_sync_enabled is deprecated and always reports sync as enabled: the store-wide
+	 * setting and its filter no longer turn sync off.
 	 *
 	 * @return void
 	 */
-	public function test_is_product_sync_enabled_default_value() {
-		$this->teardown_callback_category_safely( 'wc_facebook_is_product_sync_enabled' );
-		delete_option( WC_Facebookcommerce_Integration::SETTING_ENABLE_PRODUCT_SYNC );
-
-		$result = $this->integration->is_product_sync_enabled();
-
-		$this->assertTrue( $result );
-	}
-
-	/**
-	 * Tests is_product_sync_enabled returns option value.
-	 *
-	 * @return void
-	 */
-	public function test_is_product_sync_enabled_option_value() {
-		$this->teardown_callback_category_safely( 'wc_facebook_is_product_sync_enabled' );
+	public function test_is_product_sync_enabled_is_deprecated_and_always_true() {
+		$this->setExpectedDeprecated( WC_Facebookcommerce_Integration::class . '::is_product_sync_enabled' );
 		add_option( WC_Facebookcommerce_Integration::SETTING_ENABLE_PRODUCT_SYNC, 'no' );
+		$this->add_filter_with_safe_teardown( 'wc_facebook_is_product_sync_enabled', '__return_false' );
 
-		$result = $this->integration->is_product_sync_enabled();
-
-		$this->assertFalse( $result );
+		$this->assertTrue( $this->integration->is_product_sync_enabled() );
 	}
 
 	/**
-	 * Tests is_product_sync_enabled with filter override.
+	 * Tests the excluded category and tag getters are deprecated and return nothing, whatever a
+	 * store saved before exclusions were retired.
 	 *
 	 * @return void
 	 */
-	public function test_is_product_sync_enabled_with_filter() {
-		$this->add_filter_with_safe_teardown(
-			'wc_facebook_is_product_sync_enabled',
-			function ( $is_enabled ) {
-				return false;
-			}
-		);
+	public function test_excluded_term_getters_are_deprecated_and_empty() {
+		$this->setExpectedDeprecated( WC_Facebookcommerce_Integration::class . '::get_excluded_product_category_ids' );
+		$this->setExpectedDeprecated( WC_Facebookcommerce_Integration::class . '::get_excluded_product_tag_ids' );
+		update_option( WC_Facebookcommerce_Integration::SETTING_EXCLUDED_PRODUCT_CATEGORY_IDS, array( 11, 12 ) );
+		update_option( WC_Facebookcommerce_Integration::SETTING_EXCLUDED_PRODUCT_TAG_IDS, array( 21 ) );
 
-		add_option( WC_Facebookcommerce_Integration::SETTING_ENABLE_PRODUCT_SYNC, 'yes' );
-
-		$result = $this->integration->is_product_sync_enabled();
-
-		$this->assertFalse( $result );
+		$this->assertSame( array(), $this->integration->get_excluded_product_category_ids() );
+		$this->assertSame( array(), $this->integration->get_excluded_product_tag_ids() );
 	}
 
 	/**
@@ -692,28 +674,14 @@ class FacebookCommerceTest extends \WooCommerce\Facebook\Tests\AbstractWPUnitTes
 	}
 
 	/**
-	 * Tests is_woo_all_products_enabled returns switch status.
+	 * Tests is_woo_all_products_enabled is deprecated and always true, now that the rollout switch is retired.
 	 *
 	 * @return void
 	 */
-	public function test_is_woo_all_products_enabled() {
-		$rollout_switches = $this->createMock( RolloutSwitches::class );
-		$rollout_switches->method( 'is_switch_enabled' )
-			->willReturn( true );
+	public function test_is_woo_all_products_enabled_is_deprecated_and_always_true() {
+		$this->setExpectedDeprecated( WC_Facebookcommerce_Integration::class . '::is_woo_all_products_enabled' );
 
-		$facebook_for_woocommerce = $this->createMock( WC_Facebookcommerce::class );
-		$facebook_for_woocommerce->method( 'get_rollout_switches' )
-			->willReturn( $rollout_switches );
-		$facebook_for_woocommerce->method( 'get_connection_handler' )
-			->willReturn( $this->connection_handler );
-		$facebook_for_woocommerce->method( 'get_api' )
-			->willReturn( $this->api );
-
-		$integration = new WC_Facebookcommerce_Integration( $facebook_for_woocommerce );
-
-		$result = $integration->is_woo_all_products_enabled();
-
-		$this->assertTrue( $result );
+		$this->assertTrue( $this->integration->is_woo_all_products_enabled() );
 	}
 
 	/**

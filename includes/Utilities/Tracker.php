@@ -112,13 +112,7 @@ class Tracker {
 		 * @since 3.5.3
 		 */
 
-		$is_woo_all_products_enabled = facebook_for_woocommerce()->get_integration()->is_woo_all_products_enabled();
-		if ( ! $is_woo_all_products_enabled ) {
-			$product_sync_enabled = facebook_for_woocommerce()->get_integration()->is_product_sync_enabled();
-			$data['extensions']['facebook-for-woocommerce']['product-sync-enabled'] = wc_bool_to_string( $product_sync_enabled );
-		} else {
-			$data['extensions']['facebook-for-woocommerce']['product-sync-enabled'] = wc_bool_to_string( true );
-		}
+		$data['extensions']['facebook-for-woocommerce']['product-sync-enabled'] = wc_bool_to_string( true );
 
 		/**
 		 * How long did the last feed generation take (or did it fail - 0)? This counts just the time when the batches have been generated.

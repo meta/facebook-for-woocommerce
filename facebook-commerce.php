@@ -16,7 +16,6 @@ use WooCommerce\Facebook\Framework\Plugin\Exception as PluginException;
 use WooCommerce\Facebook\Products;
 use WooCommerce\Facebook\Products\Feed;
 use WooCommerce\Facebook\Framework\Logger;
-use WooCommerce\Facebook\RolloutSwitches;
 
 defined( 'ABSPATH' ) || exit;
 
@@ -2755,21 +2754,13 @@ class WC_Facebookcommerce_Integration extends WC_Integration {
 	 *
 	 * @return int[]
 	 * @since 1.10.0
+	 * @deprecated 3.7.9 Categories can no longer be excluded from sync: every product syncs unless it
+	 *             is excluded individually, so no category is excluded.
 	 */
 	public function get_excluded_product_category_ids() {
+		wc_deprecated_function( __METHOD__, '3.7.9' );
 
-		if ( $this->is_woo_all_products_enabled() ) {
-			return (array) array();
-		}
-		/**
-		 * Filters the configured excluded product category IDs.
-		 *
-		 * @param int[] $category_ids the configured excluded product category IDs
-		 * @param \WC_Facebookcommerce_Integration $integration the integration instance
-		 *
-		 * @since 1.10.0
-		 */
-		return (array) apply_filters( 'wc_facebook_excluded_product_category_ids', get_option( self::SETTING_EXCLUDED_PRODUCT_CATEGORY_IDS, array() ), $this );
+		return array();
 	}
 
 	/**
@@ -2777,20 +2768,13 @@ class WC_Facebookcommerce_Integration extends WC_Integration {
 	 *
 	 * @return int[]
 	 * @since 1.10.0
+	 * @deprecated 3.7.9 Tags can no longer be excluded from sync: every product syncs unless it is
+	 *             excluded individually, so no tag is excluded.
 	 */
 	public function get_excluded_product_tag_ids() {
-		if ( $this->is_woo_all_products_enabled() ) {
-			return (array) array();
-		}
-		/**
-		 * Filters the configured excluded product tag IDs.
-		 *
-		 * @param int[] $tag_ids the configured excluded product tag IDs
-		 * @param \WC_Facebookcommerce_Integration $integration the integration instance
-		 *
-		 * @since 1.10.0
-		 */
-		return (array) apply_filters( 'wc_facebook_excluded_product_tag_ids', get_option( self::SETTING_EXCLUDED_PRODUCT_TAG_IDS, array() ), $this );
+		wc_deprecated_function( __METHOD__, '3.7.9' );
+
+		return array();
 	}
 
 	/** Setter methods ************************************************************************************************/
@@ -2904,16 +2888,17 @@ class WC_Facebookcommerce_Integration extends WC_Integration {
 	}
 
 	/**
-	 * Determines if viewing the plugin settings in the admin.
+	 * Determines whether all products sync to Meta, rather than only those outside excluded categories and tags.
 	 *
 	 * @since 3.5.3
+	 * @deprecated 3.7.9 All products always sync now; the rollout switch that gated it is retired.
 	 *
 	 * @return bool
 	 */
 	public function is_woo_all_products_enabled() {
-		return $this->facebook_for_woocommerce->get_rollout_switches()->is_switch_enabled(
-			RolloutSwitches::SWITCH_WOO_ALL_PRODUCTS_SYNC_ENABLED
-		);
+		wc_deprecated_function( __METHOD__, '3.7.9' );
+
+		return true;
 	}
 
 	/**
@@ -2939,26 +2924,13 @@ class WC_Facebookcommerce_Integration extends WC_Integration {
 	 *
 	 * @return bool
 	 * @since 1.10.0
+	 * @deprecated 3.7.9 Product sync can no longer be turned off for the whole store; products are
+	 *             excluded individually instead.
 	 */
 	public function is_product_sync_enabled() {
-		/**
-		 * If all products switch is enabled
-		 * There is no check for global sync
-		 */
+		wc_deprecated_function( __METHOD__, '3.7.9' );
 
-		if ( $this->is_woo_all_products_enabled() ) {
-			return true;
-		}
-
-		/**
-		 * Filters whether product sync is enabled.
-		 *
-		 * @param bool $is_enabled whether product sync is enabled
-		 * @param \WC_Facebookcommerce_Integration $integration the integration instance
-		 *
-		 * @since 1.10.0
-		 */
-		return (bool) apply_filters( 'wc_facebook_is_product_sync_enabled', 'yes' === get_option( self::SETTING_ENABLE_PRODUCT_SYNC, 'yes' ), $this );
+		return true;
 	}
 
 	/**

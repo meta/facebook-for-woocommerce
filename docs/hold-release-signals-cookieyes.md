@@ -403,6 +403,8 @@ When Advertisement permission is denied or withdrawn, the bridge calls:
 window.fbwcsignal.hold();
 ```
 
+`window.fbwcsignal.hold()` revokes browser consent immediately, before the state request completes, so nothing fires while that request is in flight. If a release was still in progress when the hold happened, its response is discarded when it arrives: consent stays revoked, nothing is replayed, and events the server had already accepted are dropped from the browser queue so they are not posted twice.
+
 The page reloads after the hold request so the next request starts in the held state. The error callback also reloads because the backend will recalculate the state from CookieYes when the new request reaches WordPress.
 
 ## What happens during each visitor flow

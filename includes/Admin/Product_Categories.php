@@ -387,6 +387,7 @@ class Product_Categories {
 			$products = wc_get_products(
 				array(
 					'category' => array( $term->slug ),
+					'limit'    => -1,
 				)
 			);
 

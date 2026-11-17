@@ -112,4 +112,19 @@ class Product_CategoriesSaveSyncTest extends AbstractWPUnitTestWithOptionIsolati
 		$this->assertSame( $this->sorted( array_merge( array( $simple->get_id() ), $variable->get_children() ) ), $queued );
 		$this->assertNotContains( $variable->get_id(), $queued );
 	}
+
+	/**
+	 * Every product is queued, not just the first page of a default-sized query.
+	 */
+	public function test_saving_category_syncs_more_products_than_posts_per_page() {
+		update_option( 'posts_per_page', 10 );
+
+		$term_id  = $this->create_category( 'QA large' );
+		$expected = array();
+		for ( $i = 0; $i < 12; $i++ ) {
+			$expected[] = $this->add_to_category( \WC_Helper_Product::create_simple_product(), $term_id )->get_id();
+		}
+
+		$this->assertSame( $this->sorted( $expected ), $this->save_category_and_get_queued_ids( $term_id ) );
+	}
 }

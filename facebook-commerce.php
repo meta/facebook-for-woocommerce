@@ -984,7 +984,7 @@ class WC_Facebookcommerce_Integration extends WC_Integration {
 	 * @internal
 	 */
 	public function schedule_product_sync( int $wp_id ) {
-		$this->save_posted_sync_mode( $wp_id );
+		$this->save_posted_facebook_settings( $wp_id );
 
 		// Store sync data in transient for async processing
 		// phpcs:disable WordPress.Security.NonceVerification.Missing
@@ -1036,24 +1036,28 @@ class WC_Facebookcommerce_Integration extends WC_Integration {
 	}
 
 	/**
-	 * Saves the sync mode chosen on the product's Facebook tab while the product form is being saved.
+	 * Saves the product's Facebook tab while the product form is being saved.
 	 *
 	 * The rest of the save runs later from cron (see on_product_save()), and only if cron gets to it
 	 * within the 5 minutes its data is kept. Until then the Facebook tab showed the previous mode after
 	 * Update, and any sync in between, such as one queued by a stock change, sent the previous
-	 * visibility. Where cron runs late or not at all, "Sync and show" never stuck. Saving the mode here
+	 * visibility. Where cron runs late or not at all, "Sync and show" never stuck. Saving the tab here
 	 * makes it take effect with the Update.
 	 *
-	 * Only "Sync and show" and "Sync and hide" are saved here, as they only write product meta. Turning
-	 * sync off also deletes the product from the catalog, which stays with the deferred save. Variable
-	 * products are left to it as well: their visibility is set on each variation, which is saved with
-	 * the variation.
+	 * The sync mode is saved together with the other fields of the tab (price, description, images,
+	 * attributes, Google product category), so a product is never shown with the values it had before
+	 * the Update. These only write product meta; sending the product to the catalog stays with the
+	 * deferred save.
+	 *
+	 * Only "Sync and show" and "Sync and hide" are saved here. Turning sync off also deletes the product
+	 * from the catalog, which stays with the deferred save. Variable products are left to it as well:
+	 * their visibility is set on each variation, which is saved with the variation.
 	 *
 	 * @since 3.7.10
 	 *
 	 * @param int $wp_id product ID
 	 */
-	private function save_posted_sync_mode( int $wp_id ) {
+	private function save_posted_facebook_settings( int $wp_id ) {
 		$product = wc_get_product( $wp_id );
 		// WC_Product_Variable also covers types built on it, such as variable subscriptions.
 		if ( ! $product instanceof WC_Product || $product instanceof WC_Product_Variable ) {
@@ -1065,8 +1069,11 @@ class WC_Facebookcommerce_Integration extends WC_Integration {
 			return;
 		}
 
+		// The same fields, in the same order, as the deferred save in on_product_save().
 		Products::enable_sync_for_products( array( $product ) );
 		Products::set_product_visibility( $product, Admin::SYNC_MODE_SYNC_AND_HIDE !== $sync_mode );
+		$this->save_product_settings( $product );
+		Admin\Products::save_commerce_fields( $product );
 	}
 
 	/**

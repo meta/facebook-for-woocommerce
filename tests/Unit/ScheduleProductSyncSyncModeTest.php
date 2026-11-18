@@ -94,25 +94,51 @@ class ScheduleProductSyncSyncModeTest extends \WooCommerce\Facebook\Tests\Abstra
 	}
 
 	/**
-	 * Saving the form leaves no Facebook settings on the product besides the sync mode: the rest is
-	 * still saved by the deferred save.
+	 * A product switched to "Sync and show" with a new Facebook price is never shown at the old price:
+	 * the price is saved together with the visibility.
 	 */
-	public function test_only_the_sync_mode_is_saved_before_the_deferred_save() {
+	public function test_facebook_price_is_saved_with_the_visibility() {
 		$product = $this->hidden_simple_product();
-		$before  = get_post_meta( $product->get_id() );
+		( new WC_Facebook_Product( $product->get_id() ) )->set_price( '20' );
+
+		$_POST[ WC_Facebook_Product::FB_PRODUCT_PRICE ] = '30';
+		$this->save_product_form( $product, Admin::SYNC_MODE_SYNC_AND_SHOW );
+		unset( $_POST[ WC_Facebook_Product::FB_PRODUCT_PRICE ] );
+
+		$this->assertSame( 'yes', get_post_meta( $product->get_id(), Products::VISIBILITY_META_KEY, true ) );
+		$this->assertSame( '30', get_post_meta( $product->get_id(), WC_Facebook_Product::FB_PRODUCT_PRICE, true ) );
+		$this->assertSame( 3000, ( new WC_Facebook_Product( $product->get_id() ) )->get_fb_price() );
+	}
+
+	/**
+	 * The other fields of the Facebook tab are saved with the Update too.
+	 */
+	public function test_facebook_tab_fields_are_saved_with_the_update() {
+		$product = $this->hidden_simple_product();
 
 		$_POST[ WC_Facebook_Product::FB_PRODUCT_DESCRIPTION ] = 'Changed on the form';
-		$this->save_product_form( $product, Admin::SYNC_MODE_SYNC_AND_SHOW );
-		unset( $_POST[ WC_Facebook_Product::FB_PRODUCT_DESCRIPTION ] );
+		$_POST[ WC_Facebook_Product::FB_BRAND ]               = 'Changed brand';
+		$this->save_product_form( $product, Admin::SYNC_MODE_SYNC_AND_HIDE );
+		unset( $_POST[ WC_Facebook_Product::FB_PRODUCT_DESCRIPTION ], $_POST[ WC_Facebook_Product::FB_BRAND ] );
 
-		// The sync mode itself, and the change time the plugin records whenever visibility changes.
-		$expected_changes = array( Products::VISIBILITY_META_KEY, Products::get_product_sync_meta_key(), '_last_change_time' );
-		$after            = get_post_meta( $product->get_id() );
-		foreach ( $expected_changes as $meta_key ) {
-			unset( $before[ $meta_key ], $after[ $meta_key ] );
-		}
+		$this->assertSame( 'Changed on the form', get_post_meta( $product->get_id(), WC_Facebook_Product::FB_PRODUCT_DESCRIPTION, true ) );
+		$this->assertSame( 'Changed brand', get_post_meta( $product->get_id(), WC_Facebook_Product::FB_BRAND, true ) );
+	}
 
-		$this->assertSame( $before, $after );
+	/**
+	 * Turning sync off is still left entirely to the deferred save: nothing from the tab is saved
+	 * with the Update.
+	 */
+	public function test_nothing_is_saved_when_sync_is_turned_off() {
+		$product = $this->hidden_simple_product();
+		( new WC_Facebook_Product( $product->get_id() ) )->set_price( '20' );
+		$before = get_post_meta( $product->get_id() );
+
+		$_POST[ WC_Facebook_Product::FB_PRODUCT_PRICE ] = '30';
+		$this->save_product_form( $product, Admin::SYNC_MODE_SYNC_DISABLED );
+		unset( $_POST[ WC_Facebook_Product::FB_PRODUCT_PRICE ] );
+
+		$this->assertSame( $before, get_post_meta( $product->get_id() ) );
 	}
 
 	/**

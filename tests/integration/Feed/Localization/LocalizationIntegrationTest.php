@@ -72,7 +72,8 @@ class LocalizationIntegrationTest extends IntegrationTestCase {
 	 *
 	 * Polylang narrows product queries to the request's language: the admin's content language
 	 * filter in an admin request, the default or cookie language in the Action Scheduler async
-	 * runner. Products in another language, or in none, were left out of both.
+	 * runner. Products in another language, or in none, were left out of both, and so were their
+	 * variations where those are translated too.
 	 */
 	public function test_polylang_full_sync_and_reset_cover_products_outside_the_request_language() {
 		if ( ! function_exists( 'PLL' ) || ! function_exists( 'pll_set_post_language' ) || ! class_exists( '\PLL_Query' ) ) {
@@ -85,9 +86,10 @@ class LocalizationIntegrationTest extends IntegrationTestCase {
 			$this->markTestSkipped( 'Polylang has no English and Spanish languages in this test run' );
 		}
 
-		// Products are a translated post type, as with Polylang for WooCommerce or the custom post type setting.
+		// Products and variations are translated post types, as with Polylang for WooCommerce.
 		$translate_products = static function ( $post_types ) {
-			$post_types['product'] = 'product';
+			$post_types['product']           = 'product';
+			$post_types['product_variation'] = 'product_variation';
 			return $post_types;
 		};
 		add_filter( 'pll_get_post_types', $translate_products );
@@ -101,6 +103,7 @@ class LocalizationIntegrationTest extends IntegrationTestCase {
 
 		try {
 			$this->assertTrue( $model->is_translated_post_type( 'product' ), 'Polylang translates products for this test.' );
+			$this->assertTrue( $model->is_translated_post_type( 'product_variation' ), 'Polylang translates variations for this test.' );
 
 			$english_product       = $this->create_simple_product();
 			$spanish_product       = $this->create_simple_product();
@@ -111,6 +114,19 @@ class LocalizationIntegrationTest extends IntegrationTestCase {
 			wp_delete_object_term_relationships( $language_less_product->get_id(), 'language' );
 
 			$expected = [ $english_product->get_id(), $spanish_product->get_id(), $language_less_product->get_id() ];
+
+			// A variable product in no language, with variations in no language and Facebook IDs to reset.
+			$variable_product = $this->create_variable_product();
+			$variation_ids    = array_map( 'intval', $variable_product->get_children() );
+			$this->assertNotEmpty( $variation_ids );
+
+			foreach ( array_merge( [ $variable_product->get_id() ], $variation_ids ) as $post_id ) {
+				wp_delete_object_term_relationships( $post_id, 'language' );
+				update_post_meta( $post_id, \WC_Facebookcommerce_Integration::FB_PRODUCT_ITEM_ID, 'item-' . $post_id );
+			}
+
+			// An empty children cache, as in a request that has not loaded the product before.
+			delete_transient( 'wc_product_children_' . $variable_product->get_id() );
 
 			add_action( 'parse_query', $narrow_to_english );
 
@@ -125,12 +141,26 @@ class LocalizationIntegrationTest extends IntegrationTestCase {
 					]
 				)
 			);
-			$sync_ids = array_map( 'intval', \WC_Facebookcommerce_Utils::get_all_product_ids_for_sync() );
+			$narrowed_variations = get_posts(
+				[
+					'post_type'      => 'product_variation',
+					'post_parent'    => $variable_product->get_id(),
+					'post_status'    => 'publish',
+					'fields'         => 'ids',
+					'posts_per_page' => -1,
+				]
+			);
+			$sync_ids            = array_map( 'intval', \WC_Facebookcommerce_Utils::get_all_product_ids_for_sync() );
 
 			$job    = facebook_for_woocommerce()->job_manager->reset_all_product_fb_settings;
 			$method = new \ReflectionMethod( $job, 'get_items_for_batch' );
 			$method->setAccessible( true );
 			$reset_ids = $method->invoke( $job, 1, [] );
+
+			// Run the batch as the job does, which resets each product and looks up its variations.
+			$process = new \ReflectionMethod( $job, 'process_items' );
+			$process->setAccessible( true );
+			$process->invoke( $job, $reset_ids, [] );
 		} finally {
 			remove_action( 'parse_query', $narrow_to_english );
 			remove_filter( 'pll_get_post_types', $translate_products );
@@ -140,6 +170,14 @@ class LocalizationIntegrationTest extends IntegrationTestCase {
 		$this->assertSame( [ $english_product->get_id() ], array_values( array_intersect( $expected, $narrowed ) ), 'A product query without lang only sees the request language.' );
 		$this->assertSame( [], array_values( array_diff( $expected, $sync_ids ) ), 'The full sync queues products in every language and in none.' );
 		$this->assertSame( [], array_values( array_diff( $expected, $reset_ids ) ), 'The reset job covers products in every language and in none.' );
+
+		$this->assertSame( [], $narrowed_variations, 'A variation query without lang only sees the request language.' );
+		$this->assertSame( [], array_values( array_diff( $variation_ids, $sync_ids ) ), 'The full sync queues variations in no language.' );
+		$this->assertContains( $variable_product->get_id(), $reset_ids, 'The reset job covers a variable product in no language.' );
+		$this->assertSame( '', get_post_meta( $variable_product->get_id(), \WC_Facebookcommerce_Integration::FB_PRODUCT_ITEM_ID, true ), 'The reset batch clears the variable product.' );
+		foreach ( $variation_ids as $variation_id ) {
+			$this->assertSame( '', get_post_meta( $variation_id, \WC_Facebookcommerce_Integration::FB_PRODUCT_ITEM_ID, true ), "The reset batch clears variation {$variation_id}." );
+		}
 	}
 
 	/**

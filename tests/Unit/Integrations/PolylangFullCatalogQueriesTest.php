@@ -163,15 +163,7 @@ class PolylangFullCatalogQueriesTest extends AbstractWPUnitTestWithOptionIsolati
 	 * The reset job pages through every product in ID order, whatever the request's language.
 	 */
 	public function test_reset_job_batches_cover_products_in_every_language_and_in_none() {
-		$job = new class( new ActionScheduler() ) extends ResetAllProductsFBSettings {
-			public function get_batch_size(): int {
-				return 2;
-			}
-
-			public function get_batch( int $batch_number ): array {
-				return $this->get_items_for_batch( $batch_number, array() );
-			}
-		};
+		$job = $this->create_reset_job();
 
 		$collected = array();
 		for ( $batch_number = 1; $batch_number <= 10; $batch_number++ ) {
@@ -195,6 +187,48 @@ class PolylangFullCatalogQueriesTest extends AbstractWPUnitTestWithOptionIsolati
 		$sorted = $collected;
 		sort( $sorted, SORT_NUMERIC );
 		$this->assertSame( $sorted, $collected, 'Batches follow ascending product IDs so the offset stays stable.' );
+	}
+
+	/**
+	 * Running the reset job's batches clears the Facebook IDs of every product and variation.
+	 *
+	 * The job resets one product at a time, and each reset looks up the product's variations.
+	 * WooCommerce's own children query is narrowed like any other when its children cache is
+	 * empty, so variations in another language, or in none, kept their Facebook IDs.
+	 */
+	public function test_reset_job_batches_clear_variations_in_every_language_and_in_none() {
+		$this->assertNotEmpty( $this->language_less_variation_ids );
+
+		$post_ids = array_merge(
+			array(
+				$this->english_product->get_id(),
+				$this->language_less_product->get_id(),
+				$this->language_less_variable_product->get_id(),
+			),
+			$this->language_less_variation_ids
+		);
+
+		foreach ( $post_ids as $post_id ) {
+			update_post_meta( $post_id, \WC_Facebookcommerce_Integration::FB_PRODUCT_GROUP_ID, 'group-' . $post_id );
+			update_post_meta( $post_id, \WC_Facebookcommerce_Integration::FB_PRODUCT_ITEM_ID, 'item-' . $post_id );
+			update_post_meta( $post_id, Products::VISIBILITY_META_KEY, 'yes' );
+		}
+
+		// An empty children cache, as in a request that has not loaded the product before.
+		delete_transient( 'wc_product_children_' . $this->language_less_variable_product->get_id() );
+
+		$job = $this->create_reset_job();
+		for ( $batch_number = 1; $batch_number <= 10; $batch_number++ ) {
+			if ( empty( $job->run_batch( $batch_number ) ) ) {
+				break;
+			}
+		}
+
+		foreach ( $post_ids as $post_id ) {
+			$this->assertSame( '', get_post_meta( $post_id, \WC_Facebookcommerce_Integration::FB_PRODUCT_GROUP_ID, true ), "Group ID of post {$post_id} is cleared." );
+			$this->assertSame( '', get_post_meta( $post_id, \WC_Facebookcommerce_Integration::FB_PRODUCT_ITEM_ID, true ), "Item ID of post {$post_id} is cleared." );
+			$this->assertSame( '', get_post_meta( $post_id, Products::VISIBILITY_META_KEY, true ), "Visibility of post {$post_id} is cleared." );
+		}
 	}
 
 	/**
@@ -227,5 +261,29 @@ class PolylangFullCatalogQueriesTest extends AbstractWPUnitTestWithOptionIsolati
 			$this->assertSame( '', get_post_meta( $post_id, \WC_Facebookcommerce_Integration::FB_PRODUCT_ITEM_ID, true ), "Item ID of post {$post_id} is cleared." );
 			$this->assertSame( '', get_post_meta( $post_id, Products::VISIBILITY_META_KEY, true ), "Visibility of post {$post_id} is cleared." );
 		}
+	}
+
+	/**
+	 * Creates the reset job with a small batch size and its batch steps exposed.
+	 *
+	 * @return ResetAllProductsFBSettings
+	 */
+	private function create_reset_job() {
+		return new class( new ActionScheduler() ) extends ResetAllProductsFBSettings {
+			public function get_batch_size(): int {
+				return 2;
+			}
+
+			public function get_batch( int $batch_number ): array {
+				return $this->get_items_for_batch( $batch_number, array() );
+			}
+
+			public function run_batch( int $batch_number ): array {
+				$items = $this->get_items_for_batch( $batch_number, array() );
+				$this->process_items( $items, array() );
+
+				return $items;
+			}
+		};
 	}
 }

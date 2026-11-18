@@ -299,6 +299,77 @@ class LocalizationIntegrationTest extends IntegrationTestCase {
 	}
 
 	/**
+	 * Polylang's answer for a product without a language does not hide the product from the catalog.
+	 *
+	 * Polylang answers the WPML filters through its compatibility layer and defines
+	 * ICL_LANGUAGE_CODE, so the legacy WPML visibility check runs on Polylang stores. A product in
+	 * no language read as "not the default language" and reached the catalog hidden.
+	 */
+	public function test_polylang_product_without_language_is_not_hidden_by_the_wpml_visibility_check() {
+		if ( ! function_exists( 'PLL' ) || ! function_exists( 'pll_set_post_language' ) || ! class_exists( '\PLL_WPML_Compat' ) ) {
+			$this->markTestSkipped( 'Polylang is not active for this test run' );
+		}
+
+		$model = PLL()->model;
+		if ( ! $model->get_language( 'en' ) || ! $model->get_language( 'es' ) ) {
+			$this->markTestSkipped( 'Polylang has no English and Spanish languages in this test run' );
+		}
+
+		// Polylang's own answer to the WPML filter, registered the way its compatibility layer does.
+		if ( ! function_exists( 'wpml_get_language_information' ) ) {
+			$legacy_api = dirname( ( new \ReflectionClass( '\PLL_WPML_Compat' ) )->getFileName() ) . '/wpml-legacy-api.php';
+			if ( file_exists( $legacy_api ) ) {
+				require_once $legacy_api;
+			}
+		}
+		if ( ! function_exists( 'wpml_get_language_information' ) ) {
+			$this->markTestSkipped( 'Polylang\'s WPML compatibility API is not available in this test run' );
+		}
+
+		$translate_products = static function ( $post_types ) {
+			$post_types['product'] = 'product';
+			return $post_types;
+		};
+		add_filter( 'pll_get_post_types', $translate_products );
+		$model->cache->clean( 'post_types' );
+		add_filter( 'wpml_post_language_details', 'wpml_get_language_information', 10, 2 );
+
+		$previous_default_lang = \WooCommerce\Facebook\WPMLInjector::$default_lang;
+		$previous_settings     = \WooCommerce\Facebook\WPMLInjector::$settings;
+
+		\WooCommerce\Facebook\WPMLInjector::$default_lang = pll_default_language();
+		\WooCommerce\Facebook\WPMLInjector::$settings     = null;
+
+		try {
+			$english_product       = $this->create_simple_product();
+			$spanish_product       = $this->create_simple_product();
+			$language_less_product = $this->create_simple_product();
+
+			pll_set_post_language( $english_product->get_id(), 'en' );
+			pll_set_post_language( $spanish_product->get_id(), 'es' );
+			wp_delete_object_term_relationships( $language_less_product->get_id(), 'language' );
+
+			$language_less_details = apply_filters( 'wpml_post_language_details', null, $language_less_product->get_id() );
+			$hides_language_less   = \WooCommerce\Facebook\WPMLInjector::should_hide( $language_less_product->get_id() );
+			$hides_english         = \WooCommerce\Facebook\WPMLInjector::should_hide( $english_product->get_id() );
+			$hides_spanish         = \WooCommerce\Facebook\WPMLInjector::should_hide( $spanish_product->get_id() );
+		} finally {
+			\WooCommerce\Facebook\WPMLInjector::$default_lang = $previous_default_lang;
+			\WooCommerce\Facebook\WPMLInjector::$settings     = $previous_settings;
+
+			remove_filter( 'wpml_post_language_details', 'wpml_get_language_information', 10 );
+			remove_filter( 'pll_get_post_types', $translate_products );
+			$model->cache->clean( 'post_types' );
+		}
+
+		$this->assertSame( 'en', pll_default_language(), 'English is the default language for this test.' );
+		$this->assertSame( [], $language_less_details, 'Polylang reports a product without a language as an empty array.' );
+		$this->assertFalse( $hides_language_less, 'A product in no language is not hidden.' );
+		$this->assertFalse( $hides_english, 'A product in the default language is not hidden.' );
+		$this->assertTrue( $hides_spanish, 'A product in another language is still hidden.' );
+	}
+
+	/**
 	 * Get the expected plugin from command line arguments or environment variables
 	 */
 	private static function getExpectedPlugin(): ?string {

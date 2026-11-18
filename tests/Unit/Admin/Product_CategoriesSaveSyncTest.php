@@ -37,8 +37,23 @@ class Product_CategoriesSaveSyncTest extends AbstractWPUnitTestWithOptionIsolati
 	 * @param string $taxonomy Taxonomy the term belongs to.
 	 */
 	private function save_term( int $term_id, string $taxonomy = 'product_cat' ): void {
+		$this->use_mocked_plugin();
+
+		( new Product_Categories() )->save_google_product_category_and_enhanced_attributes( $term_id, 0, $taxonomy );
+	}
+
+	/**
+	 * Swaps the plugin instance for one returning the mocked sync handler.
+	 *
+	 * The store reports as disconnected, so the product set sync that also runs on category saves stays out.
+	 */
+	private function use_mocked_plugin(): void {
+		$connection = $this->createMock( \WooCommerce\Facebook\Handlers\Connection::class );
+		$connection->method( 'is_connected' )->willReturn( false );
+
 		$plugin = $this->createMock( \WC_Facebookcommerce::class );
 		$plugin->method( 'get_products_sync_handler' )->willReturn( $this->sync_handler );
+		$plugin->method( 'get_connection_handler' )->willReturn( $connection );
 
 		$this->add_filter_with_safe_teardown(
 			'wc_facebook_instance',
@@ -46,8 +61,24 @@ class Product_CategoriesSaveSyncTest extends AbstractWPUnitTestWithOptionIsolati
 				return $plugin;
 			}
 		);
+	}
 
-		( new Product_Categories() )->save_google_product_category_and_enhanced_attributes( $term_id, 0, $taxonomy );
+	/**
+	 * Expects one sync request and returns a reference to the IDs it queues, sorted once read.
+	 *
+	 * @return \ArrayObject
+	 */
+	private function capture_queued_ids(): \ArrayObject {
+		$queued = new \ArrayObject();
+		$this->sync_handler->expects( $this->once() )
+			->method( 'create_or_update_products' )
+			->willReturnCallback(
+				function ( array $ids ) use ( $queued ) {
+					$queued->exchangeArray( $ids );
+				}
+			);
+
+		return $queued;
 	}
 
 	/**
@@ -141,5 +172,49 @@ class Product_CategoriesSaveSyncTest extends AbstractWPUnitTestWithOptionIsolati
 		$this->sync_handler->expects( $this->never() )->method( 'create_or_update_products' );
 
 		$this->save_term( $tag_id, 'product_tag' );
+	}
+
+	/**
+	 * Products assigned to a subcategory only are left out: what is sent for a product depends on the
+	 * categories assigned to it, not on their parents.
+	 */
+	public function test_saving_category_does_not_sync_products_of_subcategories() {
+		$parent_id = $this->create_category( 'QA parent' );
+		$child_id  = (int) wp_insert_term( 'QA child', 'product_cat', array( 'parent' => $parent_id ) )['term_id'];
+		$in_parent = $this->add_to_category( \WC_Helper_Product::create_simple_product(), $parent_id );
+		$this->add_to_category( \WC_Helper_Product::create_simple_product(), $child_id );
+
+		// The category hierarchy is cached in an option, which this test case isolates, and clean_term_cache()
+		// rebuilds it only once per PHP process. Drop the cached copy so a subcategory would be found.
+		$this->mock_set_option( 'product_cat_children', false );
+
+		$this->assertSame( array( $in_parent->get_id() ), $this->save_category_and_get_queued_ids( $parent_id ) );
+	}
+
+	/**
+	 * Renaming a category together with its slug still re-syncs its products. edit_term fires before
+	 * WordPress clears the term cache, so the category it reads still has the old slug.
+	 */
+	public function test_renaming_category_with_new_slug_syncs_its_products() {
+		$term_id = $this->create_category( 'QA UI & Sets' );
+		$simple  = $this->add_to_category( \WC_Helper_Product::create_simple_product(), $term_id );
+		get_term( $term_id, 'product_cat' ); // warm the term cache, as the edit screen does
+
+		$this->use_mocked_plugin();
+		$queued = $this->capture_queued_ids();
+
+		$handler = new Product_Categories();
+		$this->add_filter_with_safe_teardown( 'edit_term', array( $handler, 'save_google_product_category_and_enhanced_attributes' ), 10, 3 );
+
+		wp_update_term(
+			$term_id,
+			'product_cat',
+			array(
+				'name' => 'QA UI renamed & more',
+				'slug' => 'qa-ui-renamed-more',
+			)
+		);
+
+		$this->assertSame( array( $simple->get_id() ), $this->sorted( $queued->getArrayCopy() ) );
 	}
 }

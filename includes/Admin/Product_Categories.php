@@ -384,13 +384,7 @@ class Product_Categories {
 		\WooCommerce\Facebook\Product_Categories::update_google_product_category_id( $term_id, $google_product_category_id );
 		$this->save_enhanced_catalog_attributes( $term_id );
 
-		$term = get_term( $term_id, $taxonomy );
-
-		if ( ! $term instanceof \WP_Term ) {
-			return;
-		}
-
-		$sync_product_ids = $this->get_product_ids_to_sync_for_category( $term );
+		$sync_product_ids = $this->get_product_ids_to_sync_for_category( (int) $term_id );
 
 		if ( ! empty( $sync_product_ids ) ) {
 			facebook_for_woocommerce()->get_products_sync_handler()->create_or_update_products( $sync_product_ids );
@@ -406,19 +400,32 @@ class Product_Categories {
 	 * apart by having variations rather than by product type, the same way the full catalog sync does,
 	 * so variable subscriptions and other types built on variable products are covered.
 	 *
+	 * Products are looked up by category ID, not slug: edit_term fires before WordPress clears the term
+	 * cache, so a category read here still has its old slug when the slug was just changed. Only products
+	 * assigned to the category itself are included. What is sent for a product depends on the categories
+	 * assigned to it, not on their parents, so the products of subcategories have nothing to update.
+	 *
 	 * @see \WC_Facebookcommerce_Utils::get_all_product_ids_for_sync()
 	 *
 	 * @since 3.7.10
 	 *
-	 * @param \WP_Term $term Product category.
+	 * @param int $term_id Product category ID.
 	 * @return int[]
 	 */
-	private function get_product_ids_to_sync_for_category( \WP_Term $term ) {
+	private function get_product_ids_to_sync_for_category( int $term_id ) {
 		$product_ids = wc_get_products(
 			array(
-				'category' => array( $term->slug ),
-				'limit'    => -1,
-				'return'   => 'ids',
+				// phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_tax_query
+				'tax_query' => array(
+					array(
+						'taxonomy'         => 'product_cat',
+						'field'            => 'term_id',
+						'terms'            => $term_id,
+						'include_children' => false,
+					),
+				),
+				'limit'     => -1,
+				'return'    => 'ids',
 			)
 		);
 

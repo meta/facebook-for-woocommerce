@@ -1317,8 +1317,14 @@ class WC_Facebookcommerce_Integration extends WC_Integration {
 			// enqueue variation to be deleted in the background
 			$this->facebook_for_woocommerce->get_products_sync_handler()->delete_products( array( $retailer_id ) );
 		} elseif ( $product->is_type( 'variable' ) ) {
+			/*
+			 * Read the same variations reset_single_product() clears: every language, every status
+			 * but trash and auto-draft. WC_Product::get_children() is narrowed to the request's
+			 * language on a Polylang store, so the metabox delete action cleared the Facebook IDs
+			 * of variations it never queued for deletion, and those stayed in the catalog.
+			 */
 			$retailer_ids = array();
-			foreach ( $product->get_children() as $variation_id ) {
+			foreach ( WC_Facebookcommerce_Utils::get_variation_ids_in_every_language( $product_id, 'any' ) as $variation_id ) {
 				$variation = wc_get_product( $variation_id );
 				if ( $variation instanceof \WC_Product ) {
 					$retailer_ids[] = \WC_Facebookcommerce_Utils::get_fb_retailer_id( $variation );
@@ -2411,7 +2417,6 @@ class WC_Facebookcommerce_Integration extends WC_Integration {
 			return false;
 		}
 
-		// Include draft products (omit 'post_status' => 'publish')
 		Logger::log(
 			'Removing FBIDs from all products',
 			array(),
@@ -2422,29 +2427,26 @@ class WC_Facebookcommerce_Integration extends WC_Integration {
 			)
 		);
 
+		/*
+		 * get_posts() only returns published posts unless told otherwise, so draft, pending and
+		 * private products, and disabled (private) variations, kept their Facebook IDs. 'any'
+		 * covers every status but trash and auto-draft.
+		 *
+		 * An empty 'lang' lifts Polylang's language filter, so products in every language, or in none, are reset.
+		 *
+		 * Products and variations come from one query. Variations used to be fetched with one query
+		 * per product, which also left out those whose parent is in the trash or gone.
+		 */
 		$post_ids = get_posts(
 			array(
-				'post_type'      => 'product',
+				'post_type'      => array( 'product', 'product_variation' ),
+				'post_status'    => 'any',
 				'posts_per_page' => - 1,
 				'fields'         => 'ids',
+				'lang'           => '',
 			)
 		);
 
-		$children = array();
-		foreach ( $post_ids as $post_id ) {
-			$children = array_merge(
-				get_posts(
-					array(
-						'post_type'      => 'product_variation',
-						'posts_per_page' => - 1,
-						'post_parent'    => $post_id,
-						'fields'         => 'ids',
-					)
-				),
-				$children
-			);
-		}
-		$post_ids = array_merge( $post_ids, $children );
 		$this->delete_post_meta_loop( $post_ids );
 
 		Logger::log(
@@ -2463,13 +2465,23 @@ class WC_Facebookcommerce_Integration extends WC_Integration {
 	/**
 	 * Remove FBIDs from a single WC product
 	 *
+	 * The variations are read in every language, not with WC_Product::get_children(), whose query
+	 * Polylang narrows to the request's language: variations in another language, or in none, kept
+	 * their Facebook IDs. get_children() also only returns published and private variations; 'any'
+	 * covers every status but trash and auto-draft.
+	 *
+	 * @see WC_Facebookcommerce_Utils::get_variation_ids_in_every_language()
+	 *
 	 * @param int $wp_id
 	 */
 	public function reset_single_product( int $wp_id ) {
 		$woo_product = new WC_Facebook_Product( $wp_id );
 		$products    = array( $woo_product->get_id() );
 		if ( WC_Facebookcommerce_Utils::is_variable_type( $woo_product->get_type() ) ) {
-			$products = array_merge( $products, $woo_product->get_children() );
+			$products = array_merge(
+				$products,
+				WC_Facebookcommerce_Utils::get_variation_ids_in_every_language( $woo_product->get_id(), 'any' )
+			);
 		}
 
 		$this->delete_post_meta_loop( $products );

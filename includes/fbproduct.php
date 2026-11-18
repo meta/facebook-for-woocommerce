@@ -1835,8 +1835,11 @@ class WC_Facebook_Product {
 					 * We then check for the variation's visibility.
 					 * If even a single one is marked yes, we bail it out as published.
 					 * If all marked no we honor the visibility as hidden.
+					 *
+					 * The variations are read in every language: with a narrowed children query the
+					 * parent looked like it had none, and it was saved as hidden further down.
 					 */
-					$variations           = $parent_product->get_children();
+					$variations           = \WC_Facebookcommerce_Utils::get_children_in_every_language( $parent_product );
 					$variation_visibility = false;
 
 					foreach ( $variations as $variation_id ) {

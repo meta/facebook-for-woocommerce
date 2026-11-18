@@ -78,6 +78,18 @@ class WPMLInjector {
 		// Pull out the language code from the language details.
 		$language_code = $product_lang['language_code'] ?? '';
 
+		/*
+		 * Polylang answers the WPML filters through its compatibility layer and defines
+		 * ICL_LANGUAGE_CODE, so this check runs on Polylang stores too. It reports a product
+		 * without a language as an empty array. That read as "not the default language" below,
+		 * and the product reached the catalog hidden. A product in no language is not a
+		 * translation of anything, so it stays visible. WPML's own answers are left as they are.
+		 */
+		if ( '' === (string) $language_code && ! static::is_wpml_running() ) {
+			/** This filter is documented above. */
+			return (bool) apply_filters( 'wc_facebook_wpml_should_hide_product', false, $product_id, $product_lang );
+		}
+
 		// Option doesn't exist: Backwards Compatibility
 		if ( ! self::$settings ) {
 			return (bool) apply_filters( 'wc_facebook_wpml_should_hide_product', self::$default_lang !== $language_code, $product_id, $product_lang );
@@ -87,6 +99,17 @@ class WPMLInjector {
 		$should_hide = ! isset( self::$settings[ $language_code ] ) || WPMLLanguageStatus::VISIBLE !== self::$settings[ $language_code ];
 
 		return (bool) apply_filters( 'wc_facebook_wpml_should_hide_product', $should_hide, $product_id, $product_lang );
+	}
+
+	/**
+	 * Whether WPML itself is running, as opposed to another plugin answering its filters.
+	 *
+	 * @since 3.7.9
+	 *
+	 * @return bool
+	 */
+	protected static function is_wpml_running(): bool {
+		return defined( 'ICL_SITEPRESS_VERSION' );
 	}
 
 	public function wpml_ajax_support( $call, $REQUEST ) {

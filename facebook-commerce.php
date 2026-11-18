@@ -2459,11 +2459,12 @@ class WC_Facebookcommerce_Integration extends WC_Integration {
 	/**
 	 * Remove FBIDs from a single WC product
 	 *
-	 * The variations are read with a query of our own, not with WC_Product::get_children().
-	 * WooCommerce's children query carries no 'lang', so where variations are translated Polylang
-	 * narrowed it to the request's language whenever the children cache was empty, and variations
-	 * in another language, or in none, kept their Facebook IDs. That query also only returns
-	 * published and private variations; 'any' covers every status but trash and auto-draft.
+	 * The variations are read in every language, not with WC_Product::get_children(), whose query
+	 * Polylang narrows to the request's language: variations in another language, or in none, kept
+	 * their Facebook IDs. get_children() also only returns published and private variations; 'any'
+	 * covers every status but trash and auto-draft.
+	 *
+	 * @see WC_Facebookcommerce_Utils::get_variation_ids_in_every_language()
 	 *
 	 * @param int $wp_id
 	 */
@@ -2473,16 +2474,7 @@ class WC_Facebookcommerce_Integration extends WC_Integration {
 		if ( WC_Facebookcommerce_Utils::is_variable_type( $woo_product->get_type() ) ) {
 			$products = array_merge(
 				$products,
-				get_posts(
-					array(
-						'post_type'      => 'product_variation',
-						'post_parent'    => $woo_product->get_id(),
-						'post_status'    => 'any',
-						'posts_per_page' => - 1,
-						'fields'         => 'ids',
-						'lang'           => '',
-					)
-				)
+				WC_Facebookcommerce_Utils::get_variation_ids_in_every_language( $woo_product->get_id(), 'any' )
 			);
 		}
 

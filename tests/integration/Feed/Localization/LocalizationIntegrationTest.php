@@ -181,6 +181,124 @@ class LocalizationIntegrationTest extends IntegrationTestCase {
 	}
 
 	/**
+	 * The full sync feed has a visible row for variations outside the request language on a Polylang store.
+	 *
+	 * When a variable product has no saved sync or visibility setting, the sync check and the feed
+	 * row both look at the product's variations. WooCommerce's children query is narrowed to the
+	 * request's language when its children cache is empty, so they found none: the variation was
+	 * rejected with "Sync disabled in product field" and the parent was saved as not synced.
+	 */
+	public function test_polylang_full_sync_feed_includes_variations_outside_the_request_language() {
+		if ( ! function_exists( 'PLL' ) || ! function_exists( 'pll_set_post_language' ) || ! class_exists( '\PLL_Query' ) ) {
+			$this->markTestSkipped( 'Polylang is not active for this test run' );
+		}
+
+		$model   = PLL()->model;
+		$spanish = $model->get_language( 'es' );
+		if ( ! $spanish || ! $model->get_language( 'en' ) ) {
+			$this->markTestSkipped( 'Polylang has no English and Spanish languages in this test run' );
+		}
+
+		// Products and variations are translated post types, as with Polylang for WooCommerce.
+		$translate_products = static function ( $post_types ) {
+			$post_types['product']           = 'product';
+			$post_types['product_variation'] = 'product_variation';
+			return $post_types;
+		};
+		add_filter( 'pll_get_post_types', $translate_products );
+		$model->cache->clean( 'post_types' );
+
+		// Narrow queries to Spanish the way PLL_Admin_Filters_Post and PLL_Frontend do.
+		$narrow_to_spanish = static function ( $query ) use ( $model, $spanish ) {
+			$pll_query = new \PLL_Query( $query, $model );
+			$pll_query->filter_query( $spanish );
+		};
+
+		$feed_path     = get_temp_dir() . uniqid( 'fb-polylang-feed-', true ) . '.csv';
+		$temp_path     = $feed_path . '.tmp';
+		$use_feed_path = static function () use ( $feed_path ) {
+			return $feed_path;
+		};
+		$use_temp_path = static function () use ( $temp_path ) {
+			return $temp_path;
+		};
+		add_filter( 'wc_facebook_product_catalog_feed_file_path', $use_feed_path );
+		add_filter( 'wc_facebook_product_catalog_temp_feed_file_path', $use_temp_path );
+
+		$sync_meta_key = \WooCommerce\Facebook\Products::get_product_sync_meta_key();
+		$fixtures      = [];
+		$rows          = [];
+
+		try {
+			$this->assertTrue( $model->is_translated_post_type( 'product_variation' ), 'Polylang translates variations for this test.' );
+
+			// A variable product in the default language and one in no language, each with its variations.
+			foreach ( [ 'variable product in English' => 'en', 'variable product in no language' => '' ] as $label => $language ) {
+				$parent        = $this->create_variable_product();
+				$variation_ids = array_map( 'intval', $parent->get_children() );
+				$this->assertNotEmpty( $variation_ids );
+
+				foreach ( array_merge( [ $parent->get_id() ], $variation_ids ) as $post_id ) {
+					if ( $language ) {
+						pll_set_post_language( $post_id, $language );
+					} else {
+						wp_delete_object_term_relationships( $post_id, 'language' );
+					}
+				}
+
+				// A first sync in a request that has not loaded the product: nothing saved, nothing cached.
+				delete_post_meta( $parent->get_id(), $sync_meta_key );
+				delete_post_meta( $parent->get_id(), \WooCommerce\Facebook\Products::VISIBILITY_META_KEY );
+				delete_transient( 'wc_product_children_' . $parent->get_id() );
+
+				$fixtures[ $label ] = [
+					'parent_id'     => $parent->get_id(),
+					'variation_ids' => $variation_ids,
+				];
+			}
+
+			add_action( 'parse_query', $narrow_to_spanish );
+
+			$written = ( new \WC_Facebook_Product_Feed() )->write_product_feed_file( \WC_Facebookcommerce_Utils::get_all_product_ids_for_sync() );
+			$this->assertTrue( $written, 'The feed file is written.' );
+
+			$handle = fopen( $feed_path, 'r' );
+			$header = array_map( 'trim', fgetcsv( $handle, 0, ',', '"', '\\' ) );
+			while ( false !== ( $row = fgetcsv( $handle, 0, ',', '"', '\\' ) ) ) {
+				if ( count( $row ) === count( $header ) ) {
+					$row                = array_combine( $header, $row );
+					$rows[ $row['id'] ] = $row;
+				}
+			}
+			fclose( $handle );
+		} finally {
+			remove_action( 'parse_query', $narrow_to_spanish );
+			remove_filter( 'pll_get_post_types', $translate_products );
+			remove_filter( 'wc_facebook_product_catalog_feed_file_path', $use_feed_path );
+			remove_filter( 'wc_facebook_product_catalog_temp_feed_file_path', $use_temp_path );
+			$model->cache->clean( 'post_types' );
+
+			foreach ( [ $feed_path, $temp_path ] as $file ) {
+				if ( file_exists( $file ) ) {
+					unlink( $file );
+				}
+			}
+		}
+
+		foreach ( $fixtures as $label => $fixture ) {
+			foreach ( $fixture['variation_ids'] as $variation_id ) {
+				$retailer_id = \WC_Facebookcommerce_Utils::get_fb_retailer_id( wc_get_product( $variation_id ) );
+
+				$this->assertArrayHasKey( $retailer_id, $rows, "Variation {$variation_id} of the {$label} is in the feed." );
+				$this->assertSame( \WC_Facebookcommerce_Integration::FB_SHOP_PRODUCT_VISIBLE, $rows[ $retailer_id ]['visibility'], "Variation {$variation_id} of the {$label} is visible." );
+			}
+
+			$this->assertSame( 'yes', get_post_meta( $fixture['parent_id'], $sync_meta_key, true ), "The {$label} is saved as synced." );
+			$this->assertSame( 'yes', get_post_meta( $fixture['parent_id'], \WooCommerce\Facebook\Products::VISIBILITY_META_KEY, true ), "The {$label} is saved as visible." );
+		}
+	}
+
+	/**
 	 * Get the expected plugin from command line arguments or environment variables
 	 */
 	private static function getExpectedPlugin(): ?string {

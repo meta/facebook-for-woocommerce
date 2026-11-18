@@ -735,6 +735,47 @@ if ( ! class_exists( 'WC_Facebookcommerce_Utils' ) ) :
 			return array_diff( $product_ids, array_keys( $parent_product_ids ) );
 		}
 
+		/**
+		 * Gets the IDs of a variable product's variations in every language.
+		 *
+		 * WC_Product::get_children() reads a query that carries no 'lang'. Where variations are
+		 * translated (Polylang for WooCommerce), Polylang narrows it to the request's language
+		 * whenever WooCommerce's children cache is empty, so variations in another language, or in
+		 * none, went missing: a sync or visibility check then saw a parent without variations, and
+		 * a reset left them out. An empty 'lang' is Polylang's documented way to lift its filter,
+		 * and core ignores the argument.
+		 *
+		 * @since 3.7.9
+		 *
+		 * @param int             $parent_id   The variable product ID.
+		 * @param string|string[] $post_status The variation statuses; by default the ones get_children() returns.
+		 * @return int[] The variation IDs, in menu order.
+		 */
+		public static function get_variation_ids_in_every_language( $parent_id, $post_status = array( 'publish', 'private' ) ) {
+			$parent_id = (int) $parent_id;
+
+			if ( $parent_id <= 0 ) {
+				return array();
+			}
+
+			$variation_ids = get_posts(
+				array(
+					'post_type'      => 'product_variation',
+					'post_parent'    => $parent_id,
+					'post_status'    => $post_status,
+					'posts_per_page' => -1,
+					'fields'         => 'ids',
+					'orderby'        => array(
+						'menu_order' => 'ASC',
+						'ID'         => 'ASC',
+					),
+					'lang'           => '',
+				)
+			);
+
+			return array_map( 'intval', $variation_ids );
+		}
+
 
 		/**
 		 * Change variant product field name from Woo taxonomy to FB name.

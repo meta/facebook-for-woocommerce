@@ -50,6 +50,15 @@ class PolylangFullCatalogQueriesTest extends AbstractWPUnitTestWithOptionIsolati
 	/** @var int[] The variations of the variable product, which have no language either. */
 	private $language_less_variation_ids;
 
+	/** @var \WC_Product_Variable A variable product in a language other than the request's. */
+	private $other_language_variable_product;
+
+	/** @var int[] The variations of that product, in the same other language. */
+	private $other_language_variation_ids;
+
+	/** @var string[] Feed files written by a test. */
+	private $feed_files = array();
+
 	public function setUp(): void {
 		parent::setUp();
 
@@ -78,6 +87,15 @@ class PolylangFullCatalogQueriesTest extends AbstractWPUnitTestWithOptionIsolati
 
 		wp_set_object_terms( $this->english_product->get_id(), array( (int) $term['term_id'] ), 'language' );
 
+		// A variable product and its variations in another language, as a translation would be.
+		$other_term                            = wp_insert_term( 'Serbian', 'language', array( 'slug' => 'sr-test' ) );
+		$this->other_language_variable_product = \WC_Helper_Product::create_variation_product();
+		$this->other_language_variation_ids    = array_map( 'intval', $this->other_language_variable_product->get_children() );
+
+		foreach ( array_merge( array( $this->other_language_variable_product->get_id() ), $this->other_language_variation_ids ) as $post_id ) {
+			wp_set_object_terms( $post_id, array( (int) $other_term['term_id'] ), 'language' );
+		}
+
 		$tt_id                 = $this->language_tt_id;
 		$this->language_filter = static function ( $query ) use ( $tt_id ) {
 			$query_vars = &$query->query_vars;
@@ -104,6 +122,12 @@ class PolylangFullCatalogQueriesTest extends AbstractWPUnitTestWithOptionIsolati
 
 	public function tearDown(): void {
 		remove_action( 'parse_query', $this->language_filter, 6 );
+
+		foreach ( $this->feed_files as $feed_file ) {
+			if ( file_exists( $feed_file ) ) {
+				unlink( $feed_file );
+			}
+		}
 
 		if ( $this->registered_language_taxonomy ) {
 			unregister_taxonomy( 'language' );
@@ -157,6 +181,90 @@ class PolylangFullCatalogQueriesTest extends AbstractWPUnitTestWithOptionIsolati
 		}
 
 		$this->assertNotContains( $this->language_less_variable_product->get_id(), $product_ids, 'Variable parents are not product items.' );
+	}
+
+	/**
+	 * A variation outside the request's language passes the sync check when its parent has no saved sync setting.
+	 *
+	 * The check then looks for a sync-enabled variation of the parent. WooCommerce's children
+	 * query is narrowed when its children cache is empty, so the check found none, saved the
+	 * parent's setting as 'no' and rejected the variation with "Sync disabled in product field".
+	 */
+	public function test_sync_validator_accepts_variations_outside_the_request_language() {
+		$sync_meta_key = Products::get_product_sync_meta_key();
+
+		foreach ( $this->get_variable_products_outside_the_request_language() as $label => $fixture ) {
+			$parent_id = $fixture['parent']->get_id();
+			$this->forget_parent_settings_and_children( $parent_id );
+
+			$variation = wc_get_product( $fixture['variation_ids'][0] );
+			$validator = facebook_for_woocommerce()->get_product_sync_validator( $variation );
+			$method    = new \ReflectionMethod( $validator, 'validate_product_sync_field' );
+			$method->setAccessible( true );
+
+			try {
+				$method->invoke( $validator );
+				$rejection = '';
+			} catch ( \Exception $exception ) {
+				$rejection = $exception->getMessage();
+			}
+
+			$this->assertSame( '', $rejection, "The variation of the {$label} passes the sync check." );
+			$this->assertSame( 'yes', get_post_meta( $parent_id, $sync_meta_key, true ), "The {$label} is saved as synced." );
+		}
+	}
+
+	/**
+	 * A variable product passes the sync check when its variations are outside the request's language.
+	 */
+	public function test_sync_validator_accepts_variable_products_outside_the_request_language() {
+		foreach ( $this->get_variable_products_outside_the_request_language() as $label => $fixture ) {
+			$this->forget_parent_settings_and_children( $fixture['parent']->get_id() );
+
+			$validator = facebook_for_woocommerce()->get_product_sync_validator( wc_get_product( $fixture['parent']->get_id() ) );
+			$method    = new \ReflectionMethod( $validator, 'validate_product_sync_field' );
+			$method->setAccessible( true );
+
+			try {
+				$method->invoke( $validator );
+				$rejection = '';
+			} catch ( \Exception $exception ) {
+				$rejection = $exception->getMessage();
+			}
+
+			$this->assertSame( '', $rejection, "The {$label} passes the sync check." );
+		}
+	}
+
+	/**
+	 * The feed file written from the full sync IDs has a visible row for every variation, whatever the request's language.
+	 *
+	 * Covers the sync check above and the row's visibility, which falls back to the parent's
+	 * variations in the same way when the parent has no saved visibility.
+	 */
+	public function test_full_sync_feed_has_visible_rows_for_variations_outside_the_request_language() {
+		$fixtures = $this->get_variable_products_outside_the_request_language();
+		foreach ( $fixtures as $fixture ) {
+			$this->forget_parent_settings_and_children( $fixture['parent']->get_id() );
+		}
+
+		$rows = $this->write_feed_and_read_rows( \WC_Facebookcommerce_Utils::get_all_product_ids_for_sync() );
+
+		$this->assertArrayHasKey( (string) $this->english_product->get_id(), $rows, 'A product in the request language is in the feed.' );
+
+		foreach ( $fixtures as $label => $fixture ) {
+			$parent_id = $fixture['parent']->get_id();
+
+			foreach ( $fixture['variation_ids'] as $variation_id ) {
+				$retailer_id = \WC_Facebookcommerce_Utils::get_fb_retailer_id( wc_get_product( $variation_id ) );
+
+				$this->assertArrayHasKey( $retailer_id, $rows, "Variation {$variation_id} of the {$label} is in the feed." );
+				$this->assertSame( \WC_Facebookcommerce_Integration::FB_SHOP_PRODUCT_VISIBLE, $rows[ $retailer_id ]['visibility'], "Variation {$variation_id} of the {$label} is visible." );
+			}
+
+			$this->assertSame( 'yes', get_post_meta( $parent_id, Products::get_product_sync_meta_key(), true ), "The {$label} is saved as synced." );
+			$this->assertSame( 'yes', get_post_meta( $parent_id, Products::VISIBILITY_META_KEY, true ), "The {$label} is saved as visible." );
+		}
 	}
 
 	/**
@@ -261,6 +369,88 @@ class PolylangFullCatalogQueriesTest extends AbstractWPUnitTestWithOptionIsolati
 			$this->assertSame( '', get_post_meta( $post_id, \WC_Facebookcommerce_Integration::FB_PRODUCT_ITEM_ID, true ), "Item ID of post {$post_id} is cleared." );
 			$this->assertSame( '', get_post_meta( $post_id, Products::VISIBILITY_META_KEY, true ), "Visibility of post {$post_id} is cleared." );
 		}
+	}
+
+	/**
+	 * Gets the variable products a narrowed query does not see, with their variations.
+	 *
+	 * @return array<string, array{parent: \WC_Product_Variable, variation_ids: int[]}>
+	 */
+	private function get_variable_products_outside_the_request_language() {
+		$this->assertNotEmpty( $this->other_language_variation_ids );
+		$this->assertNotEmpty( $this->language_less_variation_ids );
+
+		return array(
+			'variable product in another language' => array(
+				'parent'        => $this->other_language_variable_product,
+				'variation_ids' => $this->other_language_variation_ids,
+			),
+			'variable product in no language'      => array(
+				'parent'        => $this->language_less_variable_product,
+				'variation_ids' => $this->language_less_variation_ids,
+			),
+		);
+	}
+
+	/**
+	 * Puts a variable product in the state of a first sync in a request that has not loaded it:
+	 * no saved sync or visibility setting, and an empty WooCommerce children cache.
+	 *
+	 * @param int $parent_id The variable product ID.
+	 */
+	private function forget_parent_settings_and_children( int $parent_id ) {
+		delete_post_meta( $parent_id, Products::SYNC_ENABLED_META_KEY );
+		delete_post_meta( $parent_id, Products::OPTEN_IN_SYNC_ENABLED_META_KEY );
+		delete_post_meta( $parent_id, Products::VISIBILITY_META_KEY );
+		delete_transient( 'wc_product_children_' . $parent_id );
+	}
+
+	/**
+	 * Writes the product feed file for the given IDs and reads it back.
+	 *
+	 * @param int[] $product_ids The product IDs to write.
+	 * @return array<string, array<string, string>> The feed rows as column => value, keyed by the row's ID.
+	 */
+	private function write_feed_and_read_rows( array $product_ids ) {
+		$feed_path = get_temp_dir() . uniqid( 'fb-polylang-feed-', true ) . '.csv';
+		$temp_path = $feed_path . '.tmp';
+
+		$this->feed_files[] = $feed_path;
+		$this->feed_files[] = $temp_path;
+
+		$use_feed_path = static function () use ( $feed_path ) {
+			return $feed_path;
+		};
+		$use_temp_path = static function () use ( $temp_path ) {
+			return $temp_path;
+		};
+
+		add_filter( 'wc_facebook_product_catalog_feed_file_path', $use_feed_path );
+		add_filter( 'wc_facebook_product_catalog_temp_feed_file_path', $use_temp_path );
+
+		try {
+			$written = ( new \WC_Facebook_Product_Feed() )->write_product_feed_file( $product_ids );
+		} finally {
+			remove_filter( 'wc_facebook_product_catalog_feed_file_path', $use_feed_path );
+			remove_filter( 'wc_facebook_product_catalog_temp_feed_file_path', $use_temp_path );
+		}
+
+		$this->assertTrue( $written, 'The feed file is written.' );
+
+		$handle = fopen( $feed_path, 'r' );
+		$header = array_map( 'trim', fgetcsv( $handle, 0, ',', '"', '\\' ) );
+		$rows   = array();
+
+		while ( false !== ( $row = fgetcsv( $handle, 0, ',', '"', '\\' ) ) ) {
+			if ( count( $row ) === count( $header ) ) {
+				$row                = array_combine( $header, $row );
+				$rows[ $row['id'] ] = $row;
+			}
+		}
+
+		fclose( $handle );
+
+		return $rows;
 	}
 
 	/**

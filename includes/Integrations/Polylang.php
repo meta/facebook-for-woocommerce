@@ -141,6 +141,23 @@ class Polylang extends Abstract_Localization_Integration {
 	}
 
 	/**
+	 * Get the Polylang slug of the default language
+	 *
+	 * @since 3.7.9
+	 *
+	 * @return string|null Polylang language slug (e.g., 'en', 'br') or null if not set
+	 */
+	public function get_default_language_identifier(): ?string {
+		if ( ! $this->is_plugin_active() ) {
+			return null;
+		}
+
+		$default_slug = pll_default_language();
+
+		return is_string( $default_slug ) && '' !== $default_slug ? $default_slug : null;
+	}
+
+	/**
 	 * Get the language code for a specific product
 	 *
 	 * @param int $product_id Product ID

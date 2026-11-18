@@ -124,6 +124,23 @@ class WPML extends Abstract_Localization_Integration {
 	}
 
 	/**
+	 * Get the WPML language code of the default language
+	 *
+	 * @since 3.7.9
+	 *
+	 * @return string|null WPML language code (e.g., 'en', 'pt-br') or null if not set
+	 */
+	public function get_default_language_identifier(): ?string {
+		if ( ! $this->is_plugin_active() ) {
+			return null;
+		}
+
+		$default_code = apply_filters( 'wpml_default_language', null );
+
+		return is_string( $default_code ) && '' !== $default_code ? $default_code : null;
+	}
+
+	/**
 	 * Get the language code for a specific product
 	 *
 	 * @param int $product_id Product ID

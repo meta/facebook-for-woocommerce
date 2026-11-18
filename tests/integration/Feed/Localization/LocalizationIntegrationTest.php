@@ -472,6 +472,96 @@ class LocalizationIntegrationTest extends IntegrationTestCase {
 	}
 
 	/**
+	 * A product class that narrows WooCommerce's own children still sees them in every language on a Polylang store.
+	 *
+	 * The class keeps the first variation of parent::get_children(). In a Spanish request with an
+	 * empty children cache that lookup found nothing for an English product, so its sync-enabled
+	 * variation was rejected and the parent was saved as not synced, which later syncs kept to.
+	 */
+	public function test_polylang_sync_check_accepts_the_variation_a_product_class_keeps_outside_the_request_language() {
+		if ( ! function_exists( 'PLL' ) || ! function_exists( 'pll_set_post_language' ) || ! class_exists( '\PLL_Query' ) ) {
+			$this->markTestSkipped( 'Polylang is not active for this test run' );
+		}
+
+		$model   = PLL()->model;
+		$spanish = $model->get_language( 'es' );
+		if ( ! $spanish || ! $model->get_language( 'en' ) ) {
+			$this->markTestSkipped( 'Polylang has no English and Spanish languages in this test run' );
+		}
+
+		// Products and variations are translated post types, as with Polylang for WooCommerce.
+		$translate_products = static function ( $post_types ) {
+			$post_types['product']           = 'product';
+			$post_types['product_variation'] = 'product_variation';
+			return $post_types;
+		};
+		add_filter( 'pll_get_post_types', $translate_products );
+		$model->cache->clean( 'post_types' );
+		$attached_to_variations = $this->attach_language_taxonomy_to_variations();
+
+		// Narrow queries to Spanish the way PLL_Admin_Filters_Post and PLL_Frontend do.
+		$narrow_to_spanish = static function ( $query ) use ( $model, $spanish ) {
+			$pll_query = new \PLL_Query( $query, $model );
+			$pll_query->filter_query( $spanish );
+		};
+
+		$sync_meta_key = \WooCommerce\Facebook\Products::get_product_sync_meta_key();
+		$parent_id     = 0;
+		$use_class     = static function ( $class_name, $product_type, $post_type, $product_id ) use ( &$parent_id ) {
+			return (int) $product_id === $parent_id ? Variable_Product_Keeping_Its_First_Child::class : $class_name;
+		};
+
+		try {
+			$parent        = $this->create_variable_product();
+			$parent_id     = $parent->get_id();
+			$variation_ids = array_map( 'intval', $parent->get_children() );
+			$this->assertGreaterThan( 1, count( $variation_ids ) );
+
+			foreach ( array_merge( [ $parent_id ], $variation_ids ) as $post_id ) {
+				pll_set_post_language( $post_id, 'en' );
+			}
+
+			// The other variations have sync disabled, so the outcome depends on the one the class keeps.
+			foreach ( array_slice( $variation_ids, 1 ) as $sibling_id ) {
+				update_post_meta( $sibling_id, $sync_meta_key, 'no' );
+			}
+
+			// A first sync in a request that has not loaded the product: nothing saved, nothing cached.
+			delete_post_meta( $parent_id, $sync_meta_key );
+			delete_transient( 'wc_product_children_' . $parent_id );
+
+			add_filter( 'woocommerce_product_class', $use_class, 10, 4 );
+			add_action( 'parse_query', $narrow_to_spanish );
+
+			$this->assertInstanceOf( Variable_Product_Keeping_Its_First_Child::class, wc_get_product( $parent_id ) );
+
+			$validator = facebook_for_woocommerce()->get_product_sync_validator( wc_get_product( $variation_ids[0] ) );
+			$method    = new \ReflectionMethod( $validator, 'validate_product_sync_field' );
+			$method->setAccessible( true );
+
+			try {
+				$method->invoke( $validator );
+				$rejection = '';
+			} catch ( \Exception $exception ) {
+				$rejection = $exception->getMessage();
+			}
+
+			$parent_sync    = get_post_meta( $parent_id, $sync_meta_key, true );
+			$children_cache = get_transient( 'wc_product_children_' . $parent_id );
+		} finally {
+			remove_action( 'parse_query', $narrow_to_spanish );
+			remove_filter( 'woocommerce_product_class', $use_class, 10 );
+			remove_filter( 'pll_get_post_types', $translate_products );
+			$this->detach_language_taxonomy_from_variations( $attached_to_variations );
+			$model->cache->clean( 'post_types' );
+		}
+
+		$this->assertSame( '', $rejection, 'The variation the class keeps passes the sync check.' );
+		$this->assertSame( 'yes', $parent_sync, 'The parent is saved as synced.' );
+		$this->assertFalse( $children_cache, 'The children cache storefront requests use is left empty.' );
+	}
+
+	/**
 	 * Attaches Polylang's language taxonomy to variations, as Polylang does at startup on a store
 	 * where variations are translated. The pll_get_post_types filter is added too late for that here.
 	 *
@@ -630,4 +720,14 @@ class LocalizationIntegrationTest extends IntegrationTestCase {
 		}
 	}
 
+}
+
+/**
+ * A variable product whose class narrows the children WooCommerce reads for it.
+ */
+class Variable_Product_Keeping_Its_First_Child extends \WC_Product_Variable {
+
+	public function get_children( $visible_only = '' ) {
+		return array_slice( parent::get_children( $visible_only ), 0, 1 );
+	}
 }

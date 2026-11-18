@@ -341,6 +341,98 @@ class PolylangFullCatalogQueriesTest extends AbstractWPUnitTestWithOptionIsolati
 	}
 
 	/**
+	 * A product class that narrows WooCommerce's own children still sees them in every language.
+	 *
+	 * Such a class calls parent::get_children(), so the language restriction has to be lifted on
+	 * the lookup underneath it: with a narrowed lookup it had nothing to choose from, the
+	 * variation it keeps was rejected and the parent was saved as not synced.
+	 */
+	public function test_sync_validator_accepts_the_variation_a_product_class_keeps_outside_the_request_language() {
+		$sync_meta_key = Products::get_product_sync_meta_key();
+		$fixtures      = $this->get_variable_products_outside_the_request_language();
+		$parent_ids    = array();
+
+		foreach ( $fixtures as $fixture ) {
+			$parent_ids[] = $fixture['parent']->get_id();
+		}
+
+		$this->add_filter_with_safe_teardown(
+			'woocommerce_product_class',
+			static function ( $class_name, $product_type, $post_type, $product_id ) use ( $parent_ids ) {
+				return in_array( (int) $product_id, $parent_ids, true ) ? Variable_Product_Keeping_Its_First_Child::class : $class_name;
+			},
+			10,
+			4
+		);
+
+		foreach ( $fixtures as $label => $fixture ) {
+			$parent_id = $fixture['parent']->get_id();
+			$kept_id   = $fixture['variation_ids'][0];
+
+			$this->forget_parent_settings_and_children( $parent_id );
+			$this->assertInstanceOf( Variable_Product_Keeping_Its_First_Child::class, wc_get_product( $parent_id ) );
+
+			// The other variations have sync disabled, so the outcome depends on the one the class keeps.
+			foreach ( array_slice( $fixture['variation_ids'], 1 ) as $sibling_id ) {
+				update_post_meta( $sibling_id, $sync_meta_key, 'no' );
+			}
+
+			$this->assertSame( array( $kept_id ), \WC_Facebookcommerce_Utils::get_children_in_every_language( wc_get_product( $parent_id ) ), "The class keeps the first variation of the {$label}." );
+
+			$this->forget_parent_settings_and_children( $parent_id );
+
+			$validator = facebook_for_woocommerce()->get_product_sync_validator( wc_get_product( $kept_id ) );
+			$method    = new \ReflectionMethod( $validator, 'validate_product_sync_field' );
+			$method->setAccessible( true );
+
+			try {
+				$method->invoke( $validator );
+				$rejection = '';
+			} catch ( \Exception $exception ) {
+				$rejection = $exception->getMessage();
+			}
+
+			$this->assertSame( '', $rejection, "The variation kept for the {$label} passes the sync check." );
+			$this->assertSame( 'yes', get_post_meta( $parent_id, $sync_meta_key, true ), "The {$label} is saved as synced." );
+		}
+	}
+
+	/**
+	 * The children lookup neither reads nor writes the children cache storefront requests use,
+	 * and leaves the product object it was given as it was.
+	 */
+	public function test_children_lookup_leaves_the_storefront_children_cache_alone() {
+		$parent_id = $this->language_less_variable_product->get_id();
+		$transient = 'wc_product_children_' . $parent_id;
+
+		// An empty cache stays empty.
+		delete_transient( $transient );
+		$this->assertSame( $this->language_less_variation_ids, \WC_Facebookcommerce_Utils::get_children_in_every_language( wc_get_product( $parent_id ) ) );
+		$this->assertFalse( get_transient( $transient ), 'The lookup does not fill an empty children cache.' );
+
+		// A filled cache is neither used nor replaced. Fill it as a request in every language would, then take a variation out.
+		remove_action( 'parse_query', $this->language_filter, 6 );
+		wc_get_product( $parent_id )->get_children();
+		add_action( 'parse_query', $this->language_filter, 6 );
+
+		$cached = get_transient( $transient );
+		$this->assertIsArray( $cached );
+		$this->assertGreaterThan( 1, count( $cached['all'] ) );
+
+		array_pop( $cached['all'] );
+		$cached['visible'] = $cached['all'];
+		set_transient( $transient, $cached, DAY_IN_SECONDS );
+
+		$parent          = wc_get_product( $parent_id );
+		$cached_children = array_map( 'intval', $cached['all'] );
+		$this->assertSame( $cached_children, $parent->get_children(), 'WooCommerce reads the children from its cache.' );
+
+		$this->assertSame( $this->language_less_variation_ids, \WC_Facebookcommerce_Utils::get_children_in_every_language( $parent ) );
+		$this->assertSame( $cached, get_transient( $transient ), 'The lookup does not replace the children cache.' );
+		$this->assertSame( $cached_children, $parent->get_children(), 'The product object keeps the children it had loaded.' );
+	}
+
+	/**
 	 * The ways a store can narrow a variable product's variations in WooCommerce.
 	 *
 	 * @return array<string, array{0: string}>
@@ -728,5 +820,15 @@ class Variable_Product_With_Its_Own_Children extends \WC_Product_Variable {
 
 	public function get_children( $visible_only = '' ) {
 		return self::$own_children;
+	}
+}
+
+/**
+ * A variable product whose class narrows the children WooCommerce reads for it.
+ */
+class Variable_Product_Keeping_Its_First_Child extends \WC_Product_Variable {
+
+	public function get_children( $visible_only = '' ) {
+		return array_slice( parent::get_children( $visible_only ), 0, 1 );
 	}
 }

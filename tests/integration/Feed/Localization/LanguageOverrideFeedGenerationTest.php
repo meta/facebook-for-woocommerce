@@ -406,9 +406,8 @@ class LanguageOverrideFeedGenerationTest extends IntegrationTestCase {
 	 * for each individual test, preventing test suite cleanup from interfering.
 	 */
 	private function ensurePolylangSetup(): void {
-		// Only run for Polylang tests
-		$test_plugin = getenv( 'FB_TEST_PLUGIN' );
-		if ( $test_plugin !== 'polylang' ) {
+		// Only run for Polylang tests. Polylang may be one of several requested plugins.
+		if ( ! \Automattic\WooCommerce\GoogleListingsAndAds\Tests\fb_test_plugin_requested( 'polylang' ) ) {
 			return;
 		}
 

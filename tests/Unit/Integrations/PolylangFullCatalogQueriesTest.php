@@ -249,7 +249,8 @@ class PolylangFullCatalogQueriesTest extends AbstractWPUnitTestWithOptionIsolati
 	 * The sync check still honors WooCommerce's own choice of children once the language restriction is lifted.
 	 *
 	 * A store can narrow a variable product's variations with woocommerce_variable_children_args
-	 * or woocommerce_get_children, or with a product data store that reads them its own way.
+	 * or woocommerce_get_children, with a product data store that reads them its own way, or with
+	 * a product class that returns its own.
 	 * When the only variation those leave has sync disabled, the parent is not synced: a sibling
 	 * the store left out must not enable it.
 	 *
@@ -349,6 +350,7 @@ class PolylangFullCatalogQueriesTest extends AbstractWPUnitTestWithOptionIsolati
 			'the children query arguments' => array( 'woocommerce_variable_children_args' ),
 			'the children list'            => array( 'woocommerce_get_children' ),
 			'a custom product data store'  => array( 'woocommerce_data_stores' ),
+			'a custom product class'       => array( 'woocommerce_product_class' ),
 		);
 	}
 
@@ -557,8 +559,9 @@ class PolylangFullCatalogQueriesTest extends AbstractWPUnitTestWithOptionIsolati
 	/**
 	 * Narrows the language-less variable product to its first variation through a WooCommerce child filter.
 	 *
-	 * @param string $hook woocommerce_variable_children_args, woocommerce_get_children, or woocommerce_data_stores
-	 *                     for a product data store with its own read_children().
+	 * @param string $hook woocommerce_variable_children_args, woocommerce_get_children, woocommerce_data_stores
+	 *                     for a product data store with its own read_children(), or woocommerce_product_class
+	 *                     for a product class with its own get_children().
 	 * @return int The ID of the variation that is kept.
 	 */
 	private function keep_only_first_variation_with( string $hook ) {
@@ -568,7 +571,18 @@ class PolylangFullCatalogQueriesTest extends AbstractWPUnitTestWithOptionIsolati
 		$kept_id   = $this->language_less_variation_ids[0];
 		$excluded  = array_slice( $this->language_less_variation_ids, 1 );
 
-		if ( 'woocommerce_data_stores' === $hook ) {
+		if ( 'woocommerce_product_class' === $hook ) {
+			Variable_Product_With_Its_Own_Children::$own_children = array( $kept_id );
+
+			$this->add_filter_with_safe_teardown(
+				$hook,
+				static function ( $class_name, $product_type, $post_type, $product_id ) use ( $parent_id ) {
+					return (int) $product_id === $parent_id ? Variable_Product_With_Its_Own_Children::class : $class_name;
+				},
+				10,
+				4
+			);
+		} elseif ( 'woocommerce_data_stores' === $hook ) {
 			$data_store = new class() extends \WC_Product_Variable_Data_Store_CPT {
 				/** @var int[] */
 				public $children = array();
@@ -701,5 +715,18 @@ class PolylangFullCatalogQueriesTest extends AbstractWPUnitTestWithOptionIsolati
 				return $items;
 			}
 		};
+	}
+}
+
+/**
+ * A variable product whose class decides what its children are, on the standard data store.
+ */
+class Variable_Product_With_Its_Own_Children extends \WC_Product_Variable {
+
+	/** @var int[] The children every instance returns. */
+	public static $own_children = array();
+
+	public function get_children( $visible_only = '' ) {
+		return self::$own_children;
 	}
 }

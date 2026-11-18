@@ -746,7 +746,8 @@ if ( ! class_exists( 'WC_Facebookcommerce_Utils' ) ) :
 		 * argument.
 		 *
 		 * Everywhere else this is get_children() itself: on a store where Polylang does not
-		 * translate variations, and for a product whose data store reads its children its own way.
+		 * translate variations, and for a product whose class or data store reads its children its
+		 * own way.
 		 * Where the language restriction is lifted, only that changes. The statuses, the order and
 		 * both of WooCommerce's child filters are the ones get_children() applies, so a store that
 		 * narrows a product's variations with them gets the same variations here.
@@ -797,9 +798,9 @@ if ( ! class_exists( 'WC_Facebookcommerce_Utils' ) ) :
 		 * Whether Polylang can narrow the query WooCommerce reads a product's children with.
 		 *
 		 * That takes Polylang translating product variations, which is when it attaches its
-		 * 'language' taxonomy to them, and the product's data store reading its children with
-		 * WooCommerce's standard lookup: a data store with its own read_children() decides what
-		 * the children are, and is not second-guessed.
+		 * 'language' taxonomy to them, and the product reading its children with WooCommerce's
+		 * standard lookup. A product class with its own get_children(), or a data store with its
+		 * own read_children(), decides what the children are, and is not second-guessed.
 		 *
 		 * @since 3.7.9
 		 *
@@ -808,6 +809,12 @@ if ( ! class_exists( 'WC_Facebookcommerce_Utils' ) ) :
 		 */
 		private static function can_polylang_narrow_children_query( \WC_Product $product ) {
 			if ( ! taxonomy_exists( 'language' ) || ! is_object_in_taxonomy( 'product_variation', 'language' ) ) {
+				return false;
+			}
+
+			$get_children = new \ReflectionMethod( $product, 'get_children' );
+
+			if ( 'WC_Product_Variable' !== $get_children->getDeclaringClass()->getName() ) {
 				return false;
 			}
 

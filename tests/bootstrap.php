@@ -171,9 +171,8 @@ function fb_test_plugin_requested( string $slug ): bool {
  * Setup Polylang configuration for integration tests
  */
 function setup_polylang_for_tests() {
-	// Only setup if we're running localization tests
-	$test_plugin = getenv( 'FB_TEST_PLUGIN' );
-	if ( $test_plugin !== 'polylang' ) {
+	// Only setup if we're running localization tests. Polylang may be one of several requested plugins.
+	if ( ! fb_test_plugin_requested( 'polylang' ) ) {
 		return;  // Skip Polylang setup if not explicitly requested
 	}
 

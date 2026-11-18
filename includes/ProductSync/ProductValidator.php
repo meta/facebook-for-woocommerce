@@ -390,7 +390,14 @@ class ProductValidator {
 			return;
 		}
 
-		$default_language = $integration->get_default_language();
+		/*
+		 * The default language as the localization plugin identifies it, which is what a
+		 * product's language is expressed in. Deriving it from the default locale does not
+		 * work: WPML's code for pt_BR is 'pt-br' and for nb_NO it is 'no', so every product
+		 * of a store with such a default language was excluded, and cutting both values down
+		 * to their first two letters would let a pt-pt translation pass for a pt-br original.
+		 */
+		$default_language = $integration->get_default_language_identifier();
 
 		// If we can't determine the default language, skip validation to avoid blocking sync
 		if ( ! $default_language ) {
@@ -405,36 +412,19 @@ class ProductValidator {
 			return;
 		}
 
-		// Compare product language with default language
-		// Use Locale utility to extract language code for consistent comparison
-		$default_lang_code = $this->extract_language_code( $default_language );
-		$product_lang_code = $this->extract_language_code( $product_language );
+		if ( strtolower( $product_language ) !== strtolower( $default_language ) ) {
+			$default_language_locale = $integration->get_default_language();
 
-		if ( $product_lang_code !== $default_lang_code ) {
 			throw new ProductExcludedException(
 				esc_html(
 					sprintf(
 						/* translators: 1: product language, 2: default language */
 						__( 'Product is in language "%1$s" but only default language "%2$s" products are synced to the main catalog.', 'facebook-for-woocommerce' ),
 						$product_language,
-						$default_language
+						$default_language_locale ? $default_language_locale : $default_language
 					)
 				)
 			);
 		}
-	}
-
-	/**
-	 * Extract language code from locale string.
-	 *
-	 * Converts locale format (en_US) to language code (en) for consistent comparison.
-	 * This uses the same logic as Locale::convert_to_facebook_language_code().
-	 *
-	 * @param string $locale_or_language Locale string or language code.
-	 * @return string Language code (lowercase).
-	 */
-	private function extract_language_code( string $locale_or_language ): string {
-		$parts = explode( '_', $locale_or_language );
-		return strtolower( $parts[0] );
 	}
 }

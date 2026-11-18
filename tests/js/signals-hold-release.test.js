@@ -496,4 +496,76 @@ describe('Signals hold/release browser runtime', function () {
             expect(window.fbwcsignal.getState()).toBe('held');
         });
     });
+
+    describe('FacebookSignals.queueEvent() on a page from a full-page cache', function () {
+        /**
+         * The event a held render bakes into the HTML. A full-page cache serves the
+         * same HTML, and so the same event_id, on every view of the page.
+         */
+        function cachedPageView() {
+            return {
+                event_name: 'PageView',
+                custom_data: {},
+                event_id: 'cached-page-a',
+                event_time: Math.floor(Date.now() / 1000),
+                method: 'track',
+            };
+        }
+
+        function pageViews() {
+            return fbqCalls('track').filter((call) => call[1] === 'PageView');
+        }
+
+        it('ignores the same event queued twice in one page load', function () {
+            const signals = bootPage('held');
+            signals.queueEvent(cachedPageView());
+            signals.queueEvent(cachedPageView());
+
+            expect(signals._queue).toHaveLength(1);
+        });
+
+        it('fires the PageView when the page is viewed again after signals were released on another page', async function () {
+            // Page A, held: the PageView is queued.
+            bootPage('held').queueEvent(cachedPageView());
+
+            // Page B: the visitor releases signals there.
+            bootPage('held');
+            window.fbwcsignal.release();
+            stateRequests()[0].respond(200, { success: true, data: { state: 'active' } }, {
+                setCookie: `${STATE_COOKIE}=active;path=/`,
+            });
+            await flushPromises();
+            releaseRequests()[0].respond(200, { success: true, data: { sent_count: 0 } });
+            await flushPromises();
+            global.fbq.mockClear();
+
+            // Page A again, same cached HTML.
+            bootPage('active').queueEvent(cachedPageView());
+
+            expect(pageViews()).toEqual([['track', 'PageView', {}, { eventID: 'cached-page-a' }]]);
+        });
+
+        it('queues the PageView again on a second held view and sends it on release', async function () {
+            bootPage('held').queueEvent(cachedPageView());
+
+            const signals = bootPage('held');
+            signals.queueEvent(cachedPageView());
+            expect(signals._queue).toHaveLength(1);
+
+            window.fbwcsignal.release();
+            stateRequests()[0].respond(200, { success: true, data: { state: 'active' } }, {
+                setCookie: `${STATE_COOKIE}=active;path=/`,
+            });
+            await flushPromises();
+
+            const posted = JSON.parse(releaseRequests()[0].body).events;
+            expect(posted.map((event) => event.event_name)).toEqual(['PageView']);
+        });
+
+        it('does not keep queued event ids in sessionStorage', function () {
+            bootPage('held').queueEvent(cachedPageView());
+
+            expect(window.sessionStorage.getItem('wc_facebook_signals_seen_event_ids')).toBeNull();
+        });
+    });
 });

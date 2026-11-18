@@ -470,13 +470,6 @@ window.FacebookSignals = window.FacebookSignals || {
 		if (typeof fbq === 'function') {
 			fbq('consent', this._held ? 'revoke' : 'grant');
 		}
-
-		try {
-			var raw = window.sessionStorage.getItem('wc_facebook_signals_seen_event_ids');
-			this._seenEventIds = raw ? JSON.parse(raw) : {};
-		} catch (e) {
-			this._seenEventIds = this._seenEventIds || {};
-		}
 	},
 
 	initPixel: function(pixelId, userInfo, options) {
@@ -539,15 +532,13 @@ window.FacebookSignals = window.FacebookSignals || {
 		eventData.event_time = eventData.event_time || Math.floor(Date.now() / 1000);
 		this._queue.push(eventData);
 
+		// Remember the id for this page load only, so an inline script that runs twice
+		// does not queue its event twice. The ids are not kept across page loads: a page
+		// served from a full-page cache carries the same event_id on every view, and each
+		// of those views has to queue its own event.
 		var idToMark = originalId || eventData.event_id;
 		if (idToMark) {
 			this._seenEventIds[idToMark] = 1;
-			try {
-				window.sessionStorage.setItem(
-					'wc_facebook_signals_seen_event_ids',
-					JSON.stringify(this._seenEventIds)
-				);
-			} catch (e) {}
 		}
 	},
 
@@ -1194,10 +1185,10 @@ JS;
 	 * synchronous, so there is no window for a double fire. Without an event ID, or when
 	 * sessionStorage is unavailable, the code runs as it did before.
 	 *
-	 * This store is separate from the wc_facebook_signals_seen_event_ids store that
-	 * FacebookSignals keeps for queued events: that one is consulted only while signals
-	 * are held, and FacebookSignals may not be loaded at all. This guard has to work in
-	 * both states and without it, so the two are not meant to be unified.
+	 * This store is separate from the ids FacebookSignals.queueEvent() remembers: those
+	 * last for one page load only, and FacebookSignals may not be loaded at all. This
+	 * guard has to work across page loads and without it, so the two are not meant to be
+	 * unified.
 	 *
 	 * @since 3.7.9
 	 *

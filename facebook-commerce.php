@@ -984,6 +984,8 @@ class WC_Facebookcommerce_Integration extends WC_Integration {
 	 * @internal
 	 */
 	public function schedule_product_sync( int $wp_id ) {
+		$this->save_posted_sync_mode( $wp_id );
+
 		// Store sync data in transient for async processing
 		// phpcs:disable WordPress.Security.NonceVerification.Missing
 		$sync_data = array(
@@ -1009,6 +1011,65 @@ class WC_Facebookcommerce_Integration extends WC_Integration {
 	}
 
 	/**
+	 * Gets the sync mode chosen on the product's Facebook tab.
+	 *
+	 * Virtual products, other than bundles, can't be shown in the catalog, so "Sync and show" is saved
+	 * as "Sync and hide" for them.
+	 *
+	 * @since 3.7.10
+	 *
+	 * @param WC_Product $product the product being saved
+	 * @return string one of the Admin::SYNC_MODE_* values
+	 */
+	private function get_posted_sync_mode( WC_Product $product ): string {
+		// phpcs:disable WordPress.Security.NonceVerification.Missing -- WooCommerce verifies the product form before woocommerce_process_product_meta fires.
+		$sync_mode = isset( $_POST['wc_facebook_sync_mode'] )
+			? sanitize_text_field( wp_unslash( $_POST['wc_facebook_sync_mode'] ) )
+			: Admin::SYNC_MODE_SYNC_DISABLED;
+		// phpcs:enable WordPress.Security.NonceVerification.Missing
+
+		if ( Admin::SYNC_MODE_SYNC_AND_SHOW === $sync_mode && $product->is_virtual() && 'bundle' !== $product->get_type() ) {
+			$sync_mode = Admin::SYNC_MODE_SYNC_AND_HIDE;
+		}
+
+		return $sync_mode;
+	}
+
+	/**
+	 * Saves the sync mode chosen on the product's Facebook tab while the product form is being saved.
+	 *
+	 * The rest of the save runs later from cron (see on_product_save()), and only if cron gets to it
+	 * within the 5 minutes its data is kept. Until then the Facebook tab showed the previous mode after
+	 * Update, and any sync in between, such as one queued by a stock change, sent the previous
+	 * visibility. Where cron runs late or not at all, "Sync and show" never stuck. Saving the mode here
+	 * makes it take effect with the Update.
+	 *
+	 * Only "Sync and show" and "Sync and hide" are saved here, as they only write product meta. Turning
+	 * sync off also deletes the product from the catalog, which stays with the deferred save. Variable
+	 * products are left to it as well: their visibility is set on each variation, which is saved with
+	 * the variation.
+	 *
+	 * @since 3.7.10
+	 *
+	 * @param int $wp_id product ID
+	 */
+	private function save_posted_sync_mode( int $wp_id ) {
+		$product = wc_get_product( $wp_id );
+		// WC_Product_Variable also covers types built on it, such as variable subscriptions.
+		if ( ! $product instanceof WC_Product || $product instanceof WC_Product_Variable ) {
+			return;
+		}
+
+		$sync_mode = $this->get_posted_sync_mode( $product );
+		if ( Admin::SYNC_MODE_SYNC_DISABLED === $sync_mode ) {
+			return;
+		}
+
+		Products::enable_sync_for_products( array( $product ) );
+		Products::set_product_visibility( $product, Admin::SYNC_MODE_SYNC_AND_HIDE !== $sync_mode );
+	}
+
+	/**
 	 * Checks the product type and calls the corresponding on publish method.
 	 *
 	 * @param int $wp_id post ID
@@ -1022,18 +1083,9 @@ class WC_Facebookcommerce_Integration extends WC_Integration {
 		if ( ! $product ) {
 			return;
 		}
-		// phpcs:disable WordPress.Security.NonceVerification.Missing
-		$sync_mode = isset( $_POST['wc_facebook_sync_mode'] )
-			? sanitize_text_field( wp_unslash( $_POST['wc_facebook_sync_mode'] ) )
-			: Admin::SYNC_MODE_SYNC_DISABLED;
 
-		// phpcs:enable WordPress.Security.NonceVerification.Missing
+		$sync_mode    = $this->get_posted_sync_mode( $product );
 		$sync_enabled = Admin::SYNC_MODE_SYNC_DISABLED !== $sync_mode;
-
-		if ( Admin::SYNC_MODE_SYNC_AND_SHOW === $sync_mode && $product->is_virtual() && 'bundle' !== $product->get_type() ) {
-			// force to Sync and hide
-			$sync_mode = Admin::SYNC_MODE_SYNC_AND_HIDE;
-		}
 
 		$products_to_delete_from_facebook = $this->get_removed_from_sync_products_to_delete();
 		if ( $product->is_type( 'variable' ) ) {

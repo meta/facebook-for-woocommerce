@@ -433,6 +433,37 @@ class PolylangFullCatalogQueriesTest extends AbstractWPUnitTestWithOptionIsolati
 	}
 
 	/**
+	 * The translation feed finds the default language's products whichever language the request is in.
+	 *
+	 * The feed starts from those products and looks up their translations. The query carried no
+	 * 'lang', so in a request in another language it found none and the feed had only its header.
+	 * Here the default language is the one the request is not in.
+	 */
+	public function test_default_language_products_are_found_in_another_request_language() {
+		$integration = new class() extends \WooCommerce\Facebook\Integrations\Polylang {
+			public function is_plugin_active(): bool {
+				return true;
+			}
+
+			public function get_default_language(): ?string {
+				return 'sr_RS';
+			}
+
+			protected function get_plugin_language_identifier( string $locale ): ?string {
+				return 'sr-test';
+			}
+
+			protected function is_product_in_language( int $product_id, string $language_identifier ): bool {
+				return has_term( $language_identifier, 'language', $product_id );
+			}
+		};
+
+		$product_ids = array_map( 'intval', $integration->get_products_from_default_language( -1, 0 ) );
+
+		$this->assertSame( array( $this->other_language_variable_product->get_id() ), $product_ids );
+	}
+
+	/**
 	 * The ways a store can narrow a variable product's variations in WooCommerce.
 	 *
 	 * @return array<string, array{0: string}>

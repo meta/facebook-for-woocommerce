@@ -562,6 +562,101 @@ class LocalizationIntegrationTest extends IntegrationTestCase {
 	}
 
 	/**
+	 * A language's translation feed has its rows whichever language the request is in on a Polylang store.
+	 *
+	 * The feed starts from the default language's products and looks up their translations. That
+	 * first query carried no 'lang', so with Spanish selected in the Polylang admin it only saw
+	 * Spanish products, found no English originals and wrote a feed with nothing but the header.
+	 * A variable product's rows come from its variations, read the same way.
+	 */
+	public function test_polylang_translation_feed_has_rows_in_another_request_language() {
+		if ( ! function_exists( 'PLL' ) || ! function_exists( 'pll_set_post_language' ) || ! class_exists( '\PLL_Query' ) ) {
+			$this->markTestSkipped( 'Polylang is not active for this test run' );
+		}
+
+		$integration = IntegrationRegistry::get_active_localization_integration();
+		if ( ! $integration || 'Polylang' !== $integration->get_plugin_name() ) {
+			$this->markTestSkipped( 'Polylang is not the active localization integration in this test run' );
+		}
+
+		$model   = PLL()->model;
+		$spanish = $model->get_language( 'es' );
+		if ( ! $spanish || ! $model->get_language( 'en' ) ) {
+			$this->markTestSkipped( 'Polylang has no English and Spanish languages in this test run' );
+		}
+
+		// Products and variations are translated post types, as with Polylang for WooCommerce.
+		$translate_products = static function ( $post_types ) {
+			$post_types['product']           = 'product';
+			$post_types['product_variation'] = 'product_variation';
+			return $post_types;
+		};
+		add_filter( 'pll_get_post_types', $translate_products );
+		$model->cache->clean( 'post_types' );
+		$attached_to_variations = $this->attach_language_taxonomy_to_variations();
+
+		// Narrow queries to Spanish the way PLL_Admin_Filters_Post and PLL_Frontend do.
+		$narrow_to_spanish = static function ( $query ) use ( $model, $spanish ) {
+			$pll_query = new \PLL_Query( $query, $model );
+			$pll_query->filter_query( $spanish );
+		};
+
+		$translation = [
+			'name'              => 'Producto traducido',
+			'description'       => 'Una descripción traducida.',
+			'short_description' => 'Traducido.',
+		];
+
+		try {
+			$simple_product   = $this->create_simple_product();
+			$variable_product = $this->create_variable_product();
+			$variation_ids    = array_map( 'intval', $variable_product->get_children() );
+			$this->assertNotEmpty( $variation_ids );
+
+			foreach ( array_merge( [ $simple_product->get_id(), $variable_product->get_id() ], $variation_ids ) as $post_id ) {
+				pll_set_post_language( $post_id, 'en' );
+			}
+
+			$this->assertNotNull( $integration->create_product_translation( $simple_product->get_id(), 'es_ES', $translation ) );
+			$this->assertNotNull( $integration->create_product_translation( $variable_product->get_id(), 'es_ES', $translation ) );
+
+			delete_transient( 'wc_product_children_' . $variable_product->get_id() );
+
+			add_action( 'parse_query', $narrow_to_spanish );
+
+			$narrowed = array_map(
+				'intval',
+				get_posts(
+					[
+						'post_type'      => 'product',
+						'post_status'    => 'publish',
+						'fields'         => 'ids',
+						'posts_per_page' => -1,
+					]
+				)
+			);
+			$originals = array_map( 'intval', $integration->get_products_from_default_language( -1, 0 ) );
+			$csv       = ( new \WooCommerce\Facebook\Feed\Localization\LanguageFeedData() )->get_language_csv_data( 'es_ES', -1, 0 );
+		} finally {
+			remove_action( 'parse_query', $narrow_to_spanish );
+			remove_filter( 'pll_get_post_types', $translate_products );
+			$this->detach_language_taxonomy_from_variations( $attached_to_variations );
+			$model->cache->clean( 'post_types' );
+		}
+
+		$row_ids = array_map( 'strval', array_column( $csv['data'], 'id' ) );
+
+		$this->assertNotContains( $simple_product->get_id(), $narrowed, 'A product query without lang does not see the English originals.' );
+		$this->assertContains( $simple_product->get_id(), $originals, 'The English simple product is found.' );
+		$this->assertContains( $variable_product->get_id(), $originals, 'The English variable product is found.' );
+		$this->assertContains( \WC_Facebookcommerce_Utils::get_fb_retailer_id( $simple_product ), $row_ids, 'The simple product has a translation row.' );
+
+		foreach ( $variation_ids as $variation_id ) {
+			$this->assertContains( \WC_Facebookcommerce_Utils::get_fb_retailer_id( wc_get_product( $variation_id ) ), $row_ids, "Variation {$variation_id} has a translation row." );
+		}
+	}
+
+	/**
 	 * Attaches Polylang's language taxonomy to variations, as Polylang does at startup on a store
 	 * where variations are translated. The pll_get_post_types filter is added too late for that here.
 	 *

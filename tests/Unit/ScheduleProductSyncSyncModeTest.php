@@ -188,7 +188,7 @@ class ScheduleProductSyncSyncModeTest extends \WooCommerce\Facebook\Tests\Abstra
 	}
 
 	/**
-	 * Saves the product edit form twice, a second apart so each save is queued under its own key, and
+	 * Saves the product edit form twice without waiting between saves, and
 	 * returns the queued deferred saves, oldest first.
 	 *
 	 * @param WC_Product $product Product being saved.
@@ -208,10 +208,7 @@ class ScheduleProductSyncSyncModeTest extends \WooCommerce\Facebook\Tests\Abstra
 			2
 		);
 
-		foreach ( array( $first, $second ) as $i => $form ) {
-			if ( $i > 0 ) {
-				sleep( 1 );
-			}
+		foreach ( array( $first, $second ) as $form ) {
 			$_POST = $form;
 			$this->integration->schedule_product_sync( $product->get_id() );
 			$_POST = array();
@@ -226,6 +223,53 @@ class ScheduleProductSyncSyncModeTest extends \WooCommerce\Facebook\Tests\Abstra
 	private function run_deferred_save( $event ): void {
 		do_action( $event->hook, ...$event->args );
 		$_POST = array();
+	}
+
+	/**
+	 * A queued cron job starting while the next form writes its settings must already be obsolete.
+	 */
+	public function test_older_job_cannot_overwrite_settings_during_a_new_save() {
+		$product   = $this->hidden_simple_product();
+		$scheduled = array();
+		$this->add_filter_with_safe_teardown(
+			'pre_schedule_event',
+			function ( $pre, $event ) use ( &$scheduled ) {
+				$scheduled[] = $event;
+				return true;
+			},
+			5,
+			2
+		);
+		$this->save_product_form( $product, Admin::SYNC_MODE_SYNC_AND_SHOW );
+
+		$ran = false;
+		$this->add_filter_with_safe_teardown(
+			'updated_post_meta',
+			function ( $meta_id, $product_id, $key, $value ) use ( $product, &$ran, &$scheduled ) {
+				if ( $ran || (int) $product_id !== $product->get_id() || Products::VISIBILITY_META_KEY !== $key || 'no' !== $value ) {
+					return;
+				}
+				$ran = true;
+				// Simulate a separate cron request, preserving the admin request's form data.
+				$post_data = $_POST;
+				try {
+					$this->integration->handle_async_product_save( $scheduled[0]->args[0] );
+				} finally {
+					$_POST = $post_data;
+				}
+			},
+			10,
+			4
+		);
+
+		$this->save_product_form( $product, Admin::SYNC_MODE_SYNC_AND_HIDE );
+
+		$this->assertTrue( $ran );
+		$this->assertCount( 2, $scheduled );
+		$this->assertNotSame( $scheduled[0]->args[0], $scheduled[1]->args[0] );
+		$this->assertSame( 'no', get_post_meta( $product->get_id(), Products::VISIBILITY_META_KEY, true ) );
+		$this->run_deferred_save( $scheduled[1] );
+		$this->assertSame( 'no', get_post_meta( $product->get_id(), Products::VISIBILITY_META_KEY, true ) );
 	}
 
 	/**

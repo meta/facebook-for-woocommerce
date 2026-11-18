@@ -923,7 +923,7 @@ class WC_Facebookcommerce_Integration extends WC_Integration {
 	 * @since 3.5.10
 	 */
 	private function get_store_sync_transient( int $wp_id, array $sync_data ): string {
-		$sync_key = 'fb_sync_data_' . $wp_id . '_' . time();
+		$sync_key = 'fb_sync_data_' . $wp_id . '_' . wp_generate_uuid4();
 		set_transient( $sync_key, $sync_data, 300 );
 		set_transient( self::LATEST_SYNC_KEY_PREFIX . $wp_id, $sync_key, 300 );
 		return $sync_key;
@@ -1029,8 +1029,6 @@ class WC_Facebookcommerce_Integration extends WC_Integration {
 	 * @internal
 	 */
 	public function schedule_product_sync( int $wp_id ) {
-		$this->save_posted_facebook_settings( $wp_id );
-
 		// Store sync data in transient for async processing
 		// phpcs:disable WordPress.Security.NonceVerification.Missing
 		$sync_data = array(
@@ -1040,6 +1038,9 @@ class WC_Facebookcommerce_Integration extends WC_Integration {
 		// phpcs:enable WordPress.Security.NonceVerification.Missing
 
 		$sync_key = $this->get_store_sync_transient( $wp_id, $sync_data );
+
+		// Supersede queued saves before writing any settings they could otherwise overwrite.
+		$this->save_posted_facebook_settings( $wp_id );
 
 		// Schedule WordPress cron event
 		$scheduled = wp_schedule_single_event(

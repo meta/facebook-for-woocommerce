@@ -497,6 +497,14 @@ window.FacebookSignals = window.FacebookSignals || {
 		}
 	},
 
+	// Same threshold as the stale-page check in build_event().
+	_staleAfterSeconds: 1800,
+
+	_isStalePage: function() {
+		var generated = window.__wc_fb_page_generated;
+		return !!generated && (Math.floor(Date.now() / 1000) - generated) > this._staleAfterSeconds;
+	},
+
 	_fireOrQueuePixelEvent: function(name, params, method, eventId) {
 		if (!this._pixelInitialized) {
 			this._pendingPixelEvents.push({
@@ -522,14 +530,20 @@ window.FacebookSignals = window.FacebookSignals || {
 		var originalId = eventData.event_id || null;
 		if (originalId && this._seenEventIds[originalId]) return;
 
+		// A page served stale from a full-page cache carries the event_id and event_time
+		// it was rendered with, shared by every visitor who gets that copy. As in
+		// build_event(), fire such an event without its eventID, and queue it with the
+		// time of this view, so the release does not reject it as too old.
+		var isStale = this._isStalePage();
+
 		if (!this._held) {
-			this._fireOrQueuePixelEvent(eventData.event_name, eventData.custom_data || {}, eventData.method || 'track', originalId);
+			this._fireOrQueuePixelEvent(eventData.event_name, eventData.custom_data || {}, eventData.method || 'track', isStale ? null : originalId);
 			return;
 		}
 
 		eventData = this._cloneEventData(eventData);
 		eventData.event_id = this._generateEventId();
-		eventData.event_time = eventData.event_time || Math.floor(Date.now() / 1000);
+		eventData.event_time = isStale || !eventData.event_time ? Math.floor(Date.now() / 1000) : eventData.event_time;
 		this._queue.push(eventData);
 
 		// Remember the id for this page load only, so an inline script that runs twice

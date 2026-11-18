@@ -567,5 +567,46 @@ describe('Signals hold/release browser runtime', function () {
 
             expect(window.sessionStorage.getItem('wc_facebook_signals_seen_event_ids')).toBeNull();
         });
+
+        describe('when the cached copy is older than 30 minutes', function () {
+            const now = () => Math.floor(Date.now() / 1000);
+            let renderedAt;
+
+            /** The page and its event as the cache rendered them an hour ago. */
+            function renderedAnHourAgo() {
+                renderedAt = now() - 3600;
+                window.__wc_fb_page_generated = renderedAt;
+                return Object.assign(cachedPageView(), { event_time: renderedAt });
+            }
+
+            afterEach(function () {
+                delete window.__wc_fb_page_generated;
+            });
+
+            it('fires the PageView without the eventID shared by every visitor of the cached copy', function () {
+                bootPage('active').queueEvent(renderedAnHourAgo());
+
+                expect(pageViews()).toEqual([['track', 'PageView', {}]]);
+            });
+
+            it('queues the PageView with the time of this view, so the release accepts it', function () {
+                const signals = bootPage('held');
+                signals.queueEvent(renderedAnHourAgo());
+
+                expect(signals._queue[0].event_time).toBeGreaterThanOrEqual(now() - 5);
+            });
+
+            it('keeps the eventID and time of a page rendered moments ago', function () {
+                window.__wc_fb_page_generated = now() - 60;
+                const fresh = Object.assign(cachedPageView(), { event_time: now() - 60 });
+
+                const signals = bootPage('held');
+                signals.queueEvent(fresh);
+                expect(signals._queue[0].event_time).toBe(fresh.event_time);
+
+                bootPage('active').queueEvent(fresh);
+                expect(pageViews()).toEqual([['track', 'PageView', {}, { eventID: 'cached-page-a' }]]);
+            });
+        });
     });
 });

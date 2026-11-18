@@ -68,6 +68,81 @@ class LocalizationIntegrationTest extends IntegrationTestCase {
 	}
 
 	/**
+	 * "Sync now" and the product reset job cover the whole catalog on a Polylang store.
+	 *
+	 * Polylang narrows product queries to the request's language: the admin's content language
+	 * filter in an admin request, the default or cookie language in the Action Scheduler async
+	 * runner. Products in another language, or in none, were left out of both.
+	 */
+	public function test_polylang_full_sync_and_reset_cover_products_outside_the_request_language() {
+		if ( ! function_exists( 'PLL' ) || ! function_exists( 'pll_set_post_language' ) || ! class_exists( '\PLL_Query' ) ) {
+			$this->markTestSkipped( 'Polylang is not active for this test run' );
+		}
+
+		$model   = PLL()->model;
+		$english = $model->get_language( 'en' );
+		if ( ! $english || ! $model->get_language( 'es' ) ) {
+			$this->markTestSkipped( 'Polylang has no English and Spanish languages in this test run' );
+		}
+
+		// Products are a translated post type, as with Polylang for WooCommerce or the custom post type setting.
+		$translate_products = static function ( $post_types ) {
+			$post_types['product'] = 'product';
+			return $post_types;
+		};
+		add_filter( 'pll_get_post_types', $translate_products );
+		$model->cache->clean( 'post_types' );
+
+		// Narrow queries to English the way PLL_Admin_Filters_Post and PLL_Frontend do.
+		$narrow_to_english = static function ( $query ) use ( $model, $english ) {
+			$pll_query = new \PLL_Query( $query, $model );
+			$pll_query->filter_query( $english );
+		};
+
+		try {
+			$this->assertTrue( $model->is_translated_post_type( 'product' ), 'Polylang translates products for this test.' );
+
+			$english_product       = $this->create_simple_product();
+			$spanish_product       = $this->create_simple_product();
+			$language_less_product = $this->create_simple_product();
+
+			pll_set_post_language( $english_product->get_id(), 'en' );
+			pll_set_post_language( $spanish_product->get_id(), 'es' );
+			wp_delete_object_term_relationships( $language_less_product->get_id(), 'language' );
+
+			$expected = [ $english_product->get_id(), $spanish_product->get_id(), $language_less_product->get_id() ];
+
+			add_action( 'parse_query', $narrow_to_english );
+
+			$narrowed = array_map(
+				'intval',
+				get_posts(
+					[
+						'post_type'      => 'product',
+						'post_status'    => 'publish',
+						'fields'         => 'ids',
+						'posts_per_page' => -1,
+					]
+				)
+			);
+			$sync_ids = array_map( 'intval', \WC_Facebookcommerce_Utils::get_all_product_ids_for_sync() );
+
+			$job    = facebook_for_woocommerce()->job_manager->reset_all_product_fb_settings;
+			$method = new \ReflectionMethod( $job, 'get_items_for_batch' );
+			$method->setAccessible( true );
+			$reset_ids = $method->invoke( $job, 1, [] );
+		} finally {
+			remove_action( 'parse_query', $narrow_to_english );
+			remove_filter( 'pll_get_post_types', $translate_products );
+			$model->cache->clean( 'post_types' );
+		}
+
+		$this->assertSame( [ $english_product->get_id() ], array_values( array_intersect( $expected, $narrowed ) ), 'A product query without lang only sees the request language.' );
+		$this->assertSame( [], array_values( array_diff( $expected, $sync_ids ) ), 'The full sync queues products in every language and in none.' );
+		$this->assertSame( [], array_values( array_diff( $expected, $reset_ids ) ), 'The reset job covers products in every language and in none.' );
+	}
+
+	/**
 	 * Get the expected plugin from command line arguments or environment variables
 	 */
 	private static function getExpectedPlugin(): ?string {

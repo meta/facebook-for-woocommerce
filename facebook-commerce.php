@@ -2411,7 +2411,6 @@ class WC_Facebookcommerce_Integration extends WC_Integration {
 			return false;
 		}
 
-		// Include draft products (omit 'post_status' => 'publish')
 		Logger::log(
 			'Removing FBIDs from all products',
 			array(),
@@ -2422,29 +2421,26 @@ class WC_Facebookcommerce_Integration extends WC_Integration {
 			)
 		);
 
+		/*
+		 * get_posts() only returns published posts unless told otherwise, so draft, pending and
+		 * private products, and disabled (private) variations, kept their Facebook IDs. 'any'
+		 * covers every status but trash and auto-draft.
+		 *
+		 * An empty 'lang' lifts Polylang's language filter, so products in every language, or in none, are reset.
+		 *
+		 * Products and variations come from one query. Variations used to be fetched with one query
+		 * per product, which also left out those whose parent is in the trash or gone.
+		 */
 		$post_ids = get_posts(
 			array(
-				'post_type'      => 'product',
+				'post_type'      => array( 'product', 'product_variation' ),
+				'post_status'    => 'any',
 				'posts_per_page' => - 1,
 				'fields'         => 'ids',
+				'lang'           => '',
 			)
 		);
 
-		$children = array();
-		foreach ( $post_ids as $post_id ) {
-			$children = array_merge(
-				get_posts(
-					array(
-						'post_type'      => 'product_variation',
-						'posts_per_page' => - 1,
-						'post_parent'    => $post_id,
-						'fields'         => 'ids',
-					)
-				),
-				$children
-			);
-		}
-		$post_ids = array_merge( $post_ids, $children );
 		$this->delete_post_meta_loop( $post_ids );
 
 		Logger::log(

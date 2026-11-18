@@ -777,6 +777,40 @@ class fbUtilsTest extends \WP_UnitTestCase {
 	}
 
 	/**
+	 * A repeat call returns the same variation IDs as the first one.
+	 *
+	 * When the query result comes from the cache, core returns the 'id=>parent' map keyed
+	 * 'post_parent:<ID>', so the second call in a request returned those strings in place of the
+	 * variation IDs.
+	 */
+	public function test_get_all_product_ids_for_sync_returns_variation_ids_on_a_repeat_call(): void {
+		$variable_product = \WC_Helper_Product::create_variation_product();
+		$variation_ids    = array_map( 'intval', $variable_product->get_children() );
+
+		$first  = array_values( \WC_Facebookcommerce_Utils::get_all_product_ids_for_sync() );
+		$second = array_values( \WC_Facebookcommerce_Utils::get_all_product_ids_for_sync() );
+
+		$this->assertNotEmpty( $variation_ids );
+		$this->assertSame( array(), array_values( array_diff( $variation_ids, $first ) ), 'The first call returns every variation.' );
+		$this->assertContainsOnly( 'int', $second, true, 'A repeat call returns IDs, not cache keys.' );
+		$this->assertSame( $first, $second, 'A repeat call returns the same IDs.' );
+		$this->assertNotContains( $variable_product->get_id(), $second, 'Variable parents are not product items.' );
+	}
+
+	/**
+	 * A repeat call on a store without variations returns the same products, with no error.
+	 *
+	 * A cached empty result leaves the query's posts unset.
+	 */
+	public function test_get_all_product_ids_for_sync_handles_a_repeat_call_without_variations(): void {
+		$first  = array_values( \WC_Facebookcommerce_Utils::get_all_product_ids_for_sync() );
+		$second = array_values( \WC_Facebookcommerce_Utils::get_all_product_ids_for_sync() );
+
+		$this->assertContains( $this->product->get_id(), $first );
+		$this->assertSame( $first, $second );
+	}
+
+	/**
 	 * Enable the isolated pixel execution rollout switch.
 	 */
 	private function enable_isolated_pixel_execution_switch(): void {

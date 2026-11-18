@@ -667,31 +667,58 @@ if ( ! class_exists( 'WC_Facebookcommerce_Utils' ) ) :
 		 * Warning: While changing this code please make sure that it scales properly.
 		 * Sites with big product catalogs should not experience memory problems.
 		 *
+		 * Polylang narrows post queries to the request's language: the admin's content language
+		 * filter in an admin request, the visitor's language in a frontend or loopback request.
+		 * Products in another language, or in none, then went missing from a full sync. An empty
+		 * 'lang' is Polylang's documented way to lift its filter, and core ignores the argument.
+		 * Whether a translation belongs in the main catalog is decided per product afterwards.
+		 *
+		 * @see \WooCommerce\Facebook\ProductSync\ProductValidator::validate_product_language()
+		 *
 		 * @return array IDs of all product for synchronization.
 		 */
 		public static function get_all_product_ids_for_sync() {
 			// Get all published products ids. This includes parent products of variations.
-			$product_args       = array(
+			$product_args   = array(
 				'fields'         => 'ids',
 				'post_status'    => 'publish',
 				'post_type'      => 'product',
 				'posts_per_page' => -1,
+				'lang'           => '',
 			);
-			$product_ids        = get_posts( $product_args );
-			$variation_args     = array(
-				'fields'         => 'id=>parent',
-				'post_status'    => 'publish',
-				'post_type'      => 'product_variation',
-				'posts_per_page' => -1,
+			$product_ids    = get_posts( $product_args );
+			$variation_args = array(
+				'fields'              => 'id=>parent',
+				'post_status'         => 'publish',
+				'post_type'           => 'product_variation',
+				'posts_per_page'      => -1,
+				'lang'                => '',
+				// The arguments get_posts() adds on its own.
+				'suppress_filters'    => true,
+				'ignore_sticky_posts' => true,
+				'no_found_rows'       => true,
 			);
-			$variation_products = get_posts( $variation_args );
+
+			/*
+			 * Read the variations from the query's posts, not from its return value. When the query
+			 * result comes from the cache (a second call in one request, or any call on a store with
+			 * a persistent object cache), core returns the 'id=>parent' map keyed 'post_parent:<ID>',
+			 * and those strings were queued in place of the variation IDs. The posts hold the ID and
+			 * the parent on both paths, and stay null when a cached result is empty.
+			 */
+			$variation_query = new \WP_Query();
+			$variation_query->query( $variation_args );
+			$variation_products = is_array( $variation_query->posts ) ? $variation_query->posts : array();
 
 			/*
 			* Collect all parent products.
 			* Exclude variations which parents are not 'publish'.
 			*/
 			$parent_product_ids = [];
-			foreach ( $variation_products as $post_id => $parent_id ) {
+			foreach ( $variation_products as $variation ) {
+				$post_id   = (int) $variation->ID;
+				$parent_id = (int) $variation->post_parent;
+
 				/*
 				* Keep track of all parents to remove them from the list of products to sync.
 				* Use key to automatically remove duplicated items.

@@ -45,21 +45,28 @@ class ResetAllProductsFBSettings extends AbstractChainedJob {
 	 * NOTE: when using an OFFSET based query to retrieve items it's recommended to order by the item ID while
 	 * ASCENDING. This is so that any newly added items will not disrupt the query offset.
 	 *
+	 * The job runs in the Action Scheduler runner. When that is the async request, an admin-ajax
+	 * loopback, Polylang narrows post queries to the request's language (the default one, or the
+	 * one in the cookies forwarded from the admin who started the job), so products in another
+	 * language, or in none, were never reset. An empty 'lang' is Polylang's documented way to lift
+	 * its filter, and core ignores the argument.
+	 *
 	 * @param int   $batch_number The batch number increments for each new batch in the job cycle.
 	 * @param array $args         The args for the job.
 	 *
 	 * @throws Exception On error. The failure will be logged by Action Scheduler and the job chain will stop.
 	 */
 	protected function get_items_for_batch( int $batch_number, array $args ): array {
-		global $wpdb;
-
 		$products = get_posts(
 			[
 				'post_type'      => 'product',
 				'post_status'    => 'any',
 				'fields'         => 'ids',
+				'orderby'        => 'ID',
+				'order'          => 'ASC',
 				'offset'         => $this->get_query_offset( $batch_number ),
 				'posts_per_page' => $this->get_batch_size(),
+				'lang'           => '',
 			]
 		);
 

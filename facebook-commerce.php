@@ -1317,8 +1317,14 @@ class WC_Facebookcommerce_Integration extends WC_Integration {
 			// enqueue variation to be deleted in the background
 			$this->facebook_for_woocommerce->get_products_sync_handler()->delete_products( array( $retailer_id ) );
 		} elseif ( $product->is_type( 'variable' ) ) {
+			/*
+			 * Read the same variations reset_single_product() clears: every language, every status
+			 * but trash and auto-draft. WC_Product::get_children() is narrowed to the request's
+			 * language on a Polylang store, so the metabox delete action cleared the Facebook IDs
+			 * of variations it never queued for deletion, and those stayed in the catalog.
+			 */
 			$retailer_ids = array();
-			foreach ( $product->get_children() as $variation_id ) {
+			foreach ( WC_Facebookcommerce_Utils::get_variation_ids_in_every_language( $product_id, 'any' ) as $variation_id ) {
 				$variation = wc_get_product( $variation_id );
 				if ( $variation instanceof \WC_Product ) {
 					$retailer_ids[] = \WC_Facebookcommerce_Utils::get_fb_retailer_id( $variation );

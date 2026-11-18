@@ -340,6 +340,52 @@ class PolylangFullCatalogQueriesTest extends AbstractWPUnitTestWithOptionIsolati
 	}
 
 	/**
+	 * Deleting a variable product from the catalog queues the removal of every variation whose Facebook IDs it clears.
+	 *
+	 * The metabox delete action queues the remote deletes, then resets the product. The deletes
+	 * were read from WooCommerce's children query, which is narrowed when its children cache is
+	 * empty, while the reset covers every language: a variation outside the request's language
+	 * lost its Facebook item ID with no delete queued, and stayed in the catalog.
+	 */
+	public function test_deleting_a_variable_product_queues_deletes_for_variations_outside_the_request_language() {
+		$integration  = facebook_for_woocommerce()->get_integration();
+		$sync_handler = facebook_for_woocommerce()->get_products_sync_handler();
+		$requests     = new \ReflectionProperty( $sync_handler, 'requests' );
+		$requests->setAccessible( true );
+		$requests_before = $requests->getValue( $sync_handler );
+
+		try {
+			foreach ( $this->get_variable_products_outside_the_request_language() as $label => $fixture ) {
+				$parent_id = $fixture['parent']->get_id();
+
+				foreach ( $fixture['variation_ids'] as $variation_id ) {
+					update_post_meta( $variation_id, \WC_Facebookcommerce_Integration::FB_PRODUCT_ITEM_ID, 'item-' . $variation_id );
+				}
+
+				// A pending update for each variation, and an empty children cache.
+				$sync_handler->create_or_update_products( $fixture['variation_ids'] );
+				delete_transient( 'wc_product_children_' . $parent_id );
+
+				// What the metabox delete action does.
+				$integration->delete_fb_product( wc_get_product( $parent_id ) );
+				$integration->reset_single_product( $parent_id );
+
+				$queued = $requests->getValue( $sync_handler );
+
+				foreach ( $fixture['variation_ids'] as $variation_id ) {
+					$index = \WooCommerce\Facebook\Products\Sync::PRODUCT_INDEX_PREFIX . \WC_Facebookcommerce_Utils::get_fb_retailer_id( wc_get_product( $variation_id ) );
+
+					$this->assertSame( '', get_post_meta( $variation_id, \WC_Facebookcommerce_Integration::FB_PRODUCT_ITEM_ID, true ), "The item ID of variation {$variation_id} of the {$label} is cleared." );
+					$this->assertArrayHasKey( $index, $queued, "Variation {$variation_id} of the {$label} is queued." );
+					$this->assertSame( \WooCommerce\Facebook\Products\Sync::ACTION_DELETE, $queued[ $index ], "Variation {$variation_id} of the {$label} is queued for deletion." );
+				}
+			}
+		} finally {
+			$requests->setValue( $sync_handler, $requests_before );
+		}
+	}
+
+	/**
 	 * The legacy AJAX reset clears the Facebook IDs of every product and variation.
 	 */
 	public function test_legacy_reset_clears_products_in_every_language_and_in_none() {

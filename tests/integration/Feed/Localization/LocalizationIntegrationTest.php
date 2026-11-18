@@ -370,6 +370,102 @@ class LocalizationIntegrationTest extends IntegrationTestCase {
 	}
 
 	/**
+	 * Deleting a variable product from the catalog queues the removal of variations outside the request language.
+	 *
+	 * The metabox delete action queues the remote deletes, then resets the product in every
+	 * language. The deletes were read from WooCommerce's narrowed children query, so a variation
+	 * outside the request language lost its Facebook item ID with no delete queued.
+	 */
+	public function test_polylang_deleting_a_variable_product_queues_deletes_for_variations_outside_the_request_language() {
+		if ( ! function_exists( 'PLL' ) || ! function_exists( 'pll_set_post_language' ) || ! class_exists( '\PLL_Query' ) ) {
+			$this->markTestSkipped( 'Polylang is not active for this test run' );
+		}
+
+		$model   = PLL()->model;
+		$spanish = $model->get_language( 'es' );
+		if ( ! $spanish || ! $model->get_language( 'en' ) ) {
+			$this->markTestSkipped( 'Polylang has no English and Spanish languages in this test run' );
+		}
+
+		// Products and variations are translated post types, as with Polylang for WooCommerce.
+		$translate_products = static function ( $post_types ) {
+			$post_types['product']           = 'product';
+			$post_types['product_variation'] = 'product_variation';
+			return $post_types;
+		};
+		add_filter( 'pll_get_post_types', $translate_products );
+		$model->cache->clean( 'post_types' );
+
+		// Narrow queries to Spanish the way PLL_Admin_Filters_Post and PLL_Frontend do.
+		$narrow_to_spanish = static function ( $query ) use ( $model, $spanish ) {
+			$pll_query = new \PLL_Query( $query, $model );
+			$pll_query->filter_query( $spanish );
+		};
+
+		$sync_handler = facebook_for_woocommerce()->get_products_sync_handler();
+		$requests     = new \ReflectionProperty( $sync_handler, 'requests' );
+		$requests->setAccessible( true );
+		$requests_before = $requests->getValue( $sync_handler );
+
+		$fixtures = [];
+		$queued   = [];
+
+		try {
+			foreach ( [ 'variable product in English' => 'en', 'variable product in no language' => '' ] as $label => $language ) {
+				$parent        = $this->create_variable_product();
+				$variation_ids = array_map( 'intval', $parent->get_children() );
+				$this->assertNotEmpty( $variation_ids );
+
+				foreach ( array_merge( [ $parent->get_id() ], $variation_ids ) as $post_id ) {
+					if ( $language ) {
+						pll_set_post_language( $post_id, $language );
+					} else {
+						wp_delete_object_term_relationships( $post_id, 'language' );
+					}
+				}
+
+				foreach ( $variation_ids as $variation_id ) {
+					update_post_meta( $variation_id, \WC_Facebookcommerce_Integration::FB_PRODUCT_ITEM_ID, 'item-' . $variation_id );
+				}
+
+				// A pending update for each variation, and an empty children cache.
+				$sync_handler->create_or_update_products( $variation_ids );
+				delete_transient( 'wc_product_children_' . $parent->get_id() );
+
+				$fixtures[ $label ] = [
+					'parent_id'     => $parent->get_id(),
+					'variation_ids' => $variation_ids,
+				];
+			}
+
+			add_action( 'parse_query', $narrow_to_spanish );
+
+			// What the metabox delete action does.
+			foreach ( $fixtures as $fixture ) {
+				$this->integration->delete_fb_product( wc_get_product( $fixture['parent_id'] ) );
+				$this->integration->reset_single_product( $fixture['parent_id'] );
+			}
+
+			$queued = $requests->getValue( $sync_handler );
+		} finally {
+			remove_action( 'parse_query', $narrow_to_spanish );
+			remove_filter( 'pll_get_post_types', $translate_products );
+			$model->cache->clean( 'post_types' );
+			$requests->setValue( $sync_handler, $requests_before );
+		}
+
+		foreach ( $fixtures as $label => $fixture ) {
+			foreach ( $fixture['variation_ids'] as $variation_id ) {
+				$index = \WooCommerce\Facebook\Products\Sync::PRODUCT_INDEX_PREFIX . \WC_Facebookcommerce_Utils::get_fb_retailer_id( wc_get_product( $variation_id ) );
+
+				$this->assertSame( '', get_post_meta( $variation_id, \WC_Facebookcommerce_Integration::FB_PRODUCT_ITEM_ID, true ), "The item ID of variation {$variation_id} of the {$label} is cleared." );
+				$this->assertArrayHasKey( $index, $queued, "Variation {$variation_id} of the {$label} is queued." );
+				$this->assertSame( \WooCommerce\Facebook\Products\Sync::ACTION_DELETE, $queued[ $index ], "Variation {$variation_id} of the {$label} is queued for deletion." );
+			}
+		}
+	}
+
+	/**
 	 * Get the expected plugin from command line arguments or environment variables
 	 */
 	private static function getExpectedPlugin(): ?string {

@@ -280,6 +280,9 @@ class WC_Facebookcommerce_Integration extends WC_Integration {
 	public const FB_SYNC_TIMEOUT     = 30;
 	public const FB_PRIORITY_MID     = 9;
 
+	/** @var string prefix of the transient holding the key of a product's latest deferred save */
+	private const LATEST_SYNC_KEY_PREFIX = 'fb_sync_latest_';
+
 	/**
 	 * Static flag to prevent infinite loops when updating last change time.
 	 *
@@ -922,7 +925,41 @@ class WC_Facebookcommerce_Integration extends WC_Integration {
 	private function get_store_sync_transient( int $wp_id, array $sync_data ): string {
 		$sync_key = 'fb_sync_data_' . $wp_id . '_' . time();
 		set_transient( $sync_key, $sync_data, 300 );
+		set_transient( self::LATEST_SYNC_KEY_PREFIX . $wp_id, $sync_key, 300 );
 		return $sync_key;
+	}
+
+	/**
+	 * Adds the products an earlier, still queued save of the product marked for deletion from the
+	 * catalog to the posted form data.
+	 *
+	 * Only the latest deferred save of a product is applied (see process_sync_transient()). It is made
+	 * from the whole form, so it holds every setting of an earlier save, except this list: the form
+	 * fills it only when sync is turned off in that edit, and starts empty again on the next one.
+	 *
+	 * @since 3.7.10
+	 *
+	 * @param int   $wp_id     product ID
+	 * @param array $post_data the posted form data
+	 * @return array
+	 */
+	private function add_pending_removals_from_sync( int $wp_id, array $post_data ): array {
+		$pending_key  = get_transient( self::LATEST_SYNC_KEY_PREFIX . $wp_id );
+		$pending_data = $pending_key ? get_transient( $pending_key ) : false;
+		$field        = WC_Facebook_Product::FB_REMOVE_FROM_SYNC;
+
+		if ( empty( $pending_data['post_data'][ $field ] ) ) {
+			return $post_data;
+		}
+
+		$product_ids = array_merge(
+			explode( ',', (string) $pending_data['post_data'][ $field ] ),
+			explode( ',', (string) ( $post_data[ $field ] ?? '' ) )
+		);
+
+		$post_data[ $field ] = implode( ',', array_unique( array_filter( array_map( 'absint', $product_ids ) ) ) );
+
+		return $post_data;
 	}
 
 	/**
@@ -947,9 +984,17 @@ class WC_Facebookcommerce_Integration extends WC_Integration {
 		// Clean up transient
 		delete_transient( $transient_key );
 
-		// Restore context
 		$product_id = $sync_data['product_id'];
-		$_POST      = $sync_data['post_data']; // Restore $_POST data
+
+		// A newer save of the product is queued or already applied, and it holds this one's changes.
+		// Applying this one now would put back the values the product had before the newer save.
+		$latest_key = get_transient( self::LATEST_SYNC_KEY_PREFIX . $product_id );
+		if ( $latest_key && $latest_key !== $transient_key ) {
+			return null;
+		}
+
+		// Restore context
+		$_POST = $sync_data['post_data']; // Restore $_POST data
 
 		return array(
 			'product_id' => $product_id,
@@ -990,7 +1035,7 @@ class WC_Facebookcommerce_Integration extends WC_Integration {
 		// phpcs:disable WordPress.Security.NonceVerification.Missing
 		$sync_data = array(
 			'product_id' => $wp_id,
-			'post_data'  => $_POST,
+			'post_data'  => $this->add_pending_removals_from_sync( $wp_id, $_POST ),
 		);
 		// phpcs:enable WordPress.Security.NonceVerification.Missing
 
@@ -1006,6 +1051,7 @@ class WC_Facebookcommerce_Integration extends WC_Integration {
 		// Fallback to synchronous processing if scheduling fails
 		if ( false === $scheduled ) {
 			delete_transient( $sync_key );
+			$_POST = $sync_data['post_data'];
 			$this->on_product_save( $wp_id );
 		}
 	}

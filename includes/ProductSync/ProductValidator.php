@@ -285,7 +285,7 @@ class ProductValidator {
 		 */
 		if ( $this->product->is_type( 'variable' ) ) {
 			// Read in every language: a narrowed children query would make the product look like it has no variations.
-			foreach ( \WC_Facebookcommerce_Utils::get_variation_ids_in_every_language( $this->product->get_id() ) as $child_id ) {
+			foreach ( \WC_Facebookcommerce_Utils::get_children_in_every_language( $this->product ) as $child_id ) {
 				$child_product = wc_get_product( $child_id );
 				if ( $child_product && 'no' !== $child_product->get_meta( Products::get_product_sync_meta_key() ) ) {
 					// At least one product is "sync-enabled" so bail before exception.
@@ -319,7 +319,7 @@ class ProductValidator {
 				 * sync from then on.
 				 */
 				$variation_sync = false;
-				foreach ( \WC_Facebookcommerce_Utils::get_variation_ids_in_every_language( $this->product_parent->get_id() ) as $child_id ) {
+				foreach ( \WC_Facebookcommerce_Utils::get_children_in_every_language( $this->product_parent ) as $child_id ) {
 					$child_product = wc_get_product( $child_id );
 					if ( $child_product && 'no' !== $child_product->get_meta( Products::get_product_sync_meta_key() ) ) {
 						// At least one product is "sync-enabled" so bail before exception.

@@ -1839,7 +1839,7 @@ class WC_Facebook_Product {
 					 * The variations are read in every language: with a narrowed children query the
 					 * parent looked like it had none, and it was saved as hidden further down.
 					 */
-					$variations           = \WC_Facebookcommerce_Utils::get_variation_ids_in_every_language( $parent_id );
+					$variations           = \WC_Facebookcommerce_Utils::get_children_in_every_language( $parent_product );
 					$variation_visibility = false;
 
 					foreach ( $variations as $variation_id ) {

@@ -59,6 +59,9 @@ class PolylangFullCatalogQueriesTest extends AbstractWPUnitTestWithOptionIsolati
 	/** @var string[] Feed files written by a test. */
 	private $feed_files = array();
 
+	/** @var bool Whether this test attached the language taxonomy to variations. */
+	private $attached_language_taxonomy_to_variations = false;
+
 	public function setUp(): void {
 		parent::setUp();
 
@@ -73,6 +76,10 @@ class PolylangFullCatalogQueriesTest extends AbstractWPUnitTestWithOptionIsolati
 				)
 			);
 			$this->registered_language_taxonomy = true;
+		} elseif ( ! is_object_in_taxonomy( 'product_variation', 'language' ) ) {
+			// Polylang is loaded for this run: attach its taxonomy to variations, as it does where they are translated.
+			register_taxonomy_for_object_type( 'language', 'product_variation' );
+			$this->attached_language_taxonomy_to_variations = true;
 		}
 
 		$term                 = wp_insert_term( 'English', 'language', array( 'slug' => 'en-test' ) );
@@ -131,6 +138,8 @@ class PolylangFullCatalogQueriesTest extends AbstractWPUnitTestWithOptionIsolati
 
 		if ( $this->registered_language_taxonomy ) {
 			unregister_taxonomy( 'language' );
+		} elseif ( $this->attached_language_taxonomy_to_variations ) {
+			unregister_taxonomy_for_object_type( 'language', 'product_variation' );
 		}
 
 		set_current_screen( 'front' );
@@ -234,6 +243,113 @@ class PolylangFullCatalogQueriesTest extends AbstractWPUnitTestWithOptionIsolati
 
 			$this->assertSame( '', $rejection, "The {$label} passes the sync check." );
 		}
+	}
+
+	/**
+	 * The sync check still honors WooCommerce's own choice of children once the language restriction is lifted.
+	 *
+	 * A store can narrow a variable product's variations with woocommerce_variable_children_args
+	 * or woocommerce_get_children, or with a product data store that reads them its own way.
+	 * When the only variation those leave has sync disabled, the parent is not synced: a sibling
+	 * the store left out must not enable it.
+	 *
+	 * @dataProvider provide_woocommerce_child_filters
+	 *
+	 * @param string $hook The WooCommerce filter that leaves a single variation.
+	 */
+	public function test_sync_validator_honors_woocommerce_child_filters( string $hook ) {
+		$sync_meta_key = Products::get_product_sync_meta_key();
+		$parent_id     = $this->language_less_variable_product->get_id();
+		$kept_id       = $this->keep_only_first_variation_with( $hook );
+
+		$this->forget_parent_settings_and_children( $parent_id );
+		update_post_meta( $kept_id, $sync_meta_key, 'no' );
+
+		$validator = facebook_for_woocommerce()->get_product_sync_validator( wc_get_product( $kept_id ) );
+		$method    = new \ReflectionMethod( $validator, 'validate_product_sync_field' );
+		$method->setAccessible( true );
+
+		try {
+			$method->invoke( $validator );
+			$rejection = '';
+		} catch ( \Exception $exception ) {
+			$rejection = $exception->getMessage();
+		}
+
+		$this->assertNotSame( '', $rejection, 'The variation is rejected: no variation WooCommerce returns has sync enabled.' );
+		$this->assertSame( 'no', get_post_meta( $parent_id, $sync_meta_key, true ), 'A filtered-out sibling does not enable sync for the parent.' );
+
+		// The variable product itself is rejected for the same reason.
+		$this->forget_parent_settings_and_children( $parent_id );
+		$validator = facebook_for_woocommerce()->get_product_sync_validator( wc_get_product( $parent_id ) );
+		$method    = new \ReflectionMethod( $validator, 'validate_product_sync_field' );
+		$method->setAccessible( true );
+
+		try {
+			$method->invoke( $validator );
+			$rejection = '';
+		} catch ( \Exception $exception ) {
+			$rejection = $exception->getMessage();
+		}
+
+		$this->assertNotSame( '', $rejection, 'The variable product is rejected too.' );
+	}
+
+	/**
+	 * The feed row's visibility still honors WooCommerce's child filters once the language restriction is lifted.
+	 *
+	 * @dataProvider provide_woocommerce_child_filters
+	 *
+	 * @param string $hook The WooCommerce filter that leaves a single variation.
+	 */
+	public function test_feed_visibility_honors_woocommerce_child_filters( string $hook ) {
+		$parent_id = $this->language_less_variable_product->get_id();
+		$kept_id   = $this->keep_only_first_variation_with( $hook );
+
+		$this->forget_parent_settings_and_children( $parent_id );
+		update_post_meta( $kept_id, Products::VISIBILITY_META_KEY, 'no' );
+
+		$parent  = new \WC_Facebook_Product( wc_get_product( $parent_id ) );
+		$product = new \WC_Facebook_Product( wc_get_product( $kept_id ), $parent );
+		$data    = $product->prepare_product( null, \WC_Facebook_Product::PRODUCT_PREP_TYPE_FEED );
+
+		$this->assertSame( \WC_Facebookcommerce_Integration::FB_SHOP_PRODUCT_HIDDEN, $data['visibility'], 'The hidden variation is the only one WooCommerce returns.' );
+		$this->assertSame( 'no', get_post_meta( $parent_id, Products::VISIBILITY_META_KEY, true ), 'A filtered-out sibling does not make the parent visible.' );
+	}
+
+	/**
+	 * The children lookup returns WooCommerce's children for a product outside the request's language,
+	 * and a children arguments filter cannot put the language restriction back.
+	 */
+	public function test_children_lookup_lifts_the_language_restriction_after_the_arguments_filter() {
+		$parent = wc_get_product( $this->language_less_variable_product->get_id() );
+
+		$this->assertSame( $this->language_less_variation_ids, \WC_Facebookcommerce_Utils::get_children_in_every_language( $parent ) );
+
+		$this->add_filter_with_safe_teardown(
+			'woocommerce_variable_children_args',
+			static function ( $args ) {
+				$args['lang'] = 'sr-test';
+
+				return $args;
+			}
+		);
+
+		$this->assertSame( $this->language_less_variation_ids, \WC_Facebookcommerce_Utils::get_children_in_every_language( $parent ) );
+		$this->assertSame( array(), \WC_Facebookcommerce_Utils::get_children_in_every_language( null ) );
+	}
+
+	/**
+	 * The ways a store can narrow a variable product's variations in WooCommerce.
+	 *
+	 * @return array<string, array{0: string}>
+	 */
+	public function provide_woocommerce_child_filters(): array {
+		return array(
+			'the children query arguments' => array( 'woocommerce_variable_children_args' ),
+			'the children list'            => array( 'woocommerce_get_children' ),
+			'a custom product data store'  => array( 'woocommerce_data_stores' ),
+		);
 	}
 
 	/**
@@ -436,6 +552,70 @@ class PolylangFullCatalogQueriesTest extends AbstractWPUnitTestWithOptionIsolati
 				'variation_ids' => $this->language_less_variation_ids,
 			),
 		);
+	}
+
+	/**
+	 * Narrows the language-less variable product to its first variation through a WooCommerce child filter.
+	 *
+	 * @param string $hook woocommerce_variable_children_args, woocommerce_get_children, or woocommerce_data_stores
+	 *                     for a product data store with its own read_children().
+	 * @return int The ID of the variation that is kept.
+	 */
+	private function keep_only_first_variation_with( string $hook ) {
+		$this->assertGreaterThan( 1, count( $this->language_less_variation_ids ), 'The variable product has siblings to filter out.' );
+
+		$parent_id = $this->language_less_variable_product->get_id();
+		$kept_id   = $this->language_less_variation_ids[0];
+		$excluded  = array_slice( $this->language_less_variation_ids, 1 );
+
+		if ( 'woocommerce_data_stores' === $hook ) {
+			$data_store = new class() extends \WC_Product_Variable_Data_Store_CPT {
+				/** @var int[] */
+				public $children = array();
+
+				public function read_children( &$product, $force_read = false ) {
+					return array(
+						'all'     => $this->children,
+						'visible' => $this->children,
+					);
+				}
+			};
+
+			$data_store->children = array( $kept_id );
+
+			$this->add_filter_with_safe_teardown(
+				$hook,
+				static function ( $stores ) use ( $data_store ) {
+					$stores['product-variable'] = $data_store;
+
+					return $stores;
+				}
+			);
+		} elseif ( 'woocommerce_variable_children_args' === $hook ) {
+			$this->add_filter_with_safe_teardown(
+				$hook,
+				static function ( $args, $product ) use ( $parent_id, $excluded ) {
+					if ( $product->get_id() === $parent_id ) {
+						$args['post__not_in'] = $excluded;
+					}
+
+					return $args;
+				},
+				10,
+				2
+			);
+		} else {
+			$this->add_filter_with_safe_teardown(
+				$hook,
+				static function ( $children, $product ) use ( $parent_id, $kept_id ) {
+					return $product->get_id() === $parent_id ? array( $kept_id ) : $children;
+				},
+				10,
+				2
+			);
+		}
+
+		return $kept_id;
 	}
 
 	/**

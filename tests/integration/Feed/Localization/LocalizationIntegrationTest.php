@@ -94,6 +94,7 @@ class LocalizationIntegrationTest extends IntegrationTestCase {
 		};
 		add_filter( 'pll_get_post_types', $translate_products );
 		$model->cache->clean( 'post_types' );
+		$attached_to_variations = $this->attach_language_taxonomy_to_variations();
 
 		// Narrow queries to English the way PLL_Admin_Filters_Post and PLL_Frontend do.
 		$narrow_to_english = static function ( $query ) use ( $model, $english ) {
@@ -164,6 +165,7 @@ class LocalizationIntegrationTest extends IntegrationTestCase {
 		} finally {
 			remove_action( 'parse_query', $narrow_to_english );
 			remove_filter( 'pll_get_post_types', $translate_products );
+			$this->detach_language_taxonomy_from_variations( $attached_to_variations );
 			$model->cache->clean( 'post_types' );
 		}
 
@@ -207,6 +209,7 @@ class LocalizationIntegrationTest extends IntegrationTestCase {
 		};
 		add_filter( 'pll_get_post_types', $translate_products );
 		$model->cache->clean( 'post_types' );
+		$attached_to_variations = $this->attach_language_taxonomy_to_variations();
 
 		// Narrow queries to Spanish the way PLL_Admin_Filters_Post and PLL_Frontend do.
 		$narrow_to_spanish = static function ( $query ) use ( $model, $spanish ) {
@@ -274,6 +277,7 @@ class LocalizationIntegrationTest extends IntegrationTestCase {
 		} finally {
 			remove_action( 'parse_query', $narrow_to_spanish );
 			remove_filter( 'pll_get_post_types', $translate_products );
+			$this->detach_language_taxonomy_from_variations( $attached_to_variations );
 			remove_filter( 'wc_facebook_product_catalog_feed_file_path', $use_feed_path );
 			remove_filter( 'wc_facebook_product_catalog_temp_feed_file_path', $use_temp_path );
 			$model->cache->clean( 'post_types' );
@@ -395,6 +399,7 @@ class LocalizationIntegrationTest extends IntegrationTestCase {
 		};
 		add_filter( 'pll_get_post_types', $translate_products );
 		$model->cache->clean( 'post_types' );
+		$attached_to_variations = $this->attach_language_taxonomy_to_variations();
 
 		// Narrow queries to Spanish the way PLL_Admin_Filters_Post and PLL_Frontend do.
 		$narrow_to_spanish = static function ( $query ) use ( $model, $spanish ) {
@@ -450,6 +455,7 @@ class LocalizationIntegrationTest extends IntegrationTestCase {
 		} finally {
 			remove_action( 'parse_query', $narrow_to_spanish );
 			remove_filter( 'pll_get_post_types', $translate_products );
+			$this->detach_language_taxonomy_from_variations( $attached_to_variations );
 			$model->cache->clean( 'post_types' );
 			$requests->setValue( $sync_handler, $requests_before );
 		}
@@ -462,6 +468,31 @@ class LocalizationIntegrationTest extends IntegrationTestCase {
 				$this->assertArrayHasKey( $index, $queued, "Variation {$variation_id} of the {$label} is queued." );
 				$this->assertSame( \WooCommerce\Facebook\Products\Sync::ACTION_DELETE, $queued[ $index ], "Variation {$variation_id} of the {$label} is queued for deletion." );
 			}
+		}
+	}
+
+	/**
+	 * Attaches Polylang's language taxonomy to variations, as Polylang does at startup on a store
+	 * where variations are translated. The pll_get_post_types filter is added too late for that here.
+	 *
+	 * @return bool Whether the taxonomy was attached by this call.
+	 */
+	private function attach_language_taxonomy_to_variations(): bool {
+		if ( is_object_in_taxonomy( 'product_variation', 'language' ) ) {
+			return false;
+		}
+
+		return register_taxonomy_for_object_type( 'language', 'product_variation' );
+	}
+
+	/**
+	 * Undoes attach_language_taxonomy_to_variations().
+	 *
+	 * @param bool $attached What attach_language_taxonomy_to_variations() returned.
+	 */
+	private function detach_language_taxonomy_from_variations( bool $attached ): void {
+		if ( $attached ) {
+			unregister_taxonomy_for_object_type( 'language', 'product_variation' );
 		}
 	}
 

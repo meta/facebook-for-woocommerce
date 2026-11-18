@@ -736,22 +736,108 @@ if ( ! class_exists( 'WC_Facebookcommerce_Utils' ) ) :
 		}
 
 		/**
-		 * Gets the IDs of a variable product's variations in every language.
+		 * Gets a variable product's children as WooCommerce would, in every language.
 		 *
 		 * WC_Product::get_children() reads a query that carries no 'lang'. Where variations are
 		 * translated (Polylang for WooCommerce), Polylang narrows it to the request's language
 		 * whenever WooCommerce's children cache is empty, so variations in another language, or in
-		 * none, went missing: a sync or visibility check then saw a parent without variations, and
-		 * a reset left them out. An empty 'lang' is Polylang's documented way to lift its filter,
-		 * and core ignores the argument.
+		 * none, went missing and a sync or visibility check saw a parent without variations. An
+		 * empty 'lang' is Polylang's documented way to lift its filter, and core ignores the
+		 * argument.
+		 *
+		 * Everywhere else this is get_children() itself: on a store where Polylang does not
+		 * translate variations, and for a product whose data store reads its children its own way.
+		 * Where the language restriction is lifted, only that changes. The statuses, the order and
+		 * both of WooCommerce's child filters are the ones get_children() applies, so a store that
+		 * narrows a product's variations with them gets the same variations here.
+		 *
+		 * @since 3.7.9
+		 *
+		 * @param \WC_Product $product The variable product.
+		 * @return int[] The variation IDs.
+		 */
+		public static function get_children_in_every_language( $product ) {
+			if ( ! $product instanceof \WC_Product || $product->get_id() <= 0 ) {
+				return array();
+			}
+
+			if ( ! self::can_polylang_narrow_children_query( $product ) ) {
+				return wp_parse_id_list( (array) $product->get_children() );
+			}
+
+			// The query WC_Product_Variable_Data_Store_CPT::read_children() runs for all children.
+			$args = array(
+				'post_parent' => $product->get_id(),
+				'post_type'   => 'product_variation',
+				'orderby'     => array(
+					'menu_order' => 'ASC',
+					'ID'         => 'ASC',
+				),
+				'fields'      => 'ids',
+				'post_status' => array( 'publish', 'private' ),
+				'numberposts' => -1,
+			);
+
+			/** This filter is documented in woocommerce/includes/data-stores/class-wc-product-variable-data-store-cpt.php */
+			$args = apply_filters( 'woocommerce_variable_children_args', $args, $product, false );
+			$args = is_array( $args ) ? $args : array();
+
+			// Set last, so a filter cannot put the language restriction back.
+			$args['lang'] = '';
+
+			$children = wp_parse_id_list( (array) get_posts( $args ) );
+
+			/** This filter is documented in woocommerce/includes/class-wc-product-variable.php */
+			$children = apply_filters( 'woocommerce_get_children', $children, $product, false );
+
+			return wp_parse_id_list( (array) $children );
+		}
+
+		/**
+		 * Whether Polylang can narrow the query WooCommerce reads a product's children with.
+		 *
+		 * That takes Polylang translating product variations, which is when it attaches its
+		 * 'language' taxonomy to them, and the product's data store reading its children with
+		 * WooCommerce's standard lookup: a data store with its own read_children() decides what
+		 * the children are, and is not second-guessed.
+		 *
+		 * @since 3.7.9
+		 *
+		 * @param \WC_Product $product The variable product.
+		 * @return bool
+		 */
+		private static function can_polylang_narrow_children_query( \WC_Product $product ) {
+			if ( ! taxonomy_exists( 'language' ) || ! is_object_in_taxonomy( 'product_variation', 'language' ) ) {
+				return false;
+			}
+
+			$data_store = $product->get_data_store();
+			$class_name = $data_store instanceof \WC_Data_Store ? $data_store->get_current_class_name() : '';
+
+			if ( ! $class_name || ! method_exists( $class_name, 'read_children' ) ) {
+				return false;
+			}
+
+			$read_children = new \ReflectionMethod( $class_name, 'read_children' );
+
+			return 'WC_Product_Variable_Data_Store_CPT' === $read_children->getDeclaringClass()->getName();
+		}
+
+		/**
+		 * Gets the IDs of every variation of a variable product, in every language.
+		 *
+		 * For clean-up: resetting a product or deleting it from the catalog has to reach every
+		 * variation that may carry Facebook IDs, so this reads the variations themselves and does
+		 * not apply WooCommerce's child filters. Use get_children_in_every_language() to decide
+		 * what a product's variations are.
 		 *
 		 * @since 3.7.9
 		 *
 		 * @param int             $parent_id   The variable product ID.
-		 * @param string|string[] $post_status The variation statuses; by default the ones get_children() returns.
+		 * @param string|string[] $post_status The variation statuses; 'any' is every status but trash and auto-draft.
 		 * @return int[] The variation IDs, in menu order.
 		 */
-		public static function get_variation_ids_in_every_language( $parent_id, $post_status = array( 'publish', 'private' ) ) {
+		public static function get_variation_ids_in_every_language( $parent_id, $post_status = 'any' ) {
 			$parent_id = (int) $parent_id;
 
 			if ( $parent_id <= 0 ) {

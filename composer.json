@@ -1,6 +1,6 @@
 {
   "name": "facebookincubator/facebook-for-woocommerce",
-  "version": "3.7.8",
+  "version": "3.7.9",
   "description": "Grow your business with Meta for WooCommerce! This plugin will install a Facebook Pixel and optionally create a shop on your Facebook page.",
   "type": "wordpress-plugin",
   "license": "GPL-2.0+",

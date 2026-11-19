@@ -1,5 +1,29 @@
 *** Meta for WooCommerce Changelog ***
 
+= 3.7.9 - 2026-11-16 =
+* Update - Remove unused /fb-checkout endpoint; Meta checkout calls WooCommerce's /checkout-link (WC 10.0+) by @jczhuoMeta in #4082
+* Dev - Use a real order in the WCPOS checkout-screen contract test by @pinahar in #4095
+* Dev - Load Param Builder Client JS from unversioned CDN URLs (#4094) by @pinahar in #4094
+* Fix - Respect signal hold during admin AJAX requests by @vahidkay-meta in #4097
+* Fix - Ignore array-shaped attribution cookies instead of crashing the request by @ukilla in #4105
+* Fix - Fix shipping profiles feed header written with the wrong delimiter (#4109) by @rafael-curran in #4109
+* Fix - Fix crash guard input crashes and redesign the shutdown handler by @ukilla in #4102
+* Fix - Keep net_revenue out of browser Pixel Purchase events by @vahidkay-meta in #4113
+* Fix - Keep saved exclusions visible on the Product sync tab in any language by @ukilla in #4084
+* Fix - Fix background sync nonce user context by @ukilla in #4087
+* Breaking - Remove the Product sync tab and retire sync exclusions by @vahidkay-meta in #4118
+* Dev - Download E2E WordPress dependencies once and share them with all shards by @vahidkay-meta in #4089
+* Dev - Consolidate open Dependabot dependency bumps by @vahidkay-meta in #4114
+* Update - Move Graph API calls from v21.0 to v23.0 by @vahidkay-meta in #4052
+* Tweak - Fix PHP unit test CI on MySQL 8.4 and remove the Value Optimization rollout switch by @vahidkay-meta in #4127
+* Fix - Fix add to cart fragment replay by @ukilla in #4081
+* Fix - Stop logging WhatsApp order events on stores that never connected WA by @ukilla in #4080
+* Dev - Add E2E and Integration Tests status badges to README by @vahidkay-meta in #4128
+* Fix - Stop reporting PageView on 404 responses by @vahidkay-meta in #4057
+* Fix - Fix withdrawal during release by @ukilla in #4100
+* Fix - Fix subscription renewal contents by @ukilla in #4078
+* Fix - Send the real page URL as event_source_url when home_url() has a path by @ukilla in #4085
+
 = 3.7.8 - 2026-10-05 =
 * Tweak - Prefer CPI sources for install sync with FBE fallback ladder by @jczhuoMeta in #4048
 * Fix - Create product sets during onboarding instead of waiting for the heartbeat by @vahidkay-meta in #4056

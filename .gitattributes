@@ -46,3 +46,4 @@ storybook export-ignore
 .vscode export-ignore
 data/.gitkeep export-ignore
 .wp-env.json export-ignore
+playwright.config.js export-ignore

@@ -688,5 +688,66 @@ describe('Signals hold/release browser runtime', function () {
 
             expect(fbqCalls('track')).toEqual([['track', 'Purchase', { value: 50 }, { eventID: posted[0].event_id }]]);
         });
+        it('keeps one Purchase id across a held release and a cached active revisit', async function () {
+            const event = { event_name: 'Purchase', event_id: 'order-123', event_time: 2000000000, custom_data: { value: 50 } };
+            const signals = bootPage('held');
+            signals.queueEvent(event);
+            setStateCookie('active');
+            const released = signals.release();
+            const request = releaseRequests()[0];
+            const posted = JSON.parse(request.body).events;
+            expect(posted[0].event_id).toBe('order-123');
+            request.respond(200, { success: true, data: { sent_count: 1, sent_event_ids: ['order-123'] } });
+            await released;
+            bootPage('active').queueEvent(event);
+            expect(fbqCalls('track').map((call) => call[3].eventID)).toEqual(['order-123', 'order-123']);
+        });
+
+        it.each(['Purchase', 'AddToCart', 'Subscribe', 'Lead', 'InitiateCheckout'])('does not refresh the timestamp of a cached %s action', function (name) {
+            const now = 2000000000;
+            jest.spyOn(Date, 'now').mockReturnValue(now * 1000);
+            const signals = bootPage('held');
+            signals.queueEvent({ event_name: name, event_id: 'action-id', event_time: now - 3600 });
+            expect(signals._queue[0].event_time).toBe(now - 3600);
+            expect(signals._queue[0].event_id).toBe('action-id');
+            expect(signals._queue[0]._visitQueuedAt).toBeUndefined();
+        });
+
+        it.each([-1860, 1860])('sends elapsed visit age independently of a device clock offset of %i seconds', async function (offset) {
+            jest.spyOn(Date, 'now').mockReturnValue((2000000000 + offset) * 1000);
+            const timer = jest.spyOn(window.performance, 'now').mockReturnValue(1000);
+            const signals = bootPage('held');
+            signals.queueEvent(cachedPageView());
+            timer.mockReturnValue(11000);
+            // A wall-clock adjustment must not affect the monotonic elapsed age.
+            Date.now.mockReturnValue(1000);
+            setStateCookie('active');
+            const released = signals.release();
+            const request = releaseRequests()[0];
+            const event = JSON.parse(request.body).events[0];
+            expect(event.visit_age_seconds).toBe(10);
+            expect(event._visitQueuedAt).toBeUndefined();
+            expect(signals._queue[0]._visitQueuedAt).toBe(1000);
+            request.respond(200, { success: true, data: { sent_count: 1, sent_event_ids: [event.event_id] } });
+            await released;
+            expect(pageViews()[0][3].eventID).toBe(event.event_id);
+        });
+
+        it('keeps the original timer when a release is retried', async function () {
+            const timer = jest.spyOn(window.performance, 'now').mockReturnValue(0);
+            const signals = bootPage('held');
+            signals.queueEvent(cachedPageView());
+            setStateCookie('active');
+            timer.mockReturnValue(10000);
+            const failed = signals.release();
+            releaseRequests()[0].respond(500, {});
+            await expect(failed).rejects.toThrow();
+            timer.mockReturnValue(1801000);
+            const retried = signals.release();
+            const request = releaseRequests()[1];
+            expect(JSON.parse(request.body).events[0].visit_age_seconds).toBe(1801);
+            request.respond(200, { success: true, data: { sent_count: 0 } });
+            await retried;
+        });
     });
 });

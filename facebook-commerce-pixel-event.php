@@ -527,9 +527,14 @@ window.FacebookSignals = window.FacebookSignals || {
 		// CAPI event may already have been sent before this held script executes.
 		var isPageVisit = ['PageView', 'ViewContent', 'ViewCategory', 'Search'].indexOf(eventData.event_name) !== -1;
 		eventData = this._cloneEventData(eventData);
-		// Held events keep the existing behavior: generate one id shared on release.
-		eventData.event_id = this._held || isPageVisit ? this._generateEventId() : originalId;
-		eventData.event_time = Math.floor(Date.now() / 1000);
+		// An action is the same event across consent changes and page loads.
+		eventData.event_id = isPageVisit || !originalId ? this._generateEventId() : originalId;
+		if (isPageVisit) {
+			eventData.event_time = Math.floor(Date.now() / 1000);
+			eventData._visitQueuedAt = this._timerNow();
+		} else {
+			eventData.event_time = eventData.event_time || Math.floor(Date.now() / 1000);
+		}
 
 		// Remember the id for this page load only, so an inline script that runs twice
 		// does not queue its event twice. The ids are not kept across page loads: a page
@@ -546,6 +551,10 @@ window.FacebookSignals = window.FacebookSignals || {
 		}
 
 		this._queue.push(eventData);
+	},
+
+	_timerNow: function() {
+		return window.performance && typeof window.performance.now === 'function' ? window.performance.now() : Date.now();
 	},
 
 	trackEvent: function(name, params, userData, method, eventId) {
@@ -619,7 +628,14 @@ window.FacebookSignals = window.FacebookSignals || {
 		var attribution = self._collectAttribution();
 
 		var payload = JSON.stringify({
-			events: postedEvents,
+			events: postedEvents.map(function(event) {
+				var posted = self._cloneEventData(event);
+				if (typeof event._visitQueuedAt === 'number') {
+					posted.visit_age_seconds = Math.max(0, Math.floor((self._timerNow() - event._visitQueuedAt) / 1000));
+				}
+				delete posted._visitQueuedAt;
+				return posted;
+			}),
 			attribution: {
 				fbp: attribution.fbp || null,
 				fbc: attribution.fbc || null

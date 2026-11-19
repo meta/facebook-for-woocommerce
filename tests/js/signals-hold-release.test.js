@@ -542,7 +542,8 @@ describe('Signals hold/release browser runtime', function () {
             // Page A again, same cached HTML.
             bootPage('active').queueEvent(cachedPageView());
 
-            expect(pageViews()).toEqual([['track', 'PageView', {}, { eventID: 'cached-page-a' }]]);
+            expect(pageViews()).toEqual([['track', 'PageView', {}, { eventID: expect.any(String) }]]);
+            expect(pageViews()[0][3].eventID).not.toBe('cached-page-a');
         });
 
         it('queues the PageView again on a second held view and sends it on release', async function () {
@@ -568,45 +569,124 @@ describe('Signals hold/release browser runtime', function () {
             expect(window.sessionStorage.getItem('wc_facebook_signals_seen_event_ids')).toBeNull();
         });
 
-        describe('when the cached copy is older than 30 minutes', function () {
-            const now = () => Math.floor(Date.now() / 1000);
-            let renderedAt;
+        afterEach(function () {
+            delete window.__wc_fb_page_generated;
+            jest.restoreAllMocks();
+        });
 
-            /** The page and its event as the cache rendered them an hour ago. */
-            function renderedAnHourAgo() {
-                renderedAt = now() - 3600;
-                window.__wc_fb_page_generated = renderedAt;
-                return Object.assign(cachedPageView(), { event_time: renderedAt });
-            }
+        it.each([0, 60, 1795, 1800, 1801, 3600])('uses a new visit time and id for a cached copy aged %i seconds', function (age) {
+            const now = 2000000000;
+            jest.spyOn(Date, 'now').mockReturnValue(now * 1000);
+            window.__wc_fb_page_generated = now - age;
+            const event = Object.assign(cachedPageView(), { event_time: now - age });
+            const original = { ...event };
+            const signals = bootPage('held');
+            signals.queueEvent(event);
 
-            afterEach(function () {
-                delete window.__wc_fb_page_generated;
-            });
+            expect(signals._queue[0].event_time).toBe(now);
+            expect(signals._queue[0].event_id).not.toBe(event.event_id);
+            expect(event).toEqual(original);
+        });
 
-            it('fires the PageView without the eventID shared by every visitor of the cached copy', function () {
-                bootPage('active').queueEvent(renderedAnHourAgo());
+        it.each([60, 3600])('deduplicates active inline replays on a cached copy aged %i seconds', function (age) {
+            window.__wc_fb_page_generated = Math.floor(Date.now() / 1000) - age;
+            const signals = bootPage('active');
+            const event = cachedPageView();
+            signals.queueEvent(event);
+            signals.queueEvent(event);
 
-                expect(pageViews()).toEqual([['track', 'PageView', {}]]);
-            });
+            expect(pageViews()).toHaveLength(1);
+            expect(pageViews()[0][3].eventID).not.toBe(event.event_id);
+        });
 
-            it('queues the PageView with the time of this view, so the release accepts it', function () {
-                const signals = bootPage('held');
-                signals.queueEvent(renderedAnHourAgo());
+        it.each([0, 60, 3600])('uses distinct event ids across active views of a cached copy aged %i seconds', function (age) {
+            window.__wc_fb_page_generated = Math.floor(Date.now() / 1000) - age;
+            const event = cachedPageView();
+            bootPage('active').queueEvent(event);
+            bootPage('active').queueEvent(event);
 
-                expect(signals._queue[0].event_time).toBeGreaterThanOrEqual(now() - 5);
-            });
+            expect(pageViews()).toHaveLength(2);
+            const ids = pageViews().map((call) => call[3].eventID);
+            expect(ids[0]).not.toBe(event.event_id);
+            expect(ids[1]).not.toBe(event.event_id);
+            expect(ids[1]).not.toBe(ids[0]);
+        });
 
-            it('keeps the eventID and time of a page rendered moments ago', function () {
-                window.__wc_fb_page_generated = now() - 60;
-                const fresh = Object.assign(cachedPageView(), { event_time: now() - 60 });
+        it('deduplicates active replays before pixel initialization', function () {
+            const signals = bootPage('active');
+            signals._pixelInitialized = false;
+            const event = cachedPageView();
+            signals.queueEvent(event);
+            signals.queueEvent(event);
+            expect(signals._pendingPixelEvents).toHaveLength(1);
+            signals._runPixelInit();
+            expect(pageViews()).toHaveLength(1);
+        });
 
-                const signals = bootPage('held');
-                signals.queueEvent(fresh);
-                expect(signals._queue[0].event_time).toBe(fresh.event_time);
+        it('releases a recent visit near the cache age boundary with matching browser and CAPI ids', async function () {
+            const now = 2000000000;
+            const clock = jest.spyOn(Date, 'now').mockReturnValue(now * 1000);
+            window.__wc_fb_page_generated = now - 1795;
+            const event = Object.assign(cachedPageView(), { event_time: now - 1795 });
+            const signals = bootPage('held');
+            signals.queueEvent(event);
 
-                bootPage('active').queueEvent(fresh);
-                expect(pageViews()).toEqual([['track', 'PageView', {}, { eventID: 'cached-page-a' }]]);
-            });
+            clock.mockReturnValue((now + 10) * 1000);
+            setStateCookie('active');
+            const released = signals.release();
+            const request = releaseRequests()[0];
+            const posted = JSON.parse(request.body).events;
+            expect(posted).toHaveLength(1);
+            expect(now + 10 - posted[0].event_time).toBe(10);
+            request.respond(200, { success: true, data: { sent_count: 1, sent_event_ids: [posted[0].event_id] } });
+            await released;
+
+            expect(pageViews()).toEqual([['track', 'PageView', {}, { eventID: posted[0].event_id }]]);
+            signals.queueEvent(event);
+            expect(pageViews()).toHaveLength(1);
+            expect(signals._queue).toHaveLength(0);
+        });
+
+        it('preserves the matching server id for a live active event outside the held-render queue', function () {
+            bootPage('active').trackEvent('PageView', {}, null, 'track', 'live-server-event');
+            expect(pageViews()).toEqual([['track', 'PageView', {}, { eventID: 'live-server-event' }]]);
+        });
+
+        it.each(['Purchase', 'Subscribe', 'AddToCart', 'InitiateCheckout', 'Lead', 'CustomAction'])('retains the server id for an active %s from a held render', function (name) {
+            const signals = bootPage('active');
+            const method = name === 'CustomAction' ? 'trackCustom' : 'track';
+            const event = { event_name: name, event_id: 'server-action-id', event_time: Math.floor(Date.now() / 1000), custom_data: { value: 50 }, method };
+            signals.queueEvent(event);
+            signals.queueEvent(event);
+
+            expect(fbqCalls(method)).toEqual([[method, name, { value: 50 }, { eventID: 'server-action-id' }]]);
+            expect(signals._queue).toHaveLength(0);
+        });
+
+        it.each(['PageView', 'ViewContent', 'ViewCategory', 'Search'])('still gives each active cached %s visit its own id', function (name) {
+            const event = { event_name: name, event_id: 'cached-visit-id', custom_data: {} };
+            bootPage('active').queueEvent(event);
+            bootPage('active').queueEvent(event);
+
+            const calls = fbqCalls('track');
+            expect(calls).toHaveLength(2);
+            expect(calls[0][3].eventID).not.toBe(event.event_id);
+            expect(calls[1][3].eventID).not.toBe(event.event_id);
+            expect(calls[0][3].eventID).not.toBe(calls[1][3].eventID);
+        });
+
+        it('keeps the existing shared browser and CAPI id when a held Purchase is released', async function () {
+            const signals = bootPage('held');
+            signals.queueEvent({ event_name: 'Purchase', event_id: 'order-id', custom_data: { value: 50 } });
+            setStateCookie('active');
+            const released = signals.release();
+            const request = releaseRequests()[0];
+            const posted = JSON.parse(request.body).events;
+            expect(posted).toHaveLength(1);
+            request.respond(200, { success: true, data: { sent_count: 1, sent_event_ids: [posted[0].event_id] } });
+            await released;
+
+            expect(fbqCalls('track')).toEqual([['track', 'Purchase', { value: 50 }, { eventID: posted[0].event_id }]]);
         });
     });
 });

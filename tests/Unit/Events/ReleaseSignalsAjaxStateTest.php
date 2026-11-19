@@ -28,6 +28,43 @@ use WP_UnitTestCase;
  */
 class ReleaseSignalsAjaxStateTest extends WP_UnitTestCase {
 
+	/** @dataProvider visit_times */
+	public function test_elapsed_age_is_anchored_to_server_time( array $event, ?int $expected_time, bool $valid ): void {
+		$class = new \ReflectionClass( ReleaseSignalsAjax::class );
+		$handler = $class->newInstanceWithoutConstructor();
+		$normalize = $class->getMethod( 'normalize_visit_time' );
+		$normalize->setAccessible( true );
+		$validate = $class->getMethod( 'validate_event' );
+		$validate->setAccessible( true );
+		$normalized = $normalize->invoke( $handler, $event, 2000000000 );
+		$this->assertSame( $valid, $validate->invoke( $handler, $normalized, 2000000000 ) );
+		if ( null === $expected_time ) {
+			$this->assertNull( $normalized );
+		} else {
+			$this->assertSame( $expected_time, $normalized['event_time'] );
+			$this->assertArrayNotHasKey( 'visit_age_seconds', $normalized );
+		}
+	}
+
+	public function visit_times(): array {
+		$cases = array();
+		foreach ( array( 'PageView', 'ViewContent', 'ViewCategory', 'Search' ) as $name ) {
+			foreach ( array( -1860, 1860 ) as $offset ) {
+				$cases[] = array( array( 'event_name' => $name, 'event_time' => 2000000000 + $offset, 'visit_age_seconds' => 10 ), 1999999990, true );
+			}
+		}
+		foreach ( array( -1, 1801, '10', null, array(), INF, NAN ) as $age ) {
+			$cases[] = array( array( 'event_name' => 'PageView', 'event_time' => 2000000000, 'visit_age_seconds' => $age ), null, false );
+		}
+		$cases[] = array( array( 'event_name' => 'PageView', 'visit_age_seconds' => 1800 ), 1999998200, true );
+		$cases[] = array( array( 'event_name' => 'PageView', 'event_time' => 1999996400 ), 1999996400, false );
+		$cases[] = array( array( 'event_name' => 'PageView', 'event_time' => 2000000000 ), 2000000000, true );
+		// An action cannot use an elapsed visit age to make an old purchase look recent.
+		$cases[] = array( array( 'event_name' => 'Purchase', 'event_time' => 1999996400, 'visit_age_seconds' => 0 ), 1999996400, false );
+		$cases[] = array( array( 'event_name' => 'Purchase', 'event_time' => 1999999990 ), 1999999990, true );
+		return $cases;
+	}
+
 	public function test_active_state_allows_release(): void {
 		$this->assertTrue( ReleaseSignalsAjax::is_releasable_state( Signals::STATE_ACTIVE ) );
 	}

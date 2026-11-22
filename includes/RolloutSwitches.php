@@ -57,6 +57,7 @@ class RolloutSwitches {
 		if ( ! $is_connected ) {
 			return;
 		}
+		
 
 		// Include plugin version in transient key to reset on version upgrades
 		$plugin_version = $this->plugin->get_version();

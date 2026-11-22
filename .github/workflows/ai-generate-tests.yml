@@ -1,0 +1,308 @@
+name: AI Generate PHP Unit Tests
+
+on:
+  workflow_dispatch:  # Manual trigger only
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  generate-ai-tests:
+    name: Generate AI-Powered Unit Tests
+    runs-on: ubuntu-22.04
+    env:
+      WP_CORE_DIR: "/tmp/wordpress/src"
+      WP_TESTS_DIR: "/tmp/wordpress/tests/phpunit"
+    
+    steps:
+      - name: Install SVN
+        run: sudo apt-get install subversion -y
+
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Setup PHP
+        uses: woocommerce/grow/prepare-php@actions-v1
+        with:
+          php-version: '8.2'
+
+      - name: Prepare MySQL
+        uses: woocommerce/grow/prepare-mysql@actions-v1
+
+      - name: Install WP tests
+        run: |
+          chmod +x ./bin/install-wp-tests.sh
+          ./bin/install-wp-tests.sh wordpress_test root root localhost latest latest
+
+      - name: Install dependencies
+        run: composer install
+
+      - name: Generate coverage report
+        run: |
+          mkdir -p reports/coverage
+          vendor/bin/phpunit --coverage-html reports/coverage --coverage-clover reports/coverage.xml
+
+      - name: Setup Python for Llama
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install Llama CPP Python
+        run: |
+          pip install llama-cpp-python
+          pip install requests
+
+      - name: Download Llama Model
+        run: |
+          mkdir -p models
+          curl -L https://huggingface.co/TheBloke/CodeLlama-7B-GGUF/resolve/main/codellama-7b.Q4_K_M.gguf -o models/codellama.gguf
+
+      - name: Create test generator script
+        run: |
+          mkdir -p bin
+          cat > bin/generate_llama_tests.py << 'EOL'
+          #!/usr/bin/env python3
+
+          import sys
+          import json
+          from llama_cpp import Llama
+          import os
+          import re
+
+          def load_class_content(file_path):
+              """Load the PHP class content from a file."""
+              with open(file_path, 'r') as f:
+                  return f.read()
+
+          def load_existing_test_content(test_file):
+              """Load existing test file content if it exists."""
+              if os.path.exists(test_file):
+                  with open(test_file, 'r') as f:
+                      return f.read()
+              return None
+
+          def extract_existing_test_methods(test_content):
+              """Extract existing test method names from test content."""
+              if not test_content:
+                  return set()
+              
+              pattern = r'public\s+function\s+(test\w+)\s*\('
+              return set(re.findall(pattern, test_content))
+
+          def merge_test_content(existing_content, new_content):
+              """Merge existing test content with new test content."""
+              if not existing_content:
+                  return new_content
+                  
+              namespace_pattern = r'namespace\s+[^;]+;'
+              use_statements_pattern = r'use\s+[^;]+;'
+              class_def_pattern = r'class\s+\w+Test\s+extends\s+TestCase\s*{'
+              
+              existing_namespace = re.search(namespace_pattern, existing_content)
+              existing_use_statements = re.findall(use_statements_pattern, existing_content)
+              existing_class_def = re.search(class_def_pattern, existing_content)
+              
+              new_methods_pattern = r'(public\s+function\s+test\w+\s*\([^{]*{[^}]*})'
+              new_methods = re.findall(new_methods_pattern, new_content, re.DOTALL)
+              
+              existing_methods = extract_existing_test_methods(existing_content)
+              
+              merged_content = []
+              
+              if existing_namespace:
+                  merged_content.append(existing_content[:existing_namespace.end()])
+              else:
+                  namespace_match = re.search(namespace_pattern, new_content)
+                  if namespace_match:
+                      merged_content.append(namespace_match.group(0))
+              
+              new_use_statements = re.findall(use_statements_pattern, new_content)
+              all_use_statements = list(set(existing_use_statements + new_use_statements))
+              merged_content.extend(all_use_statements)
+              
+              if existing_class_def:
+                  merged_content.append('\n' + existing_content[existing_class_def.start():existing_class_def.end()] + '\n')
+              else:
+                  class_def_match = re.search(class_def_pattern, new_content)
+                  if class_def_match:
+                      merged_content.append('\n' + class_def_match.group(0) + '\n')
+              
+              existing_methods_pattern = r'(public\s+function\s+test\w+\s*\([^{]*{[^}]*})'
+              existing_method_blocks = re.findall(existing_methods_pattern, existing_content, re.DOTALL)
+              merged_content.extend(['    ' + method.strip() + '\n' for method in existing_method_blocks])
+              
+              for method in new_methods:
+                  method_name = re.search(r'function\s+(test\w+)', method)
+                  if method_name and method_name.group(1) not in existing_methods:
+                      merged_content.append('    ' + method.strip() + '\n')
+              
+              merged_content.append('}')
+              
+              return '\n'.join(merged_content)
+
+          def generate_test_with_llama(llm, class_content, class_name, existing_test_methods):
+              """Generate test cases using the Llama model."""
+              existing_methods_str = '\n'.join(existing_test_methods) if existing_test_methods else "No existing test methods"
+              
+              prompt = f"""
+          Given the following PHP class and its existing test methods, generate additional PHPUnit test cases for its public methods.
+          Do not duplicate existing test methods, only generate new ones that test different scenarios.
+
+          PHP Class:
+          {class_content}
+
+          Existing Test Methods:
+          {existing_methods_str}
+
+          Generate a complete PHPUnit test class that:
+          1. Has proper namespace and use statements
+          2. Extends TestCase
+          3. Has meaningful test methods with assertions
+          4. Includes test cases for different scenarios not covered by existing tests
+          5. Uses proper PHPUnit assertions
+          6. Handles dependencies and mocking where necessary
+
+          The test class should follow this format:
+          <?php
+          namespace Facebook\WooCommerce\Tests\Unit;
+
+          use PHPUnit\Framework\TestCase;
+          [other use statements as needed]
+
+          class {class_name}Test extends TestCase
+          {{
+              // Test methods here
+          }}
+
+          Response should only include the complete PHP test class code, nothing else.
+          """
+
+              response = llm.create_completion(
+                  prompt,
+                  max_tokens=2048,
+                  temperature=0.7,
+                  stop=["```"],
+                  echo=False
+              )
+              
+              return response['choices'][0]['text'].strip()
+
+          def main():
+              if len(sys.argv) != 3:
+                  print("Usage: generate_llama_tests.py <class_file_path> <class_name>")
+                  sys.exit(1)
+
+              class_file = sys.argv[1]
+              class_name = sys.argv[2]
+              
+              model_path = "models/codellama.gguf"
+              if not os.path.exists(model_path):
+                  print(f"Error: Model file not found at {model_path}")
+                  sys.exit(1)
+              
+              llm = Llama(
+                  model_path=model_path,
+                  n_ctx=2048,
+                  n_threads=4
+              )
+              
+              class_content = load_class_content(class_file)
+              
+              test_dir = "tests/Unit"
+              os.makedirs(test_dir, exist_ok=True)
+              
+              test_file = f"{test_dir}/{class_name}Test.php"
+              
+              existing_content = load_existing_test_content(test_file)
+              existing_test_methods = extract_existing_test_methods(existing_content) if existing_content else set()
+              
+              new_test_code = generate_test_with_llama(llm, class_content, class_name, existing_test_methods)
+              
+              final_test_code = merge_test_content(existing_content, new_test_code)
+              
+              with open(test_file, 'w') as f:
+                  f.write(final_test_code)
+              
+              print(json.dumps({
+                  "test_file": test_file,
+                  "class_name": class_name,
+                  "existing_tests": len(existing_test_methods),
+                  "new_tests": len(extract_existing_test_methods(new_test_code)) - len(existing_test_methods)
+              }))
+
+          if __name__ == "__main__":
+              main()
+          EOL
+          chmod +x bin/generate_llama_tests.py
+
+      - name: Analyze untested classes
+        id: analyze
+        run: |
+          echo "<?php
+          require 'vendor/autoload.php';
+          
+          \$xml = new SimpleXMLElement(file_get_contents('reports/coverage.xml'));
+          \$lowest_coverage = null;
+          \$class_to_test = null;
+          
+          foreach (\$xml->xpath('//class') as \$class) {
+              \$metrics = \$class->metrics;
+              \$elements = (float)\$metrics['elements'];
+              if (\$elements > 0) {
+                  \$coverage = (float)\$metrics['coveredelements'] / \$elements * 100;
+                  if (\$coverage < 80 && (\$lowest_coverage === null || \$coverage < \$lowest_coverage)) {
+                      \$lowest_coverage = \$coverage;
+                      \$class_to_test = [
+                          'class' => (string)\$class['name'],
+                          'file' => (string)\$class['filename'],
+                          'coverage' => round(\$coverage, 2)
+                      ];
+                  }
+              }
+          }
+          
+          if (\$class_to_test) {
+              echo \"class_name={$class_to_test['class']}\" >> \$GITHUB_OUTPUT;
+              echo \"file_path={$class_to_test['file']}\" >> \$GITHUB_OUTPUT;
+              echo \"coverage={$class_to_test['coverage']}\" >> \$GITHUB_OUTPUT;
+          } else {
+              echo \"No classes found with coverage below 80%\\n\";
+              exit(78);  # Skip PR creation if no classes need testing
+          }" > analyze_coverage.php
+          
+          php analyze_coverage.php
+
+      - name: Generate AI Tests
+        id: generate_tests
+        run: |
+          chmod +x ./tests/tools/generate_llama_tests.py
+          result=$(python3 ./tests/tools/generate_llama_tests.py "${{ steps.analyze.outputs.file_path }}" "${{ steps.analyze.outputs.class_name }}")
+          echo "test_info=$result" >> $GITHUB_OUTPUT
+
+      - name: Cleanup temporary files
+        run: |
+          rm -f analyze_coverage.php
+          rm -rf reports/
+          rm -rf models/
+
+      - name: Create Pull Request
+        uses: peter-evans/create-pull-request@v5
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: "test: Add AI-generated unit tests for ${{ steps.analyze.outputs.class_name }}"
+          title: "Add AI-generated unit tests for class with ${{ steps.analyze.outputs.coverage }}% coverage"
+          body: |
+            This PR adds AI-generated unit tests using CodeLlama for the class with the lowest coverage.
+            
+            Class: `${{ steps.analyze.outputs.class_name }}`
+            Current Coverage: ${{ steps.analyze.outputs.coverage }}%
+            
+            The tests were generated using the CodeLlama model and include assertions and different test scenarios.
+            Please review the generated tests and adjust them as needed.
+          branch: feature/ai-generate-unit-tests
+          base: main
+          labels: |
+            automated
+            tests
+            needs-review 

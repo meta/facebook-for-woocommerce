@@ -1,0 +1,130 @@
+name: Generate PHP Unit Tests
+
+on:
+  workflow_dispatch:  # Manual trigger only
+
+jobs:
+  generate-tests:
+    name: Generate Missing Unit Tests
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          tools: phpunit, phpcov
+          coverage: xdebug
+
+      - name: Install dependencies
+        run: composer install
+
+      - name: Generate coverage report
+        run: |
+          mkdir -p coverage
+          vendor/bin/phpunit --coverage-html coverage --coverage-clover coverage.xml
+
+      - name: Check current coverage
+        id: coverage
+        run: |
+          COVERAGE=$(php -r '
+            $xml = new SimpleXMLElement(file_get_contents("coverage.xml"));
+            $metrics = $xml->xpath("//metrics")[0];
+            $coverage = ($metrics["coveredelements"] / $metrics["elements"]) * 100;
+            echo number_format($coverage, 2);
+          ')
+          echo "total_coverage=$COVERAGE" >> $GITHUB_OUTPUT
+          echo "Current coverage: $COVERAGE%"
+          if (( $(echo "$COVERAGE >= 80" | bc -l) )); then
+            echo "Coverage goal achieved! No need to generate more tests."
+            exit 78  # Special exit code to skip PR creation
+          fi
+
+      - name: Analyze untested classes
+        id: analyze
+        if: steps.coverage.outcome != 'skipped'
+        run: |
+          echo "<?php
+          require 'vendor/autoload.php';
+          
+          \$xml = new SimpleXMLElement(file_get_contents('coverage.xml'));
+          \$untested = [];
+          
+          foreach (\$xml->xpath('//class') as \$class) {
+              \$metrics = \$class->metrics;
+              if ((float)\$metrics['elements'] > 0 && (float)\$metrics['coveredelements'] / (float)\$metrics['elements'] < 0.8) {
+                  \$untested[] = [
+                      'class' => (string)\$class['name'],
+                      'file' => (string)\$class['filename'],
+                      'coverage' => round((float)\$metrics['coveredelements'] / (float)\$metrics['elements'] * 100, 2)
+                  ];
+              }
+          }
+          
+          foreach (\$untested as \$class) {
+              \$reflection = new ReflectionClass(\$class['class']);
+              \$methods = \$reflection->getMethods(ReflectionMethod::IS_PUBLIC);
+              
+              \$testFile = 'tests/Unit/' . str_replace('.php', 'Test.php', basename(\$class['file']));
+              \$testClass = basename(\$class['class']) . 'Test';
+              
+              if (!file_exists(dirname(\$testFile))) {
+                  mkdir(dirname(\$testFile), 0777, true);
+              }
+              
+              \$template = '<?php
+          namespace Facebook\WooCommerce\Tests\Unit;
+          
+          use PHPUnit\Framework\TestCase;
+          use ' . \$class['class'] . ';
+          
+          class ' . \$testClass . ' extends TestCase
+          {';
+              
+              foreach (\$methods as \$method) {
+                  if (!\$method->isConstructor()) {
+                      \$template .= '
+              public function test' . ucfirst(\$method->getName()) . '()
+              {
+                  \$this->markTestIncomplete(\'Auto-generated test for ' . \$method->getName() . '\');
+              }';
+                  }
+              }
+              
+              \$template .= '
+          }';
+              
+              file_put_contents(\$testFile, \$template);
+              echo \"Generated test file: {\$testFile}\\n\";
+          }" > generate_tests.php
+          
+          php generate_tests.php > test_files.txt
+
+      - name: Create Pull Request
+        if: steps.coverage.outcome != 'skipped'
+        uses: peter-evans/create-pull-request@v5
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: "test: Add generated unit tests to improve coverage"
+          title: "Add generated unit tests (Current coverage: ${{ steps.coverage.outputs.total_coverage }}%)"
+          body: |
+            This PR adds automatically generated unit test stubs for classes with low coverage.
+            
+            Current total coverage: ${{ steps.coverage.outputs.total_coverage }}%
+            Target coverage: 80%
+            
+            Generated test files:
+            ```
+            $(cat test_files.txt)
+            ```
+            
+            Please review and implement the actual test assertions for these generated test methods.
+          branch: feature/generate-unit-tests
+          base: main
+          labels: |
+            automated
+            tests
+            needs-review 

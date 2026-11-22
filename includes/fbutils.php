@@ -268,6 +268,13 @@ if ( ! class_exists( 'WC_Facebookcommerce_Utils' ) ) :
 				array( 'fields' => 'all' )
 			);
 
+			if ( is_wp_error( $category_path ) ) {
+				return array(
+					'name' => '',
+					'categories' => '""'
+				);
+			}
+
 			$content_category = array_values(
 				array_map(
 					function ( $item ) {

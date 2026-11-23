@@ -245,7 +245,7 @@ jobs:
             | sudo xargs -0 -r rm -f || true
 
       - name: Cache Playwright browsers
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cache/ms-playwright
           key: ms-playwright-${{ runner.os }}-${{ runner.arch }}-${{ needs.resolve-versions.outputs.playwright-version }}
@@ -282,7 +282,7 @@ jobs:
           echo "✅ $(find "$WP_DEPS_DIR/browser-packages" -name '*.deb' | wc -l) system packages ready for the shards"
 
       - name: Share dependencies with the E2E shards
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: wp-dependencies
           path: ${{ env.WP_DEPS_DIR }}
@@ -343,7 +343,7 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Download WordPress dependencies
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v8
         with:
           name: wp-dependencies
           path: ${{ env.WP_DEPS_DIR }}
@@ -363,7 +363,7 @@ jobs:
           fi
 
       - name: Restore Playwright browsers
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: ~/.cache/ms-playwright
           key: ms-playwright-${{ runner.os }}-${{ runner.arch }}-${{ needs.resolve-versions.outputs.playwright-version }}

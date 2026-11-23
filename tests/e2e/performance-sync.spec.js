@@ -407,6 +407,13 @@ test.describe('Meta for WooCommerce - Performance Sync E2E Tests', () => {
 
       await page.waitForFunction(
         (count) => {
+          // WooCommerce keeps the panel blocked while it generates and then loads the variations.
+          // Its "N variations added" notice shows up before the rows do, so on its own the text
+          // check below would let the test move on to Publish mid-load.
+          if (document.querySelector('#woocommerce-product-data .blockUI')) {
+            return false;
+          }
+
           const visibleRows = document.querySelectorAll('.woocommerce_variation').length;
           if (visibleRows >= Math.min(count, 10)) {
             return true;
@@ -462,6 +469,13 @@ test.describe('Meta for WooCommerce - Performance Sync E2E Tests', () => {
 
       await page.waitForFunction(
         (count) => {
+          // WooCommerce keeps the panel blocked while it generates and then loads the variations.
+          // Its "N variations added" notice shows up before the rows do, so on its own the text
+          // check below would let the test move on to Publish mid-load.
+          if (document.querySelector('#woocommerce-product-data .blockUI')) {
+            return false;
+          }
+
           const visibleRows = document.querySelectorAll('.woocommerce_variation').length;
           if (visibleRows >= Math.min(count, 10)) {
             return true;

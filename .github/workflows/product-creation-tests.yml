@@ -29,6 +29,10 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
 env:
   # Test environment configuration
   TEST_SITE_HOST: ${{ secrets.TEST_SITE_HOST }}

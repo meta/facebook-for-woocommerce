@@ -1275,7 +1275,19 @@ class Admin {
 			?>
 
 			<div class='wc-facebook-commerce-options-group options_group google_product_catgory'>
-				<?php \WooCommerce\Facebook\Admin\Products::render_google_product_category_fields_and_enhanced_attributes( $product ); ?>
+				<?php
+				// Ensure $product is valid before calling the function
+				if ( ! $product && isset( $post->ID ) ) {
+					$product = wc_get_product( $post->ID );
+				}
+
+				if ( $product instanceof \WC_Product ) {
+					\WooCommerce\Facebook\Admin\Products::render_google_product_category_fields_and_enhanced_attributes( $product );
+				} else {
+					// Log for debugging purposes
+					error_log( 'Facebook for WooCommerce: Unable to render product fields - invalid product object' );
+				}
+				?>
 			</div>
 		</div>
 		<?php

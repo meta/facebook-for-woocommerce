@@ -21,6 +21,7 @@ const {
   validateFacebookSync,
   processPendingSyncJobs,
   execWP,
+  createTestProduct,
   setProductTitle,
   setProductDescription,
   dismissWooInterferingOverlays,
@@ -880,6 +881,107 @@ test.describe('Variable Product Depth Tests', () => {
       logTestEnd(testInfo, true);
     } catch (error) {
       await safeScreenshot(page, 'variable-product-depth-delete-regenerate-failure.png');
+      logTestEnd(testInfo, false);
+      throw error;
+    } finally {
+      if (productId) {
+        await cleanupProduct(productId);
+      }
+    }
+  });
+
+  test('Add a new attribute to an already-synced variable product and verify catalog updates', async ({ page }, testInfo) => {
+    let productId = null;
+
+    try {
+      // 1. Create and sync a Color-only variable product (the programmatic default:
+      //    a "Color" attribute with Red/Blue/Green -> 3 variations, no size).
+      const product = await createTestProduct({ productType: 'variable', price: '42.00' });
+      productId = product.productId;
+      console.log(`✅ Created variable product ${productId}: "${product.productName}"`);
+
+      const baseline = await validateVariableProductSync(productId, product.productName, { attempts: 3 });
+      expect(baseline.raw_data.woo_data).toHaveLength(3);
+      for (const wooItem of baseline.raw_data.woo_data) {
+        // No size attribute exists yet, so every catalog variation's size is empty.
+        expect(normalizeText(wooItem.size)).toBe('');
+      }
+      console.log('✅ Baseline synced: 3 Color-only variations, no size attribute');
+
+      // 2. Add a NEW "Size" attribute to the already-synced product and rebuild its
+      //    variations as the Color x Size cartesian product (Red/Blue x Small/Large = 4),
+      //    each with a stable SKU so retailer IDs are deterministic for matching.
+      //    Done programmatically: the WooCommerce variations metabox is dialog/blockUI
+      //    heavy and flaky to drive via the UI for a "confirm catalog reflects it" check.
+      const addAttrResult = await execWP(`
+        $parent_id = ${Number(productId)};
+        $product = wc_get_product($parent_id);
+        if ( ! $product || ! $product->is_type('variable') ) {
+          echo json_encode(['ok' => false, 'reason' => 'bad_parent']);
+          return;
+        }
+
+        // Append a new variation-defining "Size" attribute, preserving existing ones.
+        $attributes = $product->get_attributes();
+        $size = new WC_Product_Attribute();
+        $size->set_name('Size'); // label contains "size" -> maps to the catalog size field
+        $size->set_options(['Small', 'Large']);
+        $size->set_visible(true);
+        $size->set_variation(true);
+        $attributes['size'] = $size;
+        $product->set_attributes($attributes);
+        $product->save();
+
+        // Remove the old Color-only variations and rebuild as Color x Size so every
+        // variation is fully specified (avoids "Any Size" variations with empty values).
+        foreach ($product->get_children() as $old_vid) {
+          wp_delete_post($old_vid, true);
+        }
+
+        $created = [];
+        $price = 42;
+        foreach (['Red', 'Blue'] as $color) {
+          foreach (['Small', 'Large'] as $size_value) {
+            $variation = new WC_Product_Variation();
+            $variation->set_parent_id($parent_id);
+            $variation->set_attributes(['color' => $color, 'size' => $size_value]);
+            $variation->set_regular_price((string) $price);
+            $variation->set_price((string) $price);
+            $variation->set_sku('e2e-' . strtolower($color) . '-' . strtolower($size_value) . '-' . $parent_id);
+            $variation->set_manage_stock(true);
+            $variation->set_stock_quantity(10);
+            $variation->set_stock_status('instock');
+            $created[] = $variation->save();
+            $price++;
+          }
+        }
+        $product = wc_get_product($parent_id);
+        $product->save();
+
+        echo json_encode(['ok' => true, 'count' => count($created)]);
+      `);
+
+      const addAttr = JSON.parse(addAttrResult.stdout);
+      expect(addAttr.ok, `Failed to add Size attribute: ${addAttrResult.stdout}`).toBe(true);
+      expect(addAttr.count).toBe(4);
+      console.log('✅ Added Size attribute and rebuilt 4 Color x Size variations');
+
+      // 3. Re-sync and assert the catalog reflects the new attribute: 4 variations,
+      //    each carrying its size (matched to Woo by retailer_id) with color preserved.
+      const after = await validateVariableProductSync(productId, product.productName, { attempts: 4 });
+      assertVariationAttributeMapping(after, 4);
+      expect(after.raw_data.woo_data).toHaveLength(4);
+
+      for (const fbItem of after.raw_data.facebook_data.filter(item => item && item.found !== false)) {
+        expect(normalizeText(fbItem.size), 'New Size attribute should be populated on every synced variation').not.toBe('');
+      }
+      const syncedSizes = new Set(after.raw_data.facebook_data.map(item => normalizeText(item.size)));
+      expect(syncedSizes.has('small') && syncedSizes.has('large')).toBe(true);
+      console.log('✅ New Size attribute propagated to all 4 catalog variations');
+
+      logTestEnd(testInfo, true);
+    } catch (error) {
+      await safeScreenshot(page, 'add-attribute-to-synced-variable-product-failure.png');
       logTestEnd(testInfo, false);
       throw error;
     } finally {

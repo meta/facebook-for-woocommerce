@@ -182,6 +182,10 @@ class ProductSetSync {
 			} else {
 				$this->create_fb_product_set( $wc_category );
 			}
+
+			// Resync all products in this category to update their product_type field with the new category name
+			// This ensures the product set filter continues to match the products after a name change
+			$this->sync_products_in_category( $wc_category );
 		} catch ( \Exception $exception ) {
 			$this->log_exception( $exception );
 		}
@@ -392,6 +396,52 @@ class ProductSetSync {
 			} catch ( \Exception $exception ) {
 				$this->log_exception( $exception );
 			}
+		}
+	}
+
+	/**
+	 * Syncs all products in a specific category to Facebook.
+	 * This is necessary when a category name or slug changes so that the product_type
+	 * field on products is updated with the new category name, ensuring the product set
+	 * filter continues to match the products correctly.
+	 *
+	 * @since 3.4.10
+	 *
+	 * @param \WP_Term $wc_category The WooCommerce category object.
+	 */
+	protected function sync_products_in_category( $wc_category ) {
+		if ( ! $wc_category instanceof \WP_Term ) {
+			return;
+		}
+
+		// Get all products in this category
+		$products = wc_get_products(
+			array(
+				'category' => array( $wc_category->slug ),
+				'limit'    => -1, // Get all products
+				'status'   => array( 'publish', 'draft', 'pending', 'private' ), // Include all statuses
+			)
+		);
+
+		if ( empty( $products ) ) {
+			return;
+		}
+
+		$sync_product_ids = array();
+
+		foreach ( $products as $product ) {
+			if ( $product instanceof \WC_Product_Variable ) {
+				// For variable products, sync the variations, not the parent
+				$sync_product_ids = array_merge( $sync_product_ids, $product->get_children() );
+			} else {
+				// For simple and other product types, sync the product itself
+				$sync_product_ids[] = $product->get_id();
+			}
+		}
+
+		if ( ! empty( $sync_product_ids ) ) {
+			// Trigger product sync to update product_type field with new category name
+			facebook_for_woocommerce()->get_products_sync_handler()->create_or_update_products( $sync_product_ids );
 		}
 	}
 }

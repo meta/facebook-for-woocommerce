@@ -12,6 +12,7 @@ namespace WooCommerce\Facebook\ProductSets;
 
 defined( 'ABSPATH' ) || exit;
 
+use WooCommerce\Facebook\API\Exceptions\Request_Limit_Reached;
 use WooCommerce\Facebook\Integrations\WPML;
 use WooCommerce\Facebook\RolloutSwitches;
 use WooCommerce\Facebook\Utilities\Heartbeat;
@@ -384,6 +385,10 @@ class ProductSetSync {
 				} else {
 					$this->create_fb_product_set( $wc_category );
 				}
+			} catch ( Request_Limit_Reached $exception ) {
+				// The limit is per catalog, so every remaining category would be rejected too.
+				$this->log_exception( $exception );
+				return;
 			} catch ( \Exception $exception ) {
 				$this->log_exception( $exception );
 			}

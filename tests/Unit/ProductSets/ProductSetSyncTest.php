@@ -11,6 +11,7 @@ require_once __DIR__ . '/../../../includes/ProductSets/ProductSetSync.php';
 
 use WooCommerce\Facebook\Tests\AbstractWPUnitTestWithSafeFiltering;
 use WooCommerce\Facebook\ProductSets\ProductSetSync;
+use WooCommerce\Facebook\API\Exceptions\Request_Limit_Reached;
 
 /**
  * Class FeedUploadUtilsTest
@@ -130,6 +131,25 @@ class ProductSetSyncTest extends AbstractWPUnitTestWithSafeFiltering {
         $product_set_sync->expects( $this->atLeast(2) )
             ->method( 'create_fb_product_set' );
         
+        $product_set_sync->sync_all_product_sets();
+    }
+
+    public function testSyncAllProductSetsStopsWhenTheCatalogIsRateLimited() {
+        $this->createWPCategory( self::WC_CATEGORY_NAME_1, 'test-category-1' );
+        $this->createWPCategory( self::WC_CATEGORY_NAME_2, 'test-category-2' );
+
+        $product_set_sync = $this->getMockBuilder( ProductSetSyncTestable::class )
+            ->setMethods(['get_fb_product_set_id','create_fb_product_set','update_fb_product_set'])
+            ->getMock();
+
+        $product_set_sync->expects( $this->once() )
+            ->method( 'get_fb_product_set_id' )
+            ->willThrowException( new Request_Limit_Reached( 'There have been too many calls to this Catalog account.', 80009 ) );
+        $product_set_sync->expects( $this->never() )
+            ->method( 'create_fb_product_set' );
+        $product_set_sync->expects( $this->never() )
+            ->method( 'update_fb_product_set' );
+
         $product_set_sync->sync_all_product_sets();
     }
 

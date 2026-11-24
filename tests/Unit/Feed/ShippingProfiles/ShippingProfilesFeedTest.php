@@ -404,4 +404,52 @@ class ShippingProfilesFeedTest extends FeedDataTestBase {
 
         $zone->save();
 	}
+
+	/**
+	 * Test get_feed_type method returns correct feed type.
+	 *
+	 * @covers WooCommerce\Facebook\Feed\ShippingProfilesFeed::get_feed_type
+	 */
+	public function test_get_feed_type(): void {
+		$result = ShippingProfilesFeed::get_feed_type();
+		$this->assertEquals( 'SHIPPING_PROFILES', $result, 'Feed type should be SHIPPING_PROFILES.' );
+	}
+
+	/**
+	 * Test get_shipping_class_tag_for_class with NO_SHIPPING_CLASS_ID.
+	 *
+	 * @covers WooCommerce\Facebook\Feed\ShippingProfilesFeed::get_shipping_class_tag_for_class
+	 */
+	public function test_get_shipping_class_tag_for_no_shipping_class(): void {
+		$result = ShippingProfilesFeed::get_shipping_class_tag_for_class( ShippingProfilesFeed::NO_SHIPPING_CLASS_ID );
+		$this->assertEquals( ShippingProfilesFeed::NO_SHIPPING_CLASS_TAG, $result, 'Should return no_shipping_class tag for NO_SHIPPING_CLASS_ID.' );
+	}
+
+	/**
+	 * Test get_shipping_class_tag_for_class with regular class IDs.
+	 *
+	 * @covers WooCommerce\Facebook\Feed\ShippingProfilesFeed::get_shipping_class_tag_for_class
+	 */
+	public function test_get_shipping_class_tag_for_regular_class(): void {
+		$test_cases = [
+			'1'   => 'shipping_class_1',
+			'2'   => 'shipping_class_2',
+			'123' => 'shipping_class_123',
+		];
+
+		foreach ( $test_cases as $class_id => $expected_tag ) {
+			$result = ShippingProfilesFeed::get_shipping_class_tag_for_class( $class_id );
+			$this->assertEquals( $expected_tag, $result, "Should return {$expected_tag} for class ID {$class_id}." );
+		}
+	}
+
+	/**
+	 * Test constructor creates instance successfully.
+	 *
+	 * @covers WooCommerce\Facebook\Feed\ShippingProfilesFeed::__construct
+	 */
+	public function test_constructor_creates_instance(): void {
+		$instance = new ShippingProfilesFeed();
+		$this->assertInstanceOf( ShippingProfilesFeed::class, $instance, 'Should create an instance of ShippingProfilesFeed.' );
+	}
 }

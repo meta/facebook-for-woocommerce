@@ -514,7 +514,8 @@ test.describe('WooCommerce Plugin level tests', () => {
       'wc_facebook_instagram_business_id',
       'wc_facebook_profiles',
       'wc_facebook_installed_features',
-      'wc_facebook_last_attribute_sync'
+      'wc_facebook_last_attribute_sync',
+      'facebook_for_woocommerce_latest_version_sent_to_server'
     ];
     await execWP(`update_option('${legacyPageAccessTokenOption}', 'legacy_page_token');`);
     for (const option of deprecatedOptions) {

@@ -8,33 +8,26 @@
  * @package MetaCommerce
  */
 
-namespace WooCommerce\Facebook\ExternalVersionUpdate;
+namespace WooCommerce\Facebook\Utilities;
 
 defined( 'ABSPATH' ) || exit;
 
-use Exception;
-use WC_Facebookcommerce_Utils;
-use WooCommerce\Facebook\Utilities\Heartbeat;
 use WooCommerce\Facebook\Framework\Logger;
 use WooCommerce\Facebook\Framework\LogHandlerBase;
 use WooCommerce\Facebook\Handlers\PluginRender;
 use WooCommerce\Facebook\Integrations\IntegrationRegistry;
 
 /**
- * Meta for WooCommerce External Plugin Version Update.
+ * Plugin configuration telemetry.
  *
- * Whenever this plugin gets updated, we need to inform the Meta server of the new version.
- * This is done by sending a request to the Meta server with the new version number.
+ * Periodically logs the plugin's configuration to Meta as the `plugin_updates` flow of
+ * commerce_seller_logs. This is logging only; no plugin behavior depends on the result.
+ * The installed plugin version is reported through the Commerce Partner Integration
+ * (see Connection::refresh_installation_data()).
  *
  * @since 3.0.10
  */
-class Update {
-
-	/** @var string Name of the option that stores the latest version that was sent to the Meta server. */
-	const LATEST_VERSION_SENT = 'facebook_for_woocommerce_latest_version_sent_to_server';
-
-	/** @var string master sync option */
-	const MASTER_SYNC_OPT_OUT_TIME = 'wc_facebook_master_sync_opt_out_time';
+class PluginConfigTelemetry {
 
 	/** @var string Transient key for caching language feed statistics */
 	const TRANSIENT_LANGUAGE_FEED_STATS = 'facebook_for_woocommerce_language_feed_stats';
@@ -46,12 +39,11 @@ class Update {
 	const COLLECTIONPAGE_COMPAT_OPTION = 'wc_facebook_collectionpage_compat';
 
 	/**
-	 * Update class constructor.
+	 * Registers the telemetry on the hourly heartbeat.
 	 *
 	 * @since 3.0.10
 	 */
 	public function __construct() {
-		add_action( Heartbeat::DAILY, array( $this, 'send_new_version_to_facebook_server' ) );
 		add_action( Heartbeat::HOURLY, array( $this, 'send_plugin_config_to_facebook_server' ) );
 	}
 
@@ -106,7 +98,7 @@ class Update {
 					'excluded_product_categories'          => wp_json_encode( $excluded_product_categories ),
 					'excluded_product_tags'                => wp_json_encode( $excluded_product_tags ),
 					'published_product_count'              => facebook_for_woocommerce()->get_integration()->get_product_count(),
-					'opted_out_woo_all_products'           => get_option( self::MASTER_SYNC_OPT_OUT_TIME ),
+					'opted_out_woo_all_products'           => get_option( PluginRender::MASTER_SYNC_OPT_OUT_TIME ),
 					'active_plugins'                       => wp_json_encode( IntegrationRegistry::get_all_active_plugin_data() ),
 					'language_override_enabled'            => get_option( \WC_Facebookcommerce_Integration::OPTION_LANGUAGE_OVERRIDE_FEED_GENERATION_ENABLED, 'no' ),
 					'language_feed_stats'                  => wp_json_encode( is_array( $language_feed_stats ) ? $language_feed_stats : [] ),
@@ -140,51 +132,6 @@ class Update {
 					'woocommerce_log_level'          => \WC_Log_Levels::ERROR,
 				)
 			);
-		}
-	}
-
-	/**
-	 * Sends the latest plugin version to the Meta server.
-	 *
-	 * @since 3.0.10
-	 * @return bool
-	 */
-	public function send_new_version_to_facebook_server() {
-
-		$plugin = facebook_for_woocommerce();
-		if ( ! $plugin->get_connection_handler()->is_connected() ) {
-			// If the plugin is not connected, we don't need to send the version to the Meta server.
-			return;
-		}
-
-		$flag_name = '_wc_facebook_for_woocommerce_external_version_update_flag';
-		if ( 'yes' === get_transient( $flag_name ) ) {
-			return;
-		}
-		set_transient( $flag_name, 'yes', 12 * HOUR_IN_SECONDS );
-
-		// Send the request to the Meta server with the latest plugin version.
-		try {
-			$external_business_id         = $plugin->get_connection_handler()->get_external_business_id();
-			$is_woo_all_product_opted_out = PluginRender::is_master_sync_on() === false;
-			$response                     = $plugin->get_api()->update_plugin_version_configuration( $external_business_id, $is_woo_all_product_opted_out, WC_Facebookcommerce_Utils::PLUGIN_VERSION );
-			if ( $response->has_api_error() ) {
-				// If the request fails, we should retry it in the next heartbeat.
-				return false;
-			}
-			return update_option( self::LATEST_VERSION_SENT, WC_Facebookcommerce_Utils::PLUGIN_VERSION );
-		} catch ( Exception $e ) {
-			Logger::log(
-				$e->getMessage(),
-				[],
-				array(
-					'should_send_log_to_meta'        => false,
-					'should_save_log_in_woocommerce' => true,
-					'woocommerce_log_level'          => \WC_Log_Levels::ERROR,
-				)
-			);
-			// If the request fails, we should retry it in the next heartbeat.
-			return false;
 		}
 	}
 

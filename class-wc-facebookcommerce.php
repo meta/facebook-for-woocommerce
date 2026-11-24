@@ -120,8 +120,8 @@ class WC_Facebookcommerce extends WooCommerce\Facebook\Framework\Plugin {
 	/** @var WooCommerce\Facebook\Utilities\Heartbeat */
 	public $heartbeat;
 
-	/** @var WooCommerce\Facebook\ExternalVersionUpdate */
-	private $external_version_update;
+	/** @var WooCommerce\Facebook\Utilities\PluginConfigTelemetry */
+	private $plugin_config_telemetry;
 
 	/** @var WooCommerce\Facebook\Feed\FeedConfigurationDetection instance. */
 	private $configuration_detection;
@@ -212,7 +212,7 @@ class WC_Facebookcommerce extends WooCommerce\Facebook\Framework\Plugin {
 			$this->product_sets_sync_handler = new WooCommerce\Facebook\ProductSets\ProductSetSync();
 			$this->commerce_handler          = new WooCommerce\Facebook\Commerce();
 			$this->fb_categories             = new WooCommerce\Facebook\Products\FBCategories();
-			$this->external_version_update   = new WooCommerce\Facebook\ExternalVersionUpdate\Update();
+			$this->plugin_config_telemetry   = new WooCommerce\Facebook\Utilities\PluginConfigTelemetry();
 			$this->fbcollection_handler      = new WooCommerce\Facebook\CollectionPage();
 			if ( wp_doing_ajax() ) {
 				$this->ajax = new WooCommerce\Facebook\AJAX();

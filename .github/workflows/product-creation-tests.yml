@@ -1207,7 +1207,7 @@ jobs:
         if: matrix.test-group == 'product-crud'
         run: |
           cd ${{ env.PLUGIN_PATH }}
-          npx playwright test "product-(creation|modification|deletion).spec.js" --project=chromium-wp-admin --workers=2
+          npx playwright test "product-(creation|modification|deletion).spec.js" --project=chromium-wp-admin --workers=8
 
       - name: Run Variable Product Depth tests
         if: matrix.test-group == 'variable-product-depth'

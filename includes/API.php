@@ -153,12 +153,13 @@ class API extends Base {
 			 * Marketing API (Catalog Batch API)
 			 *
 			 * 80004 - There have been too many calls to this ad-account
+			 * 80009 - There have been too many calls to this Catalog account
 			 *
 			 * @link https://developers.facebook.com/docs/graph-api/using-graph-api/error-handling#errorcodes
 			 * @link https://developers.facebook.com/docs/graph-api/using-graph-api/error-handling#rate-limiting-error-codes
 			 * @link https://developers.facebook.com/docs/marketing-api/reference/product-catalog/batch/#validation-rules
 			 */
-			if ( in_array( $code, array( 4, 17, 32, 613, 80001, 80004 ), true ) ) {
+			if ( in_array( $code, array( 4, 17, 32, 613, 80001, 80004, 80009 ), true ) ) {
 				$delay_in_seconds = $this->calculate_rate_limit_delay( $response, $this->get_response_headers() );
 				if ( $delay_in_seconds > 0 ) {
 					$rate_limit_id = $request::get_rate_limit_id();

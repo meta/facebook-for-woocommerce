@@ -213,4 +213,17 @@ class PostParseResponseValidationTest extends AbstractWPUnitTestWithOptionIsolat
 
 		$api->call_do_post_parse_response_validation();
 	}
+
+	/**
+	 * Test that the Catalog account rate limit (code 80009) throws Request_Limit_Reached.
+	 */
+	public function test_catalog_rate_limit_error_throws_request_limit_reached(): void {
+		$api = $this->make_api_with_response(
+			$this->make_error_response( 80009, 2446079, 'There have been too many calls to this Catalog account. Wait a bit and try again.', 'OAuthException' )
+		);
+
+		$this->expectException( Request_Limit_Reached::class );
+
+		$api->call_do_post_parse_response_validation();
+	}
 }

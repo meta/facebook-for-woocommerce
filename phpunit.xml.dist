@@ -25,13 +25,36 @@ LICENSE file in the root directory of this source tree.
 	</testsuites>
 	<coverage>
 		<include>
-			<directory>includes</directory>
-			<file>./class-wc-facebookcommerce.php</file>
-			<file>./facebook-commerce-events-tracker.php</file>
-			<file>./facebook-commerce-pixel-event.php</file>
-			<file>./facebook-commerce.php</file>
-			<file>./facebook-config-warmer.php</file>
-			<file>./facebook-for-woocommerce.php</file>
+			<directory suffix=".php">.</directory>
 		</include>
+		<exclude>
+			<!-- System directories -->
+			<directory>bin</directory>
+			<directory>data</directory>
+			<directory>tests</directory>
+
+			<!-- Non critical: Observability only - failures don't break functionality -->
+			<directory>includes/Logger</directory>
+
+			<!-- Non critical: Developer tools only - not used by end users -->
+			<directory>includes/Debug</directory>
+
+			<!-- Non critical: Manages coupons/promotions - failures don't break functionality -->
+			<directory>includes/OfferManagement</directory>
+
+			<!-- Non critical: Meta just won't know the plugin version, functionality would still work -->
+			<directory>includes/ExternalVersionUpdate</directory>
+
+			<!-- Non critical: Admin notification banners - UI only, no impact on sync/events -->
+			<directory>includes/Admin/Notes</directory>
+			<file>includes/Admin/Global_Attributes_Banner.php</file>
+
+			<!-- Non critical: Meta internal logging - observability for Meta, not functionality -->
+			<directory>includes/API/MetaLog</directory>
+
+			<!-- Non critical: Banner/notice root files - UI notifications only -->
+			<file>./facebook-commerce-admin-banner.php</file>
+			<file>./facebook-commerce-admin-notice.php</file>
+		</exclude>
 	</coverage>
 </phpunit>

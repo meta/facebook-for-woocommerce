@@ -98,7 +98,17 @@ jobs:
         if: steps.phpunit.outputs.test_status == 'passed'
         run: |
           COVERAGE="${{ steps.phpunit.outputs.coverage_summary }}"
-          MIN_THRESHOLD=35
+          MIN_THRESHOLD=40
+
+          # Determine the target branch:
+          # - PRs: github.base_ref
+          # - Pushes: github.ref (strip refs/heads/)
+          TARGET_BRANCH="${{ github.base_ref || github.ref_name }}"
+
+          if [[ "$TARGET_BRANCH" =~ ^release/ ]]; then
+            MIN_THRESHOLD=45
+            echo "🚀 Release context detected (branch=$TARGET_BRANCH)"
+          fi
 
           echo "📈 Coverage: $COVERAGE%"
           echo "🎯 Threshold: $MIN_THRESHOLD%"

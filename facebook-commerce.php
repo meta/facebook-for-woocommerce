@@ -1568,7 +1568,7 @@ class WC_Facebookcommerce_Integration extends WC_Integration {
 				update_post_meta(
 					$woo_product->get_id(),
 					self::FB_PRODUCT_GROUP_ID,
-					(string) $fb_product_group_id
+					$fb_product_group_id
 				);
 
 				return $fb_product_group_id;
@@ -1638,7 +1638,7 @@ class WC_Facebookcommerce_Integration extends WC_Integration {
 				update_post_meta(
 					$woo_product->get_id(),
 					self::FB_PRODUCT_ITEM_ID,
-					(string) $fb_product_item_id
+					$fb_product_item_id
 				);
 
 				$this->display_success_message(

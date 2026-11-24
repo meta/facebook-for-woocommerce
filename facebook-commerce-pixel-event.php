@@ -470,13 +470,6 @@ window.FacebookSignals = window.FacebookSignals || {
 		if (typeof fbq === 'function') {
 			fbq('consent', this._held ? 'revoke' : 'grant');
 		}
-
-		try {
-			var raw = window.sessionStorage.getItem('wc_facebook_signals_seen_event_ids');
-			this._seenEventIds = raw ? JSON.parse(raw) : {};
-		} catch (e) {
-			this._seenEventIds = this._seenEventIds || {};
-		}
 	},
 
 	initPixel: function(pixelId, userInfo, options) {
@@ -542,12 +535,6 @@ window.FacebookSignals = window.FacebookSignals || {
 		var idToMark = originalId || eventData.event_id;
 		if (idToMark) {
 			this._seenEventIds[idToMark] = 1;
-			try {
-				window.sessionStorage.setItem(
-					'wc_facebook_signals_seen_event_ids',
-					JSON.stringify(this._seenEventIds)
-				);
-			} catch (e) {}
 		}
 	},
 
@@ -1193,11 +1180,6 @@ JS;
 	 * and fbq is undefined) nothing is recorded and the next replay retries. The wrapper is
 	 * synchronous, so there is no window for a double fire. Without an event ID, or when
 	 * sessionStorage is unavailable, the code runs as it did before.
-	 *
-	 * This store is separate from the wc_facebook_signals_seen_event_ids store that
-	 * FacebookSignals keeps for queued events: that one is consulted only while signals
-	 * are held, and FacebookSignals may not be loaded at all. This guard has to work in
-	 * both states and without it, so the two are not meant to be unified.
 	 *
 	 * @since 3.7.9
 	 *

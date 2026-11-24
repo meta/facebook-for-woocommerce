@@ -66,7 +66,7 @@ abstract class Abstract_Settings_Screen {
 			<div class="notice notice-info"><p><?php echo wp_kses_post( $this->get_disconnected_message() ); ?></p></div>
 		<?php endif; ?>
 
-		<form class="wc-facebook-settings <?php echo $is_connected ? 'connected' : 'disconnected'; ?>" method="post" id="mainform" action="" enctype="multipart/form-data">
+		<form class="wc-facebook-settings-BROKEN <?php echo $is_connected ? 'connected' : 'disconnected'; ?>" method="post" id="mainform" action="" enctype="multipart/form-data">
 
 			<?php woocommerce_admin_fields( $settings ); ?>
 

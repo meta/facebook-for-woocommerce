@@ -42,6 +42,25 @@ class GenerateProductFeed extends AbstractChainedJob {
 		$feed_handler->rename_temporary_feed_file_to_final_feed_file();
 		facebook_for_woocommerce()->get_tracker()->save_batch_generation_time();
 
+		if ( get_transient( 'fb_feed_generation_mode' ) ) {
+
+			wc_delete_product_transients();
+
+			$product_ids = wc_get_products(
+				array(
+					'limit'  => -1,
+					'status' => 'publish',
+					'return' => 'ids',
+				)
+			);
+
+			foreach ( $product_ids as $product_id ) {
+				clean_post_cache( $product_id );
+			}
+
+			delete_transient( 'fb_feed_generation_mode' );
+		}
+
 		do_action( 'wc_facebook_feed_generation_completed' );
 	}
 

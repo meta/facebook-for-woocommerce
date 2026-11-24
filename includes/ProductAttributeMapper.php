@@ -821,13 +821,15 @@ class ProductAttributeMapper {
 		// Clear WordPress meta cache to ensure fresh values are read
 		wp_cache_delete( $product_id, 'post_meta' );
 
-		// Also clear WooCommerce product cache
-		if ( function_exists( 'wc_delete_product_transients' ) ) {
-			wc_delete_product_transients( $product_id );
-		}
+		if ( ! get_transient( 'fb_feed_generation_mode' ) ) {
+			// Also clear WooCommerce product cache
+			if ( function_exists( 'wc_delete_product_transients' ) ) {
+				wc_delete_product_transients( $product_id );
+			}
 
-		// Clear any object cache for this product
-		clean_post_cache( $product_id );
+			// Clear any object cache for this product
+			clean_post_cache( $product_id );
+		}
 
 		return $mapped_attributes;
 	}

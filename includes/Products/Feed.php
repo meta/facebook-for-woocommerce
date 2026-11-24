@@ -173,12 +173,27 @@ class Feed {
 	 */
 	public function regenerate_feed() {
 		// Maybe use new ( experimental ), feed generation framework.
+		set_transient( 'fb_feed_generation_mode', true, 3600 );
 		if ( facebook_for_woocommerce()->get_integration()->is_new_style_feed_generation_enabled() ) {
 			$generate_feed_job = facebook_for_woocommerce()->job_manager->generate_product_feed_job;
 			$generate_feed_job->queue_start();
 		} else {
 			$feed_handler = new \WC_Facebook_Product_Feed();
 			$feed_handler->generate_feed();
+			if ( get_transient( 'fb_feed_generation_mode' ) ) {
+				wc_delete_product_transients();
+				$product_ids = wc_get_products(
+					array(
+						'limit'  => -1,
+						'status' => 'publish',
+						'return' => 'ids',
+					)
+				);
+
+				foreach ( $product_ids as $product_id ) {
+					clean_post_cache( $product_id );
+				}
+			}
 		}
 	}
 

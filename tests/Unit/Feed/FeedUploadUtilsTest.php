@@ -696,4 +696,182 @@ class FeedUploadUtilsTest extends FeedDataTestBase {
 
 		$this->assertEquals($expected, $category_tree, 'Category tree does not match expected structure.');
 	}
+
+	/**
+	 * Test get_navigation_menu_data with multiple categories including nested ones.
+	 *
+	 * @covers \WooCommerce\Facebook\Feed\FeedUploadUtils::get_navigation_menu_data
+	 */
+	public function test_get_navigation_menu_data_with_categories() {
+		// Create parent categories
+		$parent_cat_1 = self::factory()->term->create([
+			'taxonomy' => 'product_cat',
+			'name'     => 'Electronics',
+		]);
+		
+		$parent_cat_2 = self::factory()->term->create([
+			'taxonomy' => 'product_cat',
+			'name'     => 'Clothing',
+		]);
+		
+		// Create child categories
+		$child_cat_1 = self::factory()->term->create([
+			'taxonomy' => 'product_cat',
+			'name'     => 'Laptops',
+			'parent'   => $parent_cat_1,
+		]);
+		
+		$child_cat_2 = self::factory()->term->create([
+			'taxonomy' => 'product_cat',
+			'name'     => 'Phones',
+			'parent'   => $parent_cat_1,
+		]);
+
+		$result = \WooCommerce\Facebook\Feed\FeedUploadUtils::get_navigation_menu_data();
+
+		// Verify the structure
+		$this->assertIsArray($result, 'Result should be an array.');
+		$this->assertArrayHasKey('navigation', $result, 'Result should have navigation key.');
+		$this->assertIsArray($result['navigation'], 'Navigation should be an array.');
+		$this->assertCount(1, $result['navigation'], 'Navigation should have one menu.');
+		
+		$menu = $result['navigation'][0];
+		$this->assertEquals('Product Categories', $menu['title'], 'Menu title should be Product Categories.');
+		$this->assertEquals('product_categories_menu', $menu['partner_menu_handle'], 'Menu handle should match.');
+		$this->assertEquals('1', $menu['partner_menu_id'], 'Menu ID should be 1.');
+		$this->assertArrayHasKey('items', $menu, 'Menu should have items.');
+		$this->assertIsArray($menu['items'], 'Menu items should be an array.');
+		
+		// Verify we have categories in the result
+		$this->assertNotEmpty($menu['items'], 'Menu items should not be empty.');
+	}
+
+	/**
+	 * Test get_navigation_menu_data when no categories exist.
+	 *
+	 * @covers \WooCommerce\Facebook\Feed\FeedUploadUtils::get_navigation_menu_data
+	 */
+	public function test_get_navigation_menu_data_empty_categories() {
+		// Don't create any categories
+		$result = \WooCommerce\Facebook\Feed\FeedUploadUtils::get_navigation_menu_data();
+
+		// Verify the structure is still correct
+		$this->assertIsArray($result, 'Result should be an array.');
+		$this->assertArrayHasKey('navigation', $result, 'Result should have navigation key.');
+		$this->assertIsArray($result['navigation'], 'Navigation should be an array.');
+		$this->assertCount(1, $result['navigation'], 'Navigation should have one menu.');
+		
+		$menu = $result['navigation'][0];
+		$this->assertEquals('Product Categories', $menu['title'], 'Menu title should be Product Categories.');
+		$this->assertArrayHasKey('items', $menu, 'Menu should have items key.');
+		
+		// Items should be empty or contain only the default "Uncategorized" category
+		$this->assertIsArray($menu['items'], 'Menu items should be an array.');
+	}
+
+	/**
+	 * Test get_navigation_menu_data with deep category hierarchy.
+	 *
+	 * @covers \WooCommerce\Facebook\Feed\FeedUploadUtils::get_navigation_menu_data
+	 */
+	public function test_get_navigation_menu_data_with_nested_hierarchy() {
+		// Create a 3-level hierarchy
+		$level_1 = self::factory()->term->create([
+			'taxonomy' => 'product_cat',
+			'name'     => 'Level 1',
+		]);
+		
+		$level_2 = self::factory()->term->create([
+			'taxonomy' => 'product_cat',
+			'name'     => 'Level 2',
+			'parent'   => $level_1,
+		]);
+		
+		$level_3 = self::factory()->term->create([
+			'taxonomy' => 'product_cat',
+			'name'     => 'Level 3',
+			'parent'   => $level_2,
+		]);
+
+		$result = \WooCommerce\Facebook\Feed\FeedUploadUtils::get_navigation_menu_data();
+
+		$this->assertIsArray($result, 'Result should be an array.');
+		$this->assertArrayHasKey('navigation', $result, 'Result should have navigation key.');
+		
+		$menu = $result['navigation'][0];
+		$this->assertArrayHasKey('items', $menu, 'Menu should have items.');
+		
+		// Find the Level 1 category in items
+		$level_1_item = null;
+		foreach ($menu['items'] as $item) {
+			if ($item['title'] === 'Level 1') {
+				$level_1_item = $item;
+				break;
+			}
+		}
+		
+		$this->assertNotNull($level_1_item, 'Level 1 category should exist in menu items.');
+		$this->assertArrayHasKey('items', $level_1_item, 'Level 1 should have child items.');
+		$this->assertEquals('collection', $level_1_item['resourceType'], 'Resource type should be collection.');
+		
+		// Verify nested structure exists
+		$this->assertIsArray($level_1_item['items'], 'Level 1 items should be an array.');
+		$this->assertNotEmpty($level_1_item['items'], 'Level 1 should have nested items.');
+	}
+
+	/**
+	 * Test get_navigation_menu_data structure and field types.
+	 *
+	 * @covers \WooCommerce\Facebook\Feed\FeedUploadUtils::get_navigation_menu_data
+	 */
+	public function test_get_navigation_menu_data_structure() {
+		// Create a simple category
+		$cat_id = self::factory()->term->create([
+			'taxonomy' => 'product_cat',
+			'name'     => 'Test Category',
+		]);
+
+		$result = \WooCommerce\Facebook\Feed\FeedUploadUtils::get_navigation_menu_data();
+
+		// Verify top-level structure
+		$this->assertIsArray($result, 'Result should be an array.');
+		$this->assertArrayHasKey('navigation', $result, 'Result should have navigation key.');
+		
+		$navigation = $result['navigation'];
+		$this->assertIsArray($navigation, 'Navigation should be an array.');
+		$this->assertCount(1, $navigation, 'Navigation should have exactly one menu.');
+		
+		// Verify menu structure
+		$menu = $navigation[0];
+		$this->assertArrayHasKey('items', $menu, 'Menu should have items key.');
+		$this->assertArrayHasKey('title', $menu, 'Menu should have title key.');
+		$this->assertArrayHasKey('partner_menu_handle', $menu, 'Menu should have partner_menu_handle key.');
+		$this->assertArrayHasKey('partner_menu_id', $menu, 'Menu should have partner_menu_id key.');
+		
+		$this->assertIsArray($menu['items'], 'Items should be an array.');
+		$this->assertIsString($menu['title'], 'Title should be a string.');
+		$this->assertIsString($menu['partner_menu_handle'], 'Partner menu handle should be a string.');
+		$this->assertIsString($menu['partner_menu_id'], 'Partner menu ID should be a string.');
+		
+		// Verify category item structure if items exist
+		if (!empty($menu['items'])) {
+			$category_item = null;
+			foreach ($menu['items'] as $item) {
+				if ($item['title'] === 'Test Category') {
+					$category_item = $item;
+					break;
+				}
+			}
+			
+			if ($category_item !== null) {
+				$this->assertArrayHasKey('title', $category_item, 'Category item should have title.');
+				$this->assertArrayHasKey('resourceType', $category_item, 'Category item should have resourceType.');
+				$this->assertArrayHasKey('retailerID', $category_item, 'Category item should have retailerID.');
+				
+				$this->assertIsString($category_item['title'], 'Category title should be a string.');
+				$this->assertEquals('collection', $category_item['resourceType'], 'Resource type should be collection.');
+				$this->assertIsInt($category_item['retailerID'], 'Retailer ID should be an integer.');
+			}
+		}
+	}
 }

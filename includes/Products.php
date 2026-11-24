@@ -378,6 +378,11 @@ class Products {
 		// use the user defined Facebook price if set
 		if ( is_numeric( $facebook_price ) ) {
 			$price = $facebook_price;
+		} elseif ( $product->is_type( 'variable' ) ) {
+
+			// Use minimum variation price for variable products (consistent with tracking events)
+			$price = $product->get_variation_price( 'min' );
+
 		} elseif ( $product->is_type( 'composite' ) ) {
 
 			$price = $product->get_composite_price( 'min', true );

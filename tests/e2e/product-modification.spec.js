@@ -496,12 +496,11 @@ test.describe('Meta for WooCommerce - Product Modification E2E Tests', () => {
       const fbPrice = '24.99';
       const fbPriceField = page.locator('#fb_product_price, input[name="fb_product_price"]');
 
-      if (await fbPriceField.isVisible({ timeout: TIMEOUTS.MEDIUM })) {
-        await fbPriceField.fill(fbPrice);
-        console.log(`✅ Facebook price set: $${fbPrice}`);
-      } else {
-        console.warn('⚠️ Facebook price field not found');
-      }
+      // The Facebook-specific price field is the field under test — its absence is a
+      // real regression, not something to warn past. Require it before filling.
+      await fbPriceField.waitFor({ state: 'visible', timeout: TIMEOUTS.MEDIUM });
+      await fbPriceField.fill(fbPrice);
+      console.log(`✅ Facebook price set: $${fbPrice}`);
 
       // Set custom Facebook product image
       console.log('🖼️ Setting custom Facebook product image...');
@@ -539,6 +538,13 @@ test.describe('Meta for WooCommerce - Product Modification E2E Tests', () => {
         attempts: 3,
       });
       expect(syncResult.success).toBe(true);
+
+      // The Facebook-specific price (24.99) must override the WooCommerce regular
+      // price (19.99) in the catalog. Assert the exact synced value — a missing or
+      // unchanged price means the Facebook-specific field did not propagate.
+      const syncedFbPrice = syncResult['raw_data']['facebook_data'][0]['price'].replace(/[^0-9.]/g, '');
+      expect(syncedFbPrice).toBe(fbPrice);
+      console.log(`✅ Facebook-specific price propagated to catalog: ${syncedFbPrice}`);
 
       // Take final screenshot
       await safeScreenshot(page, 'facebook-options-update-success.png');
@@ -602,15 +608,12 @@ test.describe('Meta for WooCommerce - Product Modification E2E Tests', () => {
         // Scroll variation into view
         await variationRow.scrollIntoViewIfNeeded();
 
-        // Set Facebook Brand
+        // Set per-variation Facebook price — the field is under test, so require it.
         const fbPriceField = variationRow.locator(`#variable_fb_product_price${i}`);
-        if (await fbPriceField.isVisible({ timeout: TIMEOUTS.MEDIUM })) {
-          const newPrice = (parseFloat(originalPrice || '10.00') + (i + 1)).toFixed(2);
-          await fbPriceField.fill(newPrice);
-          console.log(`  ✅ Set Facebook price: ${newPrice}`);
-        } else {
-          console.warn(`  ⚠️ Facebook price field not found for variation ${i + 1}`);
-        }
+        await fbPriceField.waitFor({ state: 'visible', timeout: TIMEOUTS.MEDIUM });
+        const newPrice = (parseFloat(originalPrice || '10.00') + (i + 1)).toFixed(2);
+        await fbPriceField.fill(newPrice);
+        console.log(`  ✅ Set Facebook price: ${newPrice}`);
 
         // Set Custom Facebook Image
         const customImageRadioBtn = variationRow.getByRole('radio', { name: 'Use custom image' }).first()
@@ -668,6 +671,12 @@ test.describe('Meta for WooCommerce - Product Modification E2E Tests', () => {
         attempts: 3,
       });
       expect(syncResult.success).toBe(true);
+
+      // The Facebook-specific brand set above must propagate to the catalog. Assert
+      // the exact value on the first synced variation — a warn-and-continue here
+      // previously let a broken brand-sync pass silently.
+      expect(syncResult['raw_data']['facebook_data'][0]['brand']).toBe('FBOptionsUpdateTestBrand');
+      console.log('✅ Facebook-specific brand propagated to catalog');
 
       // Take final screenshot
       await safeScreenshot(page, 'facebook-options-variable-update-success.png');

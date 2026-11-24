@@ -186,6 +186,11 @@
     color: #d63638;
 }
 
+/* Ensure consistent 13px font-size for Remove button in variations */
+.woocommerce_variation .fb-product-images-thumbnails p.image-thumbnail a.remove-image {
+    font-size: 13px;
+}
+
 .fb_product_images_field .button.fb-open-images-library {
     margin-left: 5px;
 }

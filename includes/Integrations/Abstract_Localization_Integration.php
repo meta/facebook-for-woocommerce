@@ -77,6 +77,23 @@ abstract class Abstract_Localization_Integration {
 	abstract public function get_default_language(): ?string;
 
 	/**
+	 * Get the default language as the localization plugin itself identifies it
+	 *
+	 * This is the value to compare with a product's language. The plugin's identifier
+	 * cannot be derived from the locale that get_default_language() returns: WPML's code
+	 * for pt_BR is 'pt-br' and for nb_NO it is 'no', and Polylang slugs are free text.
+	 *
+	 * @since 3.7.9
+	 *
+	 * @return string|null WPML language code or Polylang slug of the default language, null if not set
+	 */
+	public function get_default_language_identifier(): ?string {
+		$default_language_locale = $this->get_default_language();
+
+		return $default_language_locale ? $this->get_plugin_language_identifier( $default_language_locale ) : null;
+	}
+
+	/**
 	 * Check if the plugin is installed (but not necessarily active)
 	 *
 	 * @return bool True if plugin files exist

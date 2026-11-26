@@ -685,9 +685,11 @@ class LocalizationIntegrationTest extends IntegrationTestCase {
 	 * Get the expected plugin from command line arguments or environment variables
 	 */
 	private static function getExpectedPlugin(): ?string {
-		$env_plugin = getenv( 'FB_TEST_PLUGIN' );
-		if ( $env_plugin && in_array( strtolower( $env_plugin ), [ 'wpml', 'polylang' ], true ) ) {
-			return strtolower( $env_plugin );
+		// FB_TEST_PLUGIN holds a comma-separated list, e.g. "polylang,wcpos".
+		foreach ( [ 'wpml', 'polylang' ] as $plugin ) {
+			if ( \Automattic\WooCommerce\GoogleListingsAndAds\Tests\fb_test_plugin_requested( $plugin ) ) {
+				return $plugin;
+			}
 		}
 
 		return null;
@@ -712,9 +714,8 @@ class LocalizationIntegrationTest extends IntegrationTestCase {
 	 * Ensure Polylang is properly set up for testing
 	 */
 	private function ensurePolylangSetup(): void {
-		// Only run for Polylang tests
-		$test_plugin = getenv( 'FB_TEST_PLUGIN' );
-		if ( $test_plugin !== 'polylang' ) {
+		// Only run for Polylang tests. Polylang may be one of several requested plugins.
+		if ( ! \Automattic\WooCommerce\GoogleListingsAndAds\Tests\fb_test_plugin_requested( 'polylang' ) ) {
 			return;
 		}
 

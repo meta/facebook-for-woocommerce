@@ -111,9 +111,15 @@ class GenerateProductFeed extends AbstractChainedJob {
 		$is_language_feed_enabled = facebook_for_woocommerce()->get_integration()->is_language_override_feed_generation_enabled();
 
 		if ( $integration && $is_language_feed_enabled ) {
-			// When localization plugin is active AND language override feeds are enabled,
-			// only retrieve default language products
-			$default_language = $integration->get_default_language();
+			/*
+			 * When localization plugin is active AND language override feeds are enabled,
+			 * only retrieve default language products. Polylang takes 'lang' as a language
+			 * slug, so pass the plugin's own identifier. It resolves a locale such as 'en_US'
+			 * only on front-end requests, which Action Scheduler's async runner is; in WP-Cron
+			 * the default locale matched no language and the batch came back empty.
+			 * WPML ignores the argument and narrows the query to its current language.
+			 */
+			$default_language = $integration->get_default_language_identifier();
 			if ( $default_language ) {
 				$query_args['lang'] = $default_language;
 			}

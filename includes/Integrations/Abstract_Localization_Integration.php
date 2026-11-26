@@ -126,13 +126,20 @@ abstract class Abstract_Localization_Integration {
 			return [];
 		}
 
-		// Query products
+		/*
+		 * Query products in every language, then keep the default language's below. Polylang
+		 * narrows a query without 'lang' to the request's language, so with another language
+		 * selected in its admin this found none of the default language's products and the
+		 * translation feed was written with only its header. An empty 'lang' is Polylang's
+		 * documented way to lift its filter, and core ignores the argument.
+		 */
 		$args = [
 			'post_type'      => 'product',
 			'post_status'    => 'publish',
 			'posts_per_page' => $limit,
 			'offset'         => $offset,
 			'fields'         => 'ids',
+			'lang'           => '',
 		];
 
 		$all_products              = get_posts( $args );

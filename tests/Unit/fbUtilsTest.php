@@ -777,6 +777,126 @@ class fbUtilsTest extends \WP_UnitTestCase {
 	}
 
 	/**
+	 * A repeat call returns the same variation IDs as the first one.
+	 *
+	 * When the query result comes from the cache, core returns the 'id=>parent' map keyed
+	 * 'post_parent:<ID>', so the second call in a request returned those strings in place of the
+	 * variation IDs.
+	 */
+	public function test_get_all_product_ids_for_sync_returns_variation_ids_on_a_repeat_call(): void {
+		$variable_product = \WC_Helper_Product::create_variation_product();
+		$variation_ids    = array_map( 'intval', $variable_product->get_children() );
+
+		$first  = array_values( \WC_Facebookcommerce_Utils::get_all_product_ids_for_sync() );
+		$second = array_values( \WC_Facebookcommerce_Utils::get_all_product_ids_for_sync() );
+
+		$this->assertNotEmpty( $variation_ids );
+		$this->assertSame( array(), array_values( array_diff( $variation_ids, $first ) ), 'The first call returns every variation.' );
+		$this->assertContainsOnly( 'int', $second, true, 'A repeat call returns IDs, not cache keys.' );
+		$this->assertSame( $first, $second, 'A repeat call returns the same IDs.' );
+		$this->assertNotContains( $variable_product->get_id(), $second, 'Variable parents are not product items.' );
+	}
+
+	/**
+	 * A repeat call on a store without variations returns the same products, with no error.
+	 *
+	 * A cached empty result leaves the query's posts unset.
+	 */
+	public function test_get_all_product_ids_for_sync_handles_a_repeat_call_without_variations(): void {
+		$first  = array_values( \WC_Facebookcommerce_Utils::get_all_product_ids_for_sync() );
+		$second = array_values( \WC_Facebookcommerce_Utils::get_all_product_ids_for_sync() );
+
+		$this->assertContains( $this->product->get_id(), $first );
+		$this->assertSame( $first, $second );
+	}
+
+	/**
+	 * On a store where no language plugin narrows the children query, the children come from WooCommerce itself.
+	 */
+	public function test_get_children_in_every_language_matches_woocommerce_children(): void {
+		$variable_product = wc_get_product( \WC_Helper_Product::create_variation_product()->get_id() );
+
+		$this->assertNotEmpty( $variable_product->get_children() );
+		$this->assertSame( $variable_product->get_children(), \WC_Facebookcommerce_Utils::get_children_in_every_language( $variable_product ) );
+		$this->assertSame( array(), \WC_Facebookcommerce_Utils::get_children_in_every_language( $this->product ) );
+		$this->assertSame( array(), \WC_Facebookcommerce_Utils::get_children_in_every_language( null ) );
+	}
+
+	/**
+	 * Without a language taxonomy on variations, WooCommerce reads the children itself.
+	 *
+	 * Only WooCommerce's own lookup also asks for the visible children.
+	 */
+	public function test_get_children_in_every_language_leaves_the_lookup_to_woocommerce_without_a_language_taxonomy(): void {
+		$this->assertFalse( taxonomy_exists( 'language' ) && is_object_in_taxonomy( 'product_variation', 'language' ) );
+
+		$variable_id = \WC_Helper_Product::create_variation_product()->get_id();
+		delete_transient( 'wc_product_children_' . $variable_id );
+
+		$visible_lookups = 0;
+		$count_lookups   = static function ( $args, $product, $visible_only ) use ( &$visible_lookups ) {
+			if ( $visible_only ) {
+				++$visible_lookups;
+			}
+
+			return $args;
+		};
+
+		add_filter( 'woocommerce_variable_children_args', $count_lookups, 10, 3 );
+
+		try {
+			$children = \WC_Facebookcommerce_Utils::get_children_in_every_language( wc_get_product( $variable_id ) );
+		} finally {
+			remove_filter( 'woocommerce_variable_children_args', $count_lookups, 10 );
+		}
+
+		$this->assertNotEmpty( $children );
+		$this->assertSame( 1, $visible_lookups );
+	}
+
+	/**
+	 * A product data store that reads the children its own way decides what they are.
+	 *
+	 * A query of our own on the posts table returned variations such a store leaves out.
+	 */
+	public function test_get_children_in_every_language_uses_the_product_data_store(): void {
+		$variable_id   = \WC_Helper_Product::create_variation_product()->get_id();
+		$variation_ids = wc_get_product( $variable_id )->get_children();
+		$this->assertGreaterThan( 1, count( $variation_ids ) );
+
+		$data_store = new class() extends \WC_Product_Variable_Data_Store_CPT {
+			/** @var int[] */
+			public $children = array();
+
+			public function read_children( &$product, $force_read = false ) {
+				return array(
+					'all'     => $this->children,
+					'visible' => $this->children,
+				);
+			}
+		};
+
+		$data_store->children = array( (int) $variation_ids[0] );
+
+		$use_data_store = static function ( $stores ) use ( $data_store ) {
+			$stores['product-variable'] = $data_store;
+
+			return $stores;
+		};
+
+		add_filter( 'woocommerce_data_stores', $use_data_store );
+
+		try {
+			$variable_product = wc_get_product( $variable_id );
+			$children         = \WC_Facebookcommerce_Utils::get_children_in_every_language( $variable_product );
+		} finally {
+			remove_filter( 'woocommerce_data_stores', $use_data_store );
+		}
+
+		$this->assertSame( array( (int) $variation_ids[0] ), $children );
+	}
+
+	/**
 	 * Enable the isolated pixel execution rollout switch.
 	 */
 	private function enable_isolated_pixel_execution_switch(): void {

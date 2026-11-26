@@ -1774,6 +1774,94 @@ class WCFacebookCommerceIntegrationTest extends \WooCommerce\Facebook\Tests\Abst
 	}
 
 	/**
+	 * Tests reset all product facebook meta covers products and variations that are not published.
+	 *
+	 * get_posts() only returns published posts unless told otherwise, so these kept their Facebook IDs.
+	 *
+	 * @return void
+	 */
+	public function test_reset_all_products_covers_unpublished_products_and_variations() {
+		$user_id = $this->factory->user->create( [ 'role' => 'administrator' ] );
+		wp_set_current_user( $user_id );
+		set_current_screen( 'edit-post' );
+
+		global $wpdb;
+
+		// A variation the merchant disabled is stored as private.
+		$variable_product = WC_Helper_Product::create_variation_product();
+		$statuses         = [
+			'draft product'     => 'draft',
+			'pending product'   => 'pending',
+			'private product'   => 'private',
+			'private variation' => 'private',
+		];
+
+		$post_ids = [];
+		foreach ( $statuses as $label => $status ) {
+			$post_id = 'private variation' === $label
+				? (int) current( $variable_product->get_children() )
+				: WC_Helper_Product::create_simple_product()->get_id();
+
+			// Written straight to the database: the status transition hooks are not under test.
+			$wpdb->update( $wpdb->posts, [ 'post_status' => $status ], [ 'ID' => $post_id ] );
+			clean_post_cache( $post_id );
+
+			$this->assertSame( $status, get_post_status( $post_id ) );
+			$post_ids[ $label ] = $post_id;
+		}
+
+		foreach ( $post_ids as $post_id ) {
+			update_post_meta( $post_id, WC_Facebookcommerce_Integration::FB_PRODUCT_GROUP_ID, 'facebook-product-group-id' );
+			update_post_meta( $post_id, WC_Facebookcommerce_Integration::FB_PRODUCT_ITEM_ID, 'facebook-product-item-id' );
+			update_post_meta( $post_id, Products::VISIBILITY_META_KEY, 'yes' );
+		}
+
+		$this->assertTrue( $this->integration->reset_all_products() );
+
+		foreach ( $post_ids as $label => $post_id ) {
+			$this->assertSame( '', get_post_meta( $post_id, WC_Facebookcommerce_Integration::FB_PRODUCT_GROUP_ID, true ), "Group ID of the {$label} is cleared." );
+			$this->assertSame( '', get_post_meta( $post_id, WC_Facebookcommerce_Integration::FB_PRODUCT_ITEM_ID, true ), "Item ID of the {$label} is cleared." );
+			$this->assertSame( '', get_post_meta( $post_id, Products::VISIBILITY_META_KEY, true ), "Visibility of the {$label} is cleared." );
+		}
+	}
+
+	/**
+	 * Tests reset all product facebook meta reads products and variations with one query.
+	 *
+	 * Variations used to be fetched with one query per product.
+	 *
+	 * @return void
+	 */
+	public function test_reset_all_products_reads_the_catalog_with_one_query() {
+		$user_id = $this->factory->user->create( [ 'role' => 'administrator' ] );
+		wp_set_current_user( $user_id );
+		set_current_screen( 'edit-post' );
+
+		WC_Helper_Product::create_simple_product();
+		WC_Helper_Product::create_simple_product();
+		$variable_product = WC_Helper_Product::create_variation_product();
+		$variation_id     = (int) current( $variable_product->get_children() );
+		update_post_meta( $variation_id, WC_Facebookcommerce_Integration::FB_PRODUCT_ITEM_ID, 'facebook-product-item-id' );
+
+		$catalog_queries = 0;
+		$count_queries   = static function ( $query ) use ( &$catalog_queries ) {
+			if ( array_intersect( (array) $query->get( 'post_type' ), [ 'product', 'product_variation' ] ) ) {
+				++$catalog_queries;
+			}
+		};
+
+		add_action( 'pre_get_posts', $count_queries );
+		try {
+			$this->assertTrue( $this->integration->reset_all_products() );
+		} finally {
+			remove_action( 'pre_get_posts', $count_queries );
+		}
+
+		$this->assertSame( 1, $catalog_queries );
+		$this->assertSame( '', get_post_meta( $variation_id, WC_Facebookcommerce_Integration::FB_PRODUCT_ITEM_ID, true ) );
+	}
+
+	/**
 	 * Tests reset of facebook group and item ids from simple product's metadata.
 	 *
 	 * @return void

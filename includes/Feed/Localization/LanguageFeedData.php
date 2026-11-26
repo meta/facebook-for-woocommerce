@@ -305,8 +305,9 @@ class LanguageFeedData {
 					continue;
 				}
 
-				// Now iterate through variations and create a row for each with the same content
-				$variations = $original_product->get_children();
+				// Now iterate through variations and create a row for each with the same content.
+				// Read in every language: the original's variations are not in the request's language.
+				$variations = \WC_Facebookcommerce_Utils::get_children_in_every_language( $original_product );
 
 				foreach ( $variations as $variation_id ) {
 					$variation = wc_get_product( $variation_id );

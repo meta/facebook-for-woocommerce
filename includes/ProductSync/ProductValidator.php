@@ -284,7 +284,8 @@ class ProductValidator {
 		 * Either from Product details page or bulk editor
 		 */
 		if ( $this->product->is_type( 'variable' ) ) {
-			foreach ( $this->product->get_children() as $child_id ) {
+			// Read in every language: a narrowed children query would make the product look like it has no variations.
+			foreach ( \WC_Facebookcommerce_Utils::get_children_in_every_language( $this->product ) as $child_id ) {
 				$child_product = wc_get_product( $child_id );
 				if ( $child_product && 'no' !== $child_product->get_meta( Products::get_product_sync_meta_key() ) ) {
 					// At least one product is "sync-enabled" so bail before exception.
@@ -311,8 +312,14 @@ class ProductValidator {
 			} elseif ( 'no' === $parent_sync ) {
 				throw $invalid_exception;
 			} else {
+				/*
+				 * Read the parent's variations in every language. With WooCommerce's own children
+				 * query, Polylang hid the variations outside the request's language, this variation
+				 * included, so the parent was saved as 'no' and its variations were left out of the
+				 * sync from then on.
+				 */
 				$variation_sync = false;
-				foreach ( $this->product_parent->get_children() as $child_id ) {
+				foreach ( \WC_Facebookcommerce_Utils::get_children_in_every_language( $this->product_parent ) as $child_id ) {
 					$child_product = wc_get_product( $child_id );
 					if ( $child_product && 'no' !== $child_product->get_meta( Products::get_product_sync_meta_key() ) ) {
 						// At least one product is "sync-enabled" so bail before exception.

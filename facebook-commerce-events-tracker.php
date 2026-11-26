@@ -139,11 +139,11 @@ if ( ! class_exists( 'WC_Facebookcommerce_EventsTracker' ) ) :
 		public static function get_param_builder() {
 			if ( null === self::$param_builder ) {
 				try {
-					$site_url            = get_site_url();
-					self::$param_builder = new \FacebookAds\ParamBuilder( array( $site_url ) );
+					$site_host           = self::get_param_builder_host();
+					self::$param_builder = new \FacebookAds\ParamBuilder( array( $site_host ) );
 
 					self::$param_builder->processRequest(
-						$site_url,
+						$site_host,
 						// phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Param builder intentionally inspects current request query parameters.
 						self::get_scalar_request_values( $_GET ),
 						self::get_scalar_request_values( $_COOKIE ),
@@ -165,6 +165,24 @@ if ( ! class_exists( 'WC_Facebookcommerce_EventsTracker' ) ) :
 			}
 
 			return self::$param_builder;
+		}
+
+		/**
+		 * Returns the host the CAPI Parameter Builder scopes the _fbp and _fbc cookies to.
+		 *
+		 * ParamBuilder expects a bare host and keeps any URL path, so passing a site URL with a
+		 * path (WordPress core in a subdirectory, as in Bedrock, or a site that lives in one)
+		 * produced an invalid cookie Domain such as `example.com/wp`, which browsers reject.
+		 * The front-end URL is used because that is where the cookies are read.
+		 *
+		 * @since 3.7.10
+		 *
+		 * @return string
+		 */
+		private static function get_param_builder_host() {
+			$host = wp_parse_url( home_url(), PHP_URL_HOST );
+
+			return is_string( $host ) && '' !== $host ? $host : get_site_url();
 		}
 
 		/**

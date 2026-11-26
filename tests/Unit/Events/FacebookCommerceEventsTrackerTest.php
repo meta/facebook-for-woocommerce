@@ -247,6 +247,82 @@ class FacebookCommerceEventsTrackerTest extends AbstractWPUnitTestWithSafeFilter
 	}
 
 	/**
+	 * Site and home URLs, and the cookie Domain ParamBuilder must be given for them.
+	 *
+	 * @return array<string, array{string, string, string}>
+	 */
+	public function param_builder_cookie_domain_provider(): array {
+		return array(
+			'WordPress core in a subdirectory (Bedrock)' => array( 'https://example.com/wp', 'https://example.com', 'example.com' ),
+			'site in a subdirectory'                     => array( 'https://example.com/shop', 'https://example.com/shop', 'example.com' ),
+			'site at the root'                           => array( 'https://example.com', 'https://example.com', 'example.com' ),
+			'site at the root with a port'               => array( 'http://example.com:8080', 'http://example.com:8080', 'example.com' ),
+			'subdomain site'                             => array( 'https://shop.example.com', 'https://shop.example.com', 'shop.example.com' ),
+		);
+	}
+
+	/**
+	 * Test that the _fbp and _fbc cookies are scoped to the front-end host, without the URL path
+	 * that a subdirectory install adds and browsers reject in a cookie Domain.
+	 *
+	 * @dataProvider param_builder_cookie_domain_provider
+	 * @covers WC_Facebookcommerce_EventsTracker::get_param_builder
+	 * @covers WC_Facebookcommerce_EventsTracker::get_param_builder_host
+	 *
+	 * @param string $site_url        the WordPress (core) URL.
+	 * @param string $home_url        the front-end URL.
+	 * @param string $expected_domain the cookie Domain expected.
+	 */
+	public function test_get_param_builder_scopes_cookies_to_the_home_host( string $site_url, string $home_url, string $expected_domain ): void {
+		$original_state  = $this->reset_param_builder_state();
+		$original_cookie = $_COOKIE;
+		$original_get    = $_GET;
+
+		unset( $_COOKIE['_fbc'], $_COOKIE['_fbp'] );
+		$_GET['fbclid'] = 'testclickid123';
+
+		$this->add_filter_with_safe_teardown(
+			'site_url',
+			function ( $url, $path ) use ( $site_url ) {
+				return $site_url . ( $path ? '/' . ltrim( $path, '/' ) : '' );
+			},
+			10,
+			2
+		);
+		$this->add_filter_with_safe_teardown(
+			'home_url',
+			function ( $url, $path ) use ( $home_url ) {
+				return $home_url . ( $path ? '/' . ltrim( $path, '/' ) : '' );
+			},
+			10,
+			2
+		);
+
+		try {
+			$param_builder = WC_Facebookcommerce_EventsTracker::get_param_builder();
+			$this->assertInstanceOf( \FacebookAds\ParamBuilder::class, $param_builder );
+
+			$domains = array();
+			foreach ( $param_builder->getCookiesToSet() as $cookie ) {
+				$domains[ $cookie->name ] = $cookie->domain;
+			}
+			ksort( $domains );
+
+			$this->assertSame(
+				array(
+					'_fbc' => $expected_domain,
+					'_fbp' => $expected_domain,
+				),
+				$domains
+			);
+		} finally {
+			$_COOKIE = $original_cookie;
+			$_GET    = $original_get;
+			$this->restore_param_builder_state( $original_state );
+		}
+	}
+
+	/**
 	 * Test that constructing the tracker, which runs param_builder_server_setup on every
 	 * front-end request, survives array-shaped attribution cookies.
 	 *

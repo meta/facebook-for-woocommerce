@@ -496,4 +496,258 @@ describe('Signals hold/release browser runtime', function () {
             expect(window.fbwcsignal.getState()).toBe('held');
         });
     });
+
+    describe('FacebookSignals.queueEvent() on a page from a full-page cache', function () {
+        /**
+         * The event a held render bakes into the HTML. A full-page cache serves the
+         * same HTML, and so the same event_id, on every view of the page.
+         */
+        function cachedPageView() {
+            return {
+                event_name: 'PageView',
+                custom_data: {},
+                event_id: 'cached-page-a',
+                event_time: Math.floor(Date.now() / 1000),
+                method: 'track',
+            };
+        }
+
+        function pageViews() {
+            return fbqCalls('track').filter((call) => call[1] === 'PageView');
+        }
+
+        it('ignores the same event queued twice in one page load', function () {
+            const signals = bootPage('held');
+            signals.queueEvent(cachedPageView());
+            signals.queueEvent(cachedPageView());
+
+            expect(signals._queue).toHaveLength(1);
+        });
+
+        it('fires the PageView when the page is viewed again after signals were released on another page', async function () {
+            // Page A, held: the PageView is queued.
+            bootPage('held').queueEvent(cachedPageView());
+
+            // Page B: the visitor releases signals there.
+            bootPage('held');
+            window.fbwcsignal.release();
+            stateRequests()[0].respond(200, { success: true, data: { state: 'active' } }, {
+                setCookie: `${STATE_COOKIE}=active;path=/`,
+            });
+            await flushPromises();
+            releaseRequests()[0].respond(200, { success: true, data: { sent_count: 0 } });
+            await flushPromises();
+            global.fbq.mockClear();
+
+            // Page A again, same cached HTML.
+            bootPage('active').queueEvent(cachedPageView());
+
+            expect(pageViews()).toEqual([['track', 'PageView', {}, { eventID: expect.any(String) }]]);
+            expect(pageViews()[0][3].eventID).not.toBe('cached-page-a');
+        });
+
+        it('queues the PageView again on a second held view and sends it on release', async function () {
+            bootPage('held').queueEvent(cachedPageView());
+
+            const signals = bootPage('held');
+            signals.queueEvent(cachedPageView());
+            expect(signals._queue).toHaveLength(1);
+
+            window.fbwcsignal.release();
+            stateRequests()[0].respond(200, { success: true, data: { state: 'active' } }, {
+                setCookie: `${STATE_COOKIE}=active;path=/`,
+            });
+            await flushPromises();
+
+            const posted = JSON.parse(releaseRequests()[0].body).events;
+            expect(posted.map((event) => event.event_name)).toEqual(['PageView']);
+        });
+
+        it('does not keep queued event ids in sessionStorage', function () {
+            bootPage('held').queueEvent(cachedPageView());
+
+            expect(window.sessionStorage.getItem('wc_facebook_signals_seen_event_ids')).toBeNull();
+        });
+
+        afterEach(function () {
+            delete window.__wc_fb_page_generated;
+            jest.restoreAllMocks();
+        });
+
+        it.each([0, 60, 1795, 1800, 1801, 3600])('uses a new visit time and id for a cached copy aged %i seconds', function (age) {
+            const now = 2000000000;
+            jest.spyOn(Date, 'now').mockReturnValue(now * 1000);
+            window.__wc_fb_page_generated = now - age;
+            const event = Object.assign(cachedPageView(), { event_time: now - age });
+            const original = { ...event };
+            const signals = bootPage('held');
+            signals.queueEvent(event);
+
+            expect(signals._queue[0].event_time).toBe(now);
+            expect(signals._queue[0].event_id).not.toBe(event.event_id);
+            expect(event).toEqual(original);
+        });
+
+        it.each([60, 3600])('deduplicates active inline replays on a cached copy aged %i seconds', function (age) {
+            window.__wc_fb_page_generated = Math.floor(Date.now() / 1000) - age;
+            const signals = bootPage('active');
+            const event = cachedPageView();
+            signals.queueEvent(event);
+            signals.queueEvent(event);
+
+            expect(pageViews()).toHaveLength(1);
+            expect(pageViews()[0][3].eventID).not.toBe(event.event_id);
+        });
+
+        it.each([0, 60, 3600])('uses distinct event ids across active views of a cached copy aged %i seconds', function (age) {
+            window.__wc_fb_page_generated = Math.floor(Date.now() / 1000) - age;
+            const event = cachedPageView();
+            bootPage('active').queueEvent(event);
+            bootPage('active').queueEvent(event);
+
+            expect(pageViews()).toHaveLength(2);
+            const ids = pageViews().map((call) => call[3].eventID);
+            expect(ids[0]).not.toBe(event.event_id);
+            expect(ids[1]).not.toBe(event.event_id);
+            expect(ids[1]).not.toBe(ids[0]);
+        });
+
+        it('deduplicates active replays before pixel initialization', function () {
+            const signals = bootPage('active');
+            signals._pixelInitialized = false;
+            const event = cachedPageView();
+            signals.queueEvent(event);
+            signals.queueEvent(event);
+            expect(signals._pendingPixelEvents).toHaveLength(1);
+            signals._runPixelInit();
+            expect(pageViews()).toHaveLength(1);
+        });
+
+        it('releases a recent visit near the cache age boundary with matching browser and CAPI ids', async function () {
+            const now = 2000000000;
+            const clock = jest.spyOn(Date, 'now').mockReturnValue(now * 1000);
+            window.__wc_fb_page_generated = now - 1795;
+            const event = Object.assign(cachedPageView(), { event_time: now - 1795 });
+            const signals = bootPage('held');
+            signals.queueEvent(event);
+
+            clock.mockReturnValue((now + 10) * 1000);
+            setStateCookie('active');
+            const released = signals.release();
+            const request = releaseRequests()[0];
+            const posted = JSON.parse(request.body).events;
+            expect(posted).toHaveLength(1);
+            expect(now + 10 - posted[0].event_time).toBe(10);
+            request.respond(200, { success: true, data: { sent_count: 1, sent_event_ids: [posted[0].event_id] } });
+            await released;
+
+            expect(pageViews()).toEqual([['track', 'PageView', {}, { eventID: posted[0].event_id }]]);
+            signals.queueEvent(event);
+            expect(pageViews()).toHaveLength(1);
+            expect(signals._queue).toHaveLength(0);
+        });
+
+        it('preserves the matching server id for a live active event outside the held-render queue', function () {
+            bootPage('active').trackEvent('PageView', {}, null, 'track', 'live-server-event');
+            expect(pageViews()).toEqual([['track', 'PageView', {}, { eventID: 'live-server-event' }]]);
+        });
+
+        it.each(['Purchase', 'Subscribe', 'AddToCart', 'InitiateCheckout', 'Lead', 'CustomAction'])('retains the server id for an active %s from a held render', function (name) {
+            const signals = bootPage('active');
+            const method = name === 'CustomAction' ? 'trackCustom' : 'track';
+            const event = { event_name: name, event_id: 'server-action-id', event_time: Math.floor(Date.now() / 1000), custom_data: { value: 50 }, method };
+            signals.queueEvent(event);
+            signals.queueEvent(event);
+
+            expect(fbqCalls(method)).toEqual([[method, name, { value: 50 }, { eventID: 'server-action-id' }]]);
+            expect(signals._queue).toHaveLength(0);
+        });
+
+        it.each(['PageView', 'ViewContent', 'ViewCategory', 'Search'])('still gives each active cached %s visit its own id', function (name) {
+            const event = { event_name: name, event_id: 'cached-visit-id', custom_data: {} };
+            bootPage('active').queueEvent(event);
+            bootPage('active').queueEvent(event);
+
+            const calls = fbqCalls('track');
+            expect(calls).toHaveLength(2);
+            expect(calls[0][3].eventID).not.toBe(event.event_id);
+            expect(calls[1][3].eventID).not.toBe(event.event_id);
+            expect(calls[0][3].eventID).not.toBe(calls[1][3].eventID);
+        });
+
+        it('keeps the existing shared browser and CAPI id when a held Purchase is released', async function () {
+            const signals = bootPage('held');
+            signals.queueEvent({ event_name: 'Purchase', event_id: 'order-id', custom_data: { value: 50 } });
+            setStateCookie('active');
+            const released = signals.release();
+            const request = releaseRequests()[0];
+            const posted = JSON.parse(request.body).events;
+            expect(posted).toHaveLength(1);
+            request.respond(200, { success: true, data: { sent_count: 1, sent_event_ids: [posted[0].event_id] } });
+            await released;
+
+            expect(fbqCalls('track')).toEqual([['track', 'Purchase', { value: 50 }, { eventID: posted[0].event_id }]]);
+        });
+        it('keeps one Purchase id across a held release and a cached active revisit', async function () {
+            const event = { event_name: 'Purchase', event_id: 'order-123', event_time: 2000000000, custom_data: { value: 50 } };
+            const signals = bootPage('held');
+            signals.queueEvent(event);
+            setStateCookie('active');
+            const released = signals.release();
+            const request = releaseRequests()[0];
+            const posted = JSON.parse(request.body).events;
+            expect(posted[0].event_id).toBe('order-123');
+            request.respond(200, { success: true, data: { sent_count: 1, sent_event_ids: ['order-123'] } });
+            await released;
+            bootPage('active').queueEvent(event);
+            expect(fbqCalls('track').map((call) => call[3].eventID)).toEqual(['order-123', 'order-123']);
+        });
+
+        it.each(['Purchase', 'AddToCart', 'Subscribe', 'Lead', 'InitiateCheckout'])('does not refresh the timestamp of a cached %s action', function (name) {
+            const now = 2000000000;
+            jest.spyOn(Date, 'now').mockReturnValue(now * 1000);
+            const signals = bootPage('held');
+            signals.queueEvent({ event_name: name, event_id: 'action-id', event_time: now - 3600 });
+            expect(signals._queue[0].event_time).toBe(now - 3600);
+            expect(signals._queue[0].event_id).toBe('action-id');
+            expect(signals._queue[0]._visitQueuedAt).toBeUndefined();
+        });
+
+        it.each([-1860, 1860])('sends elapsed visit age independently of a device clock offset of %i seconds', async function (offset) {
+            jest.spyOn(Date, 'now').mockReturnValue((2000000000 + offset) * 1000);
+            const timer = jest.spyOn(window.performance, 'now').mockReturnValue(1000);
+            const signals = bootPage('held');
+            signals.queueEvent(cachedPageView());
+            timer.mockReturnValue(11000);
+            // A wall-clock adjustment must not affect the monotonic elapsed age.
+            Date.now.mockReturnValue(1000);
+            setStateCookie('active');
+            const released = signals.release();
+            const request = releaseRequests()[0];
+            const event = JSON.parse(request.body).events[0];
+            expect(event.visit_age_seconds).toBe(10);
+            expect(event._visitQueuedAt).toBeUndefined();
+            expect(signals._queue[0]._visitQueuedAt).toBe(1000);
+            request.respond(200, { success: true, data: { sent_count: 1, sent_event_ids: [event.event_id] } });
+            await released;
+            expect(pageViews()[0][3].eventID).toBe(event.event_id);
+        });
+
+        it('keeps the original timer when a release is retried', async function () {
+            const timer = jest.spyOn(window.performance, 'now').mockReturnValue(0);
+            const signals = bootPage('held');
+            signals.queueEvent(cachedPageView());
+            setStateCookie('active');
+            timer.mockReturnValue(10000);
+            const failed = signals.release();
+            releaseRequests()[0].respond(500, {});
+            await expect(failed).rejects.toThrow();
+            timer.mockReturnValue(1801000);
+            const retried = signals.release();
+            const request = releaseRequests()[1];
+            expect(JSON.parse(request.body).events[0].visit_age_seconds).toBe(1801);
+            request.respond(200, { success: true, data: { sent_count: 0 } });
+            await retried;
+        });
+    });
 });

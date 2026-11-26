@@ -132,6 +132,7 @@ class ReleaseSignalsAjax {
 
 		$valid_events = array();
 		foreach ( $events as $event_data ) {
+			$event_data = $this->normalize_visit_time( $event_data, $now );
 			if ( ! $this->validate_event( $event_data, $now ) ) {
 				continue;
 			}
@@ -239,6 +240,31 @@ class ReleaseSignalsAjax {
 		}
 
 		return true;
+	}
+
+	/**
+	 * Anchors a page visit to the server clock using its elapsed time in the browser.
+	 * Action events retain their original timestamp, even if an age was supplied.
+	 * Older cached scripts without an elapsed age keep the existing validation path.
+	 *
+	 * @param mixed $event_data Queued event.
+	 * @param int   $now Server timestamp.
+	 * @return array|null Event with normalized time, or null for invalid input.
+	 */
+	private function normalize_visit_time( $event_data, int $now ): ?array {
+		if ( ! is_array( $event_data ) ) {
+			return null;
+		}
+		$page_events = array( 'PageView', 'ViewContent', 'ViewCategory', 'Search' );
+		if ( in_array( $event_data['event_name'] ?? '', $page_events, true ) && array_key_exists( 'visit_age_seconds', $event_data ) ) {
+			$age = $event_data['visit_age_seconds'];
+			if ( ( ! is_int( $age ) && ! is_float( $age ) ) || ! is_finite( (float) $age ) || $age < 0 || $age > self::MAX_EVENT_AGE ) {
+				return null;
+			}
+			$event_data['event_time'] = $now - (int) ceil( $age );
+		}
+		unset( $event_data['visit_age_seconds'] );
+		return $event_data;
 	}
 
 	/**

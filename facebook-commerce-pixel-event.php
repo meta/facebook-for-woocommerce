@@ -470,13 +470,6 @@ window.FacebookSignals = window.FacebookSignals || {
 		if (typeof fbq === 'function') {
 			fbq('consent', this._held ? 'revoke' : 'grant');
 		}
-
-		try {
-			var raw = window.sessionStorage.getItem('wc_facebook_signals_seen_event_ids');
-			this._seenEventIds = raw ? JSON.parse(raw) : {};
-		} catch (e) {
-			this._seenEventIds = this._seenEventIds || {};
-		}
 	},
 
 	initPixel: function(pixelId, userInfo, options) {
@@ -529,26 +522,39 @@ window.FacebookSignals = window.FacebookSignals || {
 		var originalId = eventData.event_id || null;
 		if (originalId && this._seenEventIds[originalId]) return;
 
-		if (!this._held) {
-			this._fireOrQueuePixelEvent(eventData.event_name, eventData.custom_data || {}, eventData.method || 'track', originalId);
-			return;
+		// Cached page visits need a new id even when consent is already active.
+		// Active action events (e.g. Purchase) must retain their server id: their
+		// CAPI event may already have been sent before this held script executes.
+		var isPageVisit = ['PageView', 'ViewContent', 'ViewCategory', 'Search'].indexOf(eventData.event_name) !== -1;
+		eventData = this._cloneEventData(eventData);
+		// An action is the same event across consent changes and page loads.
+		eventData.event_id = isPageVisit || !originalId ? this._generateEventId() : originalId;
+		if (isPageVisit) {
+			eventData.event_time = Math.floor(Date.now() / 1000);
+			eventData._visitQueuedAt = this._timerNow();
+		} else {
+			eventData.event_time = eventData.event_time || Math.floor(Date.now() / 1000);
 		}
 
-		eventData = this._cloneEventData(eventData);
-		eventData.event_id = this._generateEventId();
-		eventData.event_time = eventData.event_time || Math.floor(Date.now() / 1000);
-		this._queue.push(eventData);
-
+		// Remember the id for this page load only, so an inline script that runs twice
+		// does not queue its event twice. The ids are not kept across page loads: a page
+		// served from a full-page cache carries the same event_id on every view, and each
+		// of those views has to queue its own event.
 		var idToMark = originalId || eventData.event_id;
 		if (idToMark) {
 			this._seenEventIds[idToMark] = 1;
-			try {
-				window.sessionStorage.setItem(
-					'wc_facebook_signals_seen_event_ids',
-					JSON.stringify(this._seenEventIds)
-				);
-			} catch (e) {}
 		}
+
+		if (!this._held) {
+			this._fireOrQueuePixelEvent(eventData.event_name, eventData.custom_data || {}, eventData.method || 'track', eventData.event_id);
+			return;
+		}
+
+		this._queue.push(eventData);
+	},
+
+	_timerNow: function() {
+		return window.performance && typeof window.performance.now === 'function' ? window.performance.now() : Date.now();
 	},
 
 	trackEvent: function(name, params, userData, method, eventId) {
@@ -622,7 +628,14 @@ window.FacebookSignals = window.FacebookSignals || {
 		var attribution = self._collectAttribution();
 
 		var payload = JSON.stringify({
-			events: postedEvents,
+			events: postedEvents.map(function(event) {
+				var posted = self._cloneEventData(event);
+				if (typeof event._visitQueuedAt === 'number') {
+					posted.visit_age_seconds = Math.max(0, Math.floor((self._timerNow() - event._visitQueuedAt) / 1000));
+				}
+				delete posted._visitQueuedAt;
+				return posted;
+			}),
 			attribution: {
 				fbp: attribution.fbp || null,
 				fbc: attribution.fbc || null
@@ -1194,10 +1207,10 @@ JS;
 	 * synchronous, so there is no window for a double fire. Without an event ID, or when
 	 * sessionStorage is unavailable, the code runs as it did before.
 	 *
-	 * This store is separate from the wc_facebook_signals_seen_event_ids store that
-	 * FacebookSignals keeps for queued events: that one is consulted only while signals
-	 * are held, and FacebookSignals may not be loaded at all. This guard has to work in
-	 * both states and without it, so the two are not meant to be unified.
+	 * This store is separate from the ids FacebookSignals.queueEvent() remembers: those
+	 * last for one page load only, and FacebookSignals may not be loaded at all. This
+	 * guard has to work across page loads and without it, so the two are not meant to be
+	 * unified.
 	 *
 	 * @since 3.7.9
 	 *

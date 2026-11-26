@@ -173,16 +173,24 @@ if ( ! class_exists( 'WC_Facebookcommerce_EventsTracker' ) ) :
 		 * ParamBuilder expects a bare host and keeps any URL path, so passing a site URL with a
 		 * path (WordPress core in a subdirectory, as in Bedrock, or a site that lives in one)
 		 * produced an invalid cookie Domain such as `example.com/wp`, which browsers reject.
-		 * The front-end URL is used because that is where the cookies are read.
+		 * The front-end URL is used because that is where the cookies are read, with the
+		 * WordPress URL as a fallback. Neither URL is ever passed through whole.
 		 *
 		 * @since 3.7.10
 		 *
 		 * @return string
+		 * @throws \RuntimeException When neither URL has a host, so ParamBuilder is not set up.
 		 */
 		private static function get_param_builder_host() {
-			$host = wp_parse_url( home_url(), PHP_URL_HOST );
+			foreach ( array( home_url(), site_url() ) as $url ) {
+				$host = wp_parse_url( $url, PHP_URL_HOST );
 
-			return is_string( $host ) && '' !== $host ? $host : get_site_url();
+				if ( is_string( $host ) && '' !== $host ) {
+					return $host;
+				}
+			}
+
+			throw new \RuntimeException( 'Neither the home URL nor the site URL has a host to scope the attribution cookies to.' );
 		}
 
 		/**

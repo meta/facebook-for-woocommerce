@@ -11,6 +11,7 @@ declare( strict_types=1 );
 namespace WooCommerce\Facebook\Tests\Unit\Events;
 
 use WooCommerce\Facebook\Events\AAMSettings;
+use WooCommerce\Facebook\Events\ReleaseSignalsAjax;
 use WooCommerce\Facebook\Tests\AbstractWPUnitTestWithSafeFiltering;
 use WC_Facebookcommerce_EventsTracker;
 use ReflectionClass;
@@ -258,6 +259,7 @@ class FacebookCommerceEventsTrackerTest extends AbstractWPUnitTestWithSafeFilter
 			'site at the root'                           => array( 'https://example.com', 'https://example.com', 'example.com' ),
 			'site at the root with a port'               => array( 'http://example.com:8080', 'http://example.com:8080', 'example.com' ),
 			'subdomain site'                             => array( 'https://shop.example.com', 'https://shop.example.com', 'shop.example.com' ),
+			'home URL without a host'                    => array( 'https://example.com/wp', '', 'example.com' ),
 		);
 	}
 
@@ -281,22 +283,7 @@ class FacebookCommerceEventsTrackerTest extends AbstractWPUnitTestWithSafeFilter
 		unset( $_COOKIE['_fbc'], $_COOKIE['_fbp'] );
 		$_GET['fbclid'] = 'testclickid123';
 
-		$this->add_filter_with_safe_teardown(
-			'site_url',
-			function ( $url, $path ) use ( $site_url ) {
-				return $site_url . ( $path ? '/' . ltrim( $path, '/' ) : '' );
-			},
-			10,
-			2
-		);
-		$this->add_filter_with_safe_teardown(
-			'home_url',
-			function ( $url, $path ) use ( $home_url ) {
-				return $home_url . ( $path ? '/' . ltrim( $path, '/' ) : '' );
-			},
-			10,
-			2
-		);
+		$this->filter_site_and_home_urls( $site_url, $home_url );
 
 		try {
 			$param_builder = WC_Facebookcommerce_EventsTracker::get_param_builder();
@@ -319,6 +306,85 @@ class FacebookCommerceEventsTrackerTest extends AbstractWPUnitTestWithSafeFilter
 			$_COOKIE = $original_cookie;
 			$_GET    = $original_get;
 			$this->restore_param_builder_state( $original_state );
+		}
+	}
+
+	/**
+	 * Test that ParamBuilder is not set up, rather than given a URL with a path as the cookie
+	 * Domain, when neither the home URL nor the site URL has a host.
+	 *
+	 * @covers WC_Facebookcommerce_EventsTracker::get_param_builder
+	 * @covers WC_Facebookcommerce_EventsTracker::get_param_builder_host
+	 */
+	public function test_get_param_builder_is_not_set_up_without_a_host(): void {
+		$original_state = $this->reset_param_builder_state();
+
+		$this->filter_site_and_home_urls( '', '' );
+
+		try {
+			$this->assertNull( WC_Facebookcommerce_EventsTracker::get_param_builder() );
+		} finally {
+			$this->restore_param_builder_state( $original_state );
+		}
+	}
+
+	/**
+	 * Test that the cookie domains the release-signals endpoint returns, which the browser uses
+	 * to write _fbp and _fbc after a consent hold is released, are the front-end host too.
+	 *
+	 * @dataProvider param_builder_cookie_domain_provider
+	 * @covers \WooCommerce\Facebook\Events\ReleaseSignalsAjax::get_attribution_cookie_domains
+	 *
+	 * @param string $site_url        the WordPress (core) URL.
+	 * @param string $home_url        the front-end URL.
+	 * @param string $expected_domain the cookie Domain expected.
+	 */
+	public function test_release_signals_cookie_domains_are_the_home_host( string $site_url, string $home_url, string $expected_domain ): void {
+		$original_state  = $this->reset_param_builder_state();
+		$original_cookie = $_COOKIE;
+		$original_get    = $_GET;
+
+		unset( $_COOKIE['_fbc'], $_COOKIE['_fbp'] );
+		$_GET['fbclid'] = 'testclickid123';
+
+		$this->filter_site_and_home_urls( $site_url, $home_url );
+
+		try {
+			$ref     = new ReflectionClass( ReleaseSignalsAjax::class );
+			$method  = $ref->getMethod( 'get_attribution_cookie_domains' );
+			$method->setAccessible( true );
+			$domains = $method->invoke( $ref->newInstanceWithoutConstructor() );
+
+			$this->assertSame(
+				array(
+					'fbp' => $expected_domain,
+					'fbc' => $expected_domain,
+				),
+				$domains
+			);
+		} finally {
+			$_COOKIE = $original_cookie;
+			$_GET    = $original_get;
+			$this->restore_param_builder_state( $original_state );
+		}
+	}
+
+	/**
+	 * Makes site_url() and home_url() return the given base URLs.
+	 *
+	 * @param string $site_url the WordPress (core) URL.
+	 * @param string $home_url the front-end URL.
+	 */
+	private function filter_site_and_home_urls( string $site_url, string $home_url ): void {
+		foreach ( array( 'site_url' => $site_url, 'home_url' => $home_url ) as $hook => $base_url ) {
+			$this->add_filter_with_safe_teardown(
+				$hook,
+				function ( $url, $path ) use ( $base_url ) {
+					return $base_url . ( $path ? '/' . ltrim( $path, '/' ) : '' );
+				},
+				10,
+				2
+			);
 		}
 	}
 

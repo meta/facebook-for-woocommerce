@@ -374,46 +374,87 @@ class Product_Categories {
 	 */
 	public function save_google_product_category_and_enhanced_attributes( $term_id, $tt_id, $taxonomy ) {
 
+		// created_term and edit_term fire for every taxonomy; the fields saved here only exist on product categories.
+		if ( 'product_cat' !== $taxonomy ) {
+			return;
+		}
+
 		$google_product_category_id = wc_clean( Helper::get_posted_value( self::FIELD_GOOGLE_PRODUCT_CATEGORY_ID ) );
 
 		\WooCommerce\Facebook\Product_Categories::update_google_product_category_id( $term_id, $google_product_category_id );
 		$this->save_enhanced_catalog_attributes( $term_id );
 
-		$term = get_term( $term_id, $taxonomy );
+		$sync_product_ids = $this->get_product_ids_to_sync_for_category( (int) $term_id );
 
-		if ( $term instanceof \WP_Term ) {
+		if ( ! empty( $sync_product_ids ) ) {
+			facebook_for_woocommerce()->get_products_sync_handler()->create_or_update_products( $sync_product_ids );
+		}
+	}
 
-			// get the products in the category being saved
-			$products = wc_get_products(
-				array(
-					'category' => array( $term->slug ),
-				)
-			);
+	/**
+	 * Gets the IDs of the products in a category that should be re-synced: simple products by their own ID,
+	 * and products with variations by the IDs of those variations.
+	 *
+	 * Works on IDs only, so a category with thousands of products is not loaded into memory while the
+	 * category is being saved; the background sync loads each product when it sends it. Parents are told
+	 * apart by having variations rather than by product type, the same way the full catalog sync does,
+	 * so variable subscriptions and other types built on variable products are covered.
+	 *
+	 * Products are looked up by category ID, not slug: edit_term fires before WordPress clears the term
+	 * cache, so a category read here still has its old slug when the slug was just changed. Only products
+	 * assigned to the category itself are included. What is sent for a product depends on the categories
+	 * assigned to it, not on their parents, so the products of subcategories have nothing to update.
+	 *
+	 * @see \WC_Facebookcommerce_Utils::get_all_product_ids_for_sync()
+	 *
+	 * @since 3.7.10
+	 *
+	 * @param int $term_id Product category ID.
+	 * @return int[]
+	 */
+	private function get_product_ids_to_sync_for_category( int $term_id ) {
+		$product_ids = wc_get_products(
+			array(
+				// phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_tax_query
+				'tax_query' => array(
+					array(
+						'taxonomy'         => 'product_cat',
+						'field'            => 'term_id',
+						'terms'            => $term_id,
+						'include_children' => false,
+					),
+				),
+				'limit'     => -1,
+				'return'    => 'ids',
+			)
+		);
 
-			if ( ! empty( $products ) ) {
+		if ( empty( $product_ids ) ) {
+			return array();
+		}
 
-				$sync_product_ids = array();
+		$product_ids = array_map( 'intval', $product_ids );
 
-				/**
-				 * @var int $product_id
-				 * @var \WC_Product $product
-				 */
-				foreach ( $products as $product_id => $product ) {
+		// variation ID => parent ID, matching the statuses WC_Product_Variable::get_children() returns
+		$variations = get_posts(
+			array(
+				'post_type'       => 'product_variation',
+				'post_parent__in' => $product_ids,
+				'post_status'     => array( 'publish', 'private' ),
+				'fields'          => 'id=>parent',
+				'posts_per_page'  => -1,
+			)
+		);
 
-					if ( $product instanceof \WC_Product_Variable ) {
+		$parent_ids = array_unique( array_map( 'intval', array_values( $variations ) ) );
 
-						// should sync the variations, not the variable product
-						$sync_product_ids = array_merge( $sync_product_ids, $product->get_children() );
-
-					} else {
-
-						$sync_product_ids[] = $product_id;
-					}
-				}
-
-				facebook_for_woocommerce()->get_products_sync_handler()->create_or_update_products( $sync_product_ids );
-			}//end if
-		}//end if
+		// parents can't be represented as product items, so their variations are synced instead
+		return array_values(
+			array_merge(
+				array_diff( $product_ids, $parent_ids ),
+				array_map( 'intval', array_keys( $variations ) )
+			)
+		);
 	}
 
 	/**

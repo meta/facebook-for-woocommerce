@@ -259,17 +259,21 @@ class FacebookCommerceEventsTrackerTest extends AbstractWPUnitTestWithSafeFilter
 			'site at the root'                           => array( 'https://example.com', 'https://example.com', 'example.com' ),
 			'site at the root with a port'               => array( 'http://example.com:8080', 'http://example.com:8080', 'example.com' ),
 			'subdomain site'                             => array( 'https://shop.example.com', 'https://shop.example.com', 'shop.example.com' ),
+			'WordPress core on the parent domain'        => array( 'https://example.com', 'https://shop.example.com', 'example.com' ),
+			'WordPress core on an unrelated subdomain'   => array( 'https://cms.example.com', 'https://www.example.com', 'www.example.com' ),
+			'front end on the parent domain'             => array( 'https://www.example.com', 'https://example.com', 'example.com' ),
 			'home URL without a host'                    => array( 'https://example.com/wp', '', 'example.com' ),
 		);
 	}
 
 	/**
-	 * Test that the _fbp and _fbc cookies are scoped to the front-end host, without the URL path
-	 * that a subdirectory install adds and browsers reject in a cookie Domain.
+	 * Test that the _fbp and _fbc cookies are scoped to the front-end host, or to the WordPress
+	 * host when that is a parent domain of it, without the URL path that a subdirectory install
+	 * adds and browsers reject in a cookie Domain.
 	 *
 	 * @dataProvider param_builder_cookie_domain_provider
 	 * @covers WC_Facebookcommerce_EventsTracker::get_param_builder
-	 * @covers WC_Facebookcommerce_EventsTracker::get_param_builder_host
+	 * @covers WC_Facebookcommerce_EventsTracker::get_param_builder_hosts
 	 *
 	 * @param string $site_url        the WordPress (core) URL.
 	 * @param string $home_url        the front-end URL.
@@ -314,7 +318,7 @@ class FacebookCommerceEventsTrackerTest extends AbstractWPUnitTestWithSafeFilter
 	 * Domain, when neither the home URL nor the site URL has a host.
 	 *
 	 * @covers WC_Facebookcommerce_EventsTracker::get_param_builder
-	 * @covers WC_Facebookcommerce_EventsTracker::get_param_builder_host
+	 * @covers WC_Facebookcommerce_EventsTracker::get_param_builder_hosts
 	 */
 	public function test_get_param_builder_is_not_set_up_without_a_host(): void {
 		$original_state = $this->reset_param_builder_state();
@@ -330,7 +334,7 @@ class FacebookCommerceEventsTrackerTest extends AbstractWPUnitTestWithSafeFilter
 
 	/**
 	 * Test that the cookie domains the release-signals endpoint returns, which the browser uses
-	 * to write _fbp and _fbc after a consent hold is released, are the front-end host too.
+	 * to write _fbp and _fbc after a consent hold is released, are scoped the same way.
 	 *
 	 * @dataProvider param_builder_cookie_domain_provider
 	 * @covers \WooCommerce\Facebook\Events\ReleaseSignalsAjax::get_attribution_cookie_domains

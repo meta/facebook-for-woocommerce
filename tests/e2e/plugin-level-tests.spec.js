@@ -70,11 +70,16 @@ test.describe('WooCommerce Plugin level tests', () => {
       console.log('❌ WooCommerce needs update');
     }
 
-    if (process.env.IS_LATEST_WP !== 'false') {
+    if (process.env.IS_LATEST_WP === 'false') {
+      console.log('⏭️ Skipping version checks (running against pinned versions, not latest)');
+    } else if (process.env.E2E_DEPENDENCIES_REUSED === 'true') {
+      // "Re-run failed jobs" reuses the WordPress and WooCommerce downloads of an earlier attempt.
+      // They were the latest releases when that attempt resolved them; a release published since
+      // would fail this check on every re-run until all jobs are re-run.
+      console.log('⏭️ Skipping version checks (this re-run reuses the downloads of an earlier attempt)');
+    } else {
       expect(wpUpToDate).toBeGreaterThan(0);
       expect(allPluginsUpToDate > 0 || wooInUpdateTable === 0).toBe(true);
-    } else {
-      console.log('⏭️ Skipping version checks (running against pinned versions, not latest)');
     }
     console.log('✅ Wordpress and WooCommerce version check complete');
   });

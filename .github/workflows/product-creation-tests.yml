@@ -228,6 +228,11 @@ jobs:
           done
 
           rm -f ./*.json
+
+          # Re-running only the failed shards reuses this artifact instead of resolving "latest"
+          # again. The shards compare this with their own attempt to tell the two cases apart.
+          echo "$GITHUB_RUN_ATTEMPT" > resolved-in-attempt.txt
+
           cat versions.txt
           ls -lh
 
@@ -239,6 +244,8 @@ jobs:
             | sudo tee /etc/apt/apt.conf.d/80-e2e-retries
           # Keep downloaded packages in apt's cache so the step below can share them with the shards.
           echo 'APT::Keep-Downloaded-Packages "true";' | sudo tee /etc/apt/apt.conf.d/81-e2e-keep-packages
+          # Wait for the package lock instead of failing at once when another apt-get still holds it.
+          echo 'DPkg::Lock::Timeout "60";' | sudo tee /etc/apt/apt.conf.d/82-e2e-lock-wait
           # Same as in the shards: the runner's packages.microsoft.com sources periodically serve
           # invalid metadata and fail `apt-get update`, and nothing here needs them.
           sudo grep -rlZ 'packages\.microsoft\.com' /etc/apt/sources.list.d/ 2>/dev/null \
@@ -262,14 +269,43 @@ jobs:
           # (and are skipped when it was restored); --with-deps apt-installs their system packages,
           # which stay in apt's cache. The runner image is the shards' image, so these are exactly
           # the packages a shard is missing.
+          # `timeout` cannot stop the apt-get that Playwright starts through sudo: it runs as root,
+          # outlives npx and keeps the package lock, so the second attempt used to fail at once with
+          # "Could not get lock /var/lib/dpkg/lock-frontend".
+          stop_leftover_apt() {
+            sudo pkill -TERM -x apt-get || true
+            for _ in $(seq 1 15); do
+              pgrep -x apt-get > /dev/null || break
+              sleep 1
+            done
+            sudo pkill -KILL -x apt-get || true
+            sudo pkill -KILL -x dpkg || true
+            # Finish any package an interrupted install left half-configured.
+            sudo dpkg --configure -a || true
+          }
+
+          # The runner image lists the Azure Ubuntu mirror first and the main archive after it. apt
+          # only moves down that list on an error, not when a mirror answers slowly, so take the
+          # mirror that just stalled out of the list before trying again.
+          skip_stalled_mirror() {
+            local mirrors=/etc/apt/apt-mirrors.txt
+            if [ -f "$mirrors" ] && grep -q 'azure\.archive\.ubuntu\.com' "$mirrors" \
+              && [ "$(grep -v 'azure\.archive\.ubuntu\.com' "$mirrors" | grep -c '://')" -gt 0 ]; then
+              sudo sed -i '/azure\.archive\.ubuntu\.com/d' "$mirrors"
+              echo "Retrying without the Azure Ubuntu mirror"
+            fi
+          }
+
           for attempt in 1 2; do
-            if timeout 15m npx --yes "playwright@${PLAYWRIGHT_VERSION}" install --with-deps chromium chrome webkit firefox; then
+            if timeout -k 30s 15m npx --yes "playwright@${PLAYWRIGHT_VERSION}" install --with-deps chromium chrome webkit firefox; then
               break
             fi
+            stop_leftover_apt
             if [ "$attempt" = 2 ]; then
               echo "::error::Installing the Playwright browsers failed twice"
               exit 1
             fi
+            skip_stalled_mirror
             echo "::warning::Installing the Playwright browsers failed (attempt $attempt), retrying in 10 seconds"
             sleep 10
           done
@@ -343,10 +379,29 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Download WordPress dependencies
+        id: download-dependencies
         uses: actions/download-artifact@v5
         with:
           name: wp-dependencies
           path: ${{ env.WP_DEPS_DIR }}
+
+      - name: Explain a missing dependencies artifact
+        if: ${{ failure() && steps.download-dependencies.outcome == 'failure' }}
+        run: |
+          echo "::error title=E2E dependencies artifact is missing::The wp-dependencies artifact could not be downloaded. It is kept for 3 days, so re-running only the failed jobs of an older run cannot work. Use \"Re-run all jobs\" to download the dependencies again."
+
+      - name: Check whether the dependencies come from an earlier attempt
+        run: |
+          # "Re-run failed jobs" does not re-run prepare-dependencies, so this shard may be using
+          # WordPress and WooCommerce downloads that were the latest releases days ago.
+          RESOLVED_IN_ATTEMPT=$(cat "$WP_DEPS_DIR/resolved-in-attempt.txt" 2>/dev/null || true)
+          if [ -n "$RESOLVED_IN_ATTEMPT" ] && [ "$RESOLVED_IN_ATTEMPT" != "$GITHUB_RUN_ATTEMPT" ]; then
+            echo "E2E_DEPENDENCIES_REUSED=true" >> "$GITHUB_ENV"
+            echo "::notice title=Reusing earlier dependencies::This attempt ($GITHUB_RUN_ATTEMPT) reuses the dependencies downloaded in attempt $RESOLVED_IN_ATTEMPT. \"Latest\" means the latest releases at that time; use \"Re-run all jobs\" to resolve them again."
+          else
+            echo "E2E_DEPENDENCIES_REUSED=false" >> "$GITHUB_ENV"
+          fi
+          cat "$WP_DEPS_DIR/versions.txt" 2>/dev/null || true
 
       - name: Configure apt
         run: |

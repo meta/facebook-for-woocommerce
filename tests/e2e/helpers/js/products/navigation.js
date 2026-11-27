@@ -72,15 +72,59 @@ async function clickFirstProduct(page) {
 }
 
 /**
+ * Bring the Publish box back within reach of a click.
+ *
+ * On the classic editor, wp-admin/js/editor-expand.js pins #side-sortables with
+ * `position: fixed; bottom: 20px` after a downward scroll whenever the editor and the
+ * sidebar are both taller than the window. The top of the sidebar, Publish box included,
+ * then sits above the viewport, and a fixed element cannot be scrolled into view, so a
+ * click on #publish retries until it times out. Scrolling to the top makes that script
+ * drop the pin.
+ *
+ * @param {import('@playwright/test').Page} page - Playwright page
+ */
+async function releasePinnedSidebar(page) {
+  await page.evaluate(() => window.scrollTo(0, 0));
+  await page.waitForFunction(() => {
+    const sidebar = document.querySelector('#side-sortables');
+    return !sidebar || window.getComputedStyle(sidebar).position !== 'fixed';
+  }, null, { timeout: TIMEOUTS.MEDIUM }).catch(() => {
+    console.warn('⚠️ The editor sidebar is still pinned after scrolling to the top');
+  });
+}
+
+/**
+ * Wait until WordPress accepts a click on the Publish/Update button.
+ *
+ * An autosave starts shortly after a new post's title loses focus. While it is in flight
+ * WordPress puts a `disabled` class on the submit buttons, and wp-admin/js/post.js ignores
+ * clicks on a button that has it. A click landing in that window does nothing, and the caller
+ * then waits out a navigation timeout before clicking again. WordPress drops the class when
+ * the autosave returns, or after 5 seconds at the latest.
+ *
+ * @param {import('@playwright/test').Page} page - Playwright page
+ */
+async function waitForPublishEnabled(page) {
+  await page.waitForFunction(() => {
+    const button = document.querySelector('#publish');
+    return !!button && !button.classList.contains('disabled');
+  }, null, { timeout: TIMEOUTS.LONG }).catch(() => {
+    console.warn('⚠️ The Publish button is still disabled, clicking it anyway');
+  });
+}
+
+/**
  * Publish a product
  * @param {import('@playwright/test').Page} page - Playwright page
  * @returns {Promise<boolean>} Success status
  */
 async function publishProduct(page) {
+  await releasePinnedSidebar(page);
   await page.locator('#publishing-action').scrollIntoViewIfNeeded();
   const publishButton = page.locator('#publish');
   await publishButton.waitFor({ state: 'visible', timeout: TIMEOUTS.LONG });
   await publishButton.waitFor({ state: 'attached', timeout: TIMEOUTS.LONG });
+  await waitForPublishEnabled(page);
   await publishButton.click();
   console.log('Clicked Publish button');
   let publishSuccess = true;
@@ -91,6 +135,8 @@ async function publishProduct(page) {
 
   if (!publishSuccess) {
     console.warn(`⚠️ Encountered Wordpress Publish button bug. Clicking Publish did not change url. Current url: ${page.url()} Clicking Publish button again`);
+    await releasePinnedSidebar(page);
+    await waitForPublishEnabled(page);
     await publishButton.click();
     await page.waitForTimeout(TIMEOUTS.MEDIUM);
   }
@@ -106,5 +152,7 @@ async function publishProduct(page) {
 module.exports = {
   filterProducts,
   clickFirstProduct,
+  releasePinnedSidebar,
+  waitForPublishEnabled,
   publishProduct
 };

@@ -81,24 +81,53 @@ async function publishProduct(page) {
   const publishButton = page.locator('#publish');
   await publishButton.waitFor({ state: 'visible', timeout: TIMEOUTS.LONG });
   await publishButton.waitFor({ state: 'attached', timeout: TIMEOUTS.LONG });
+  const isNewProduct = new URL(page.url()).pathname.endsWith('/post-new.php');
+  const updateButton = page.getByRole('button', { name: 'Update' });
+
+  const waitForSaveResponse = () => page.waitForResponse(response => {
+    const request = response.request();
+    return request.method() === 'POST' && new URL(response.url()).pathname.endsWith('/wp-admin/post.php');
+  }, {
+    timeout: TIMEOUTS.EXTRA_LONG
+  }).catch(() => null);
+
+  const waitForPublishedState = () => updateButton.waitFor({
+    state: 'visible',
+    timeout: TIMEOUTS.EXTRA_LONG
+  }).then(() => true).catch(() => false);
+
+  const waitForSaveCompletion = async () => {
+    if (!isNewProduct) {
+      return { response: await waitForSaveResponse(), published: false };
+    }
+
+    return Promise.race([
+      waitForSaveResponse().then(response => ({ response, published: false })),
+      waitForPublishedState().then(published => ({ response: null, published })),
+    ]);
+  };
+
+  let saveCompletionPromise = waitForSaveCompletion();
   await publishButton.click();
   console.log('Clicked Publish button');
-  let publishSuccess = true;
-  await page.waitForURL(/\/wp-admin\/post\.php\?post=\d+/, { timeout: TIMEOUTS.EXTRA_LONG }).catch(() => {
-    console.warn('⚠️ URL did not change after publishing. Current URL: ' + page.url())
-    publishSuccess = false;
-  });
+  let saveCompletion = await saveCompletionPromise;
 
-  if (!publishSuccess) {
-    console.warn(`⚠️ Encountered Wordpress Publish button bug. Clicking Publish did not change url. Current url: ${page.url()} Clicking Publish button again`);
+  if (!saveCompletion.response && !saveCompletion.published) {
+    console.warn(`⚠️ Product save request did not finish. Retrying Publish from ${page.url()}`);
+    saveCompletionPromise = waitForSaveCompletion();
     await publishButton.click();
-    await page.waitForTimeout(TIMEOUTS.MEDIUM);
+    saveCompletion = await saveCompletionPromise;
   }
 
-  let updateButton = page.getByRole('button', { name: 'Update' });
-  await updateButton.waitFor({ state: 'visible', timeout: TIMEOUTS.LONG });
+  if (!saveCompletion.response && !saveCompletion.published) {
+    throw new Error(`Product save request did not complete after retry. Current URL: ${page.url()}`);
+  }
 
-  await page.waitForLoadState('domcontentloaded', { timeout: TIMEOUTS.MAX });
+  if (saveCompletion.response && saveCompletion.response.status() >= 400) {
+    throw new Error(`Product save failed with HTTP ${saveCompletion.response.status()}`);
+  }
+
+  await updateButton.waitFor({ state: 'visible', timeout: TIMEOUTS.EXTRA_LONG });
   console.log('✅ Published product');
   return true;
 }

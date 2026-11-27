@@ -20,7 +20,6 @@ const {
   logTestEnd,
   validateFacebookSync,
   processPendingSyncJobs,
-  execWP,
   setProductTitle,
   setProductDescription,
   dismissWooInterferingOverlays,
@@ -374,40 +373,6 @@ test.describe('Variable Product Depth Tests', () => {
     }
   }
 
-  async function forceEnqueueVariableProductSync(productId) {
-    if (!productId) {
-      return;
-    }
-
-    try {
-      await execWP(`
-        $product_id = ${Number(productId)};
-        $product = wc_get_product($product_id);
-        if ( ! $product ) {
-          echo json_encode(['ok' => false, 'reason' => 'missing_product']);
-          return;
-        }
-
-        $sync = facebook_for_woocommerce()->get_products_sync_handler();
-        if ( $product->is_type('variable') ) {
-          $sync->create_or_update_all_products_for_bulk_edit([$product_id]);
-        } else {
-          $sync->create_or_update_products([$product_id]);
-        }
-
-        $job = $sync->schedule_sync();
-        echo json_encode([
-          'ok' => true,
-          'job_created' => ! empty($job),
-          'product_id' => $product_id,
-        ]);
-      `);
-      console.log(`🔁 Forced sync enqueue for variable product ${productId}`);
-    } catch (error) {
-      console.warn(`⚠️ Failed to force enqueue sync for product ${productId}: ${error.message}`);
-    }
-  }
-
   async function validateVariableProductSync(productId, productName, options = {}) {
     const attempts = options.attempts || 1;
     const waitBetweenAttemptsMs = options.waitBetweenAttemptsMs || (TIMEOUTS.NORMAL + TIMEOUTS.SHORT);
@@ -415,8 +380,13 @@ test.describe('Variable Product Depth Tests', () => {
     let lastResult = null;
 
     for (let attempt = 1; attempt <= attempts; attempt++) {
-      await forceEnqueueVariableProductSync(productId);
-      await processPendingSyncJobs().catch(() => {});
+      // Publishing and editing products must enqueue their own native sync. Only
+      // drain that queue here: forcing another sync masks enqueue regressions and
+      // submits duplicate writes while Meta is still indexing the first batch.
+      const processingResult = await processPendingSyncJobs({ waitForBatchCompletion: true });
+      if (!processingResult.success) {
+        throw new Error(`Unable to process native product sync jobs: ${processingResult.error || processingResult.message || 'unknown error'}`);
+      }
 
       const result = await validateFacebookSync(
         productId,
@@ -480,39 +450,49 @@ test.describe('Variable Product Depth Tests', () => {
     const productName = generateProductName('VariableDepth');
     const expectedVariationCount = getVariationCount(VARIABLE_PRODUCT_CONFIG.attributes);
     const variationDefinitions = buildVariationDefinitions(expectedVariationCount);
+    let productId = null;
 
-    await page.goto(`${baseURL}/wp-admin/post-new.php?post_type=product`, {
-      waitUntil: 'domcontentloaded',
-      timeout: TIMEOUTS.MAX,
-    });
+    try {
+      await page.goto(`${baseURL}/wp-admin/post-new.php?post_type=product`, {
+        waitUntil: 'domcontentloaded',
+        timeout: TIMEOUTS.MAX,
+      });
 
-    await waitForProductEditor(page);
-    await setProductTitle(page, productName);
-    await setProductDescription(page, 'Advanced variable product depth test with multiple attributes and variation-level updates.');
+      await waitForProductEditor(page);
+      await setProductTitle(page, productName);
+      await setProductDescription(page, 'Advanced variable product depth test with multiple attributes and variation-level updates.');
 
-    await page.selectOption('#product-type', 'variable');
-    await page.locator('#_sku').fill(generateUniqueSKU('variable-depth-parent'));
+      await page.selectOption('#product-type', 'variable');
+      await page.locator('#_sku').fill(generateUniqueSKU('variable-depth-parent'));
 
-    await setupAttributes(page, VARIABLE_PRODUCT_CONFIG.attributes);
-    await generateAllVariations(page, expectedVariationCount);
-    await assignVariationData(page, variationDefinitions);
+      await setupAttributes(page, VARIABLE_PRODUCT_CONFIG.attributes);
+      await generateAllVariations(page, expectedVariationCount);
+      await assignVariationData(page, variationDefinitions);
 
-    await publishProduct(page);
+      await publishProduct(page);
 
-    const productId = await resolveProductId(page);
-    await checkForPhpErrors(page);
+      productId = await resolveProductId(page);
+      await checkForPhpErrors(page);
 
-    const syncResult = await validateVariableProductSync(productId, productName);
-    assertVariationAttributeMapping(syncResult, expectedVariationCount);
-    assertExpectedVariationPricesInSync(syncResult, variationDefinitions.map(item => item.price));
+      const syncResult = await validateVariableProductSync(productId, productName);
+      assertVariationAttributeMapping(syncResult, expectedVariationCount);
+      assertExpectedVariationPricesInSync(syncResult, variationDefinitions.map(item => item.price));
 
-    return {
-      productId,
-      productName,
-      expectedVariationCount,
-      variationDefinitions,
-      syncResult,
-    };
+      return {
+        productId,
+        productName,
+        expectedVariationCount,
+        variationDefinitions,
+        syncResult,
+      };
+    } catch (error) {
+      // Callers only receive the product ID after this helper returns. Clean up
+      // here when initial sync validation fails before that can happen.
+      if (productId) {
+        await cleanupProduct(productId);
+      }
+      throw error;
+    }
   }
 
   async function goToProductEditPage(page, productId) {

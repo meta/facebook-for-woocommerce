@@ -128,7 +128,7 @@ class EventValidator {
       this.validateCookies(p, c, errors);
       this.validateDataMatch(p, c, eventName, 'custom_data', errors);
       this.validateDataMatch(p, c, eventName, 'user_data', errors);
-      this.validateUserData(p, c, errors);
+      this.validateUserData(p, c, eventName, errors);
     }
 
     await this.validatePhpErrors(page, errors);
@@ -165,15 +165,7 @@ class EventValidator {
       errors.push(`Expected 1 Pixel event, found ${pixel.length}`);
     }
     if (fieldContract.channels.includes('capi') && capi.length !== 1) {
-      const uniqueEventIds = new Set(capi.map(e => e.event_id).filter(id => id));
-      if (uniqueEventIds.size === 1) {
-        const duplicateEventId = [...uniqueEventIds][0] || 'unknown';
-        console.warn(
-          `  ⚠️  Duplicate CAPI events detected for ${eventName}: count=${capi.length}, event_id=${duplicateEventId}. Allowing pass because duplicate records share the same event_id.`
-        );
-      } else {
-        errors.push(`Expected 1 CAPI event, found ${capi.length}`);
-      }
+      errors.push(`Expected 1 CAPI event, found ${capi.length}`);
     }
 
     if (errors.length === 0) {
@@ -416,9 +408,16 @@ class EventValidator {
     }
   }
 
-  validateUserData(pixel, capi, errors) {
-    this.validatePII(pixel, capi, errors, 'em');
-    this.validatePII(pixel, capi, errors, 'external_id');
+  validateUserData(pixel, capi, eventName, errors) {
+    const fieldContract = EVENT_FIELD_CONTRACTS[eventName];
+    const pixelFields = fieldContract?.pixel?.user_data || [];
+    const capiFields = fieldContract?.capi?.user_data || [];
+
+    for (const fieldName of ['em', 'external_id']) {
+      if (pixelFields.includes(fieldName) && capiFields.includes(fieldName)) {
+        this.validatePII(pixel, capi, errors, fieldName);
+      }
+    }
   }
 
   validatePII(pixel, capi, errors, field_name) {

@@ -139,11 +139,11 @@ if ( ! class_exists( 'WC_Facebookcommerce_EventsTracker' ) ) :
 		public static function get_param_builder() {
 			if ( null === self::$param_builder ) {
 				try {
-					$site_url            = get_site_url();
-					self::$param_builder = new \FacebookAds\ParamBuilder( array( $site_url ) );
+					$hosts               = self::get_param_builder_hosts();
+					self::$param_builder = new \FacebookAds\ParamBuilder( $hosts );
 
 					self::$param_builder->processRequest(
-						$site_url,
+						end( $hosts ),
 						// phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Param builder intentionally inspects current request query parameters.
 						self::get_scalar_request_values( $_GET ),
 						self::get_scalar_request_values( $_COOKIE ),
@@ -165,6 +165,45 @@ if ( ! class_exists( 'WC_Facebookcommerce_EventsTracker' ) ) :
 			}
 
 			return self::$param_builder;
+		}
+
+		/**
+		 * Returns the hosts the CAPI Parameter Builder scopes the _fbp and _fbc cookies to.
+		 *
+		 * ParamBuilder expects bare hosts and keeps any URL path, so passing a site URL with a
+		 * path (WordPress core in a subdirectory, as in Bedrock, or a site that lives in one)
+		 * produced an invalid cookie Domain such as `example.com/wp`, which browsers reject.
+		 * Neither URL is ever passed through whole.
+		 *
+		 * The WordPress host comes first and the front-end host last. The last host is the one
+		 * the cookies are written from, because the front end is where they are read.
+		 * ParamBuilder uses the first host in the list that the last one is equal to or a
+		 * subdomain of. So when WordPress core sits on a parent domain of the store (core on
+		 * example.com, store on shop.example.com), the cookies stay on the parent domain, as
+		 * they were before. A cookie on shop.example.com alongside an older one on example.com
+		 * would lose to it, because PHP keeps the first cookie of a given name.
+		 *
+		 * @since 3.7.10
+		 *
+		 * @return string[] the hosts, WordPress host first and front-end host last.
+		 * @throws \RuntimeException When neither URL has a host, so ParamBuilder is not set up.
+		 */
+		private static function get_param_builder_hosts() {
+			$hosts = array();
+
+			foreach ( array( site_url(), home_url() ) as $url ) {
+				$host = wp_parse_url( $url, PHP_URL_HOST );
+
+				if ( is_string( $host ) && '' !== $host ) {
+					$hosts[] = strtolower( $host );
+				}
+			}
+
+			if ( empty( $hosts ) ) {
+				throw new \RuntimeException( 'Neither the home URL nor the site URL has a host to scope the attribution cookies to.' );
+			}
+
+			return array_values( array_unique( $hosts ) );
 		}
 
 		/**
